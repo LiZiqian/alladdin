@@ -75,6 +75,7 @@ def handle_get(handler, ctx) -> None:
 
     if path == "/api/export-bundle":
         tmp_path = None
+        response_started = False
         try:
             tmp_path, filename = ctx.build_export_bundle_file(_selection_from_query(query))
             size = tmp_path.stat().st_size
@@ -84,11 +85,13 @@ def handle_get(handler, ctx) -> None:
             handler.send_header("Content-Length", str(size))
             handler.send_header("Cache-Control", "no-cache")
             handler.end_headers()
+            response_started = True
             with tmp_path.open("rb") as src:
                 shutil.copyfileobj(src, handler.wfile, length=1024 * 1024)
         except Exception as e:
-            traceback.print_exc()
-            handler._send_json({"ok": False, "error": str(e), "errorCode": "EXPORT_FAILED"}, 500)
+            if not response_started:
+                traceback.print_exc()
+                handler._send_json({"ok": False, "error": str(e), "errorCode": "EXPORT_FAILED"}, 500)
         finally:
             if tmp_path:
                 tmp_path.unlink(missing_ok=True)
@@ -97,6 +100,7 @@ def handle_get(handler, ctx) -> None:
     archive_sample_id = handler._sample_archive_route(path)
     if archive_sample_id:
         tmp_path = None
+        response_started = False
         try:
             tmp_path, filename = ctx.build_sample_archive_file(archive_sample_id)
             size = tmp_path.stat().st_size
@@ -106,13 +110,16 @@ def handle_get(handler, ctx) -> None:
             handler.send_header("Content-Length", str(size))
             handler.send_header("Cache-Control", "no-cache")
             handler.end_headers()
+            response_started = True
             with tmp_path.open("rb") as src:
                 shutil.copyfileobj(src, handler.wfile, length=1024 * 1024)
         except KeyError as e:
-            handler._send_json({"ok": False, "error": str(e)}, 404)
+            if not response_started:
+                handler._send_json({"ok": False, "error": str(e)}, 404)
         except Exception as e:
-            traceback.print_exc()
-            handler._send_json({"ok": False, "error": str(e), "errorCode": "SAMPLE_ARCHIVE_EXPORT_FAILED"}, 500)
+            if not response_started:
+                traceback.print_exc()
+                handler._send_json({"ok": False, "error": str(e), "errorCode": "SAMPLE_ARCHIVE_EXPORT_FAILED"}, 500)
         finally:
             if tmp_path:
                 tmp_path.unlink(missing_ok=True)

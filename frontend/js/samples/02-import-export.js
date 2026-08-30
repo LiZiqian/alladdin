@@ -28,7 +28,14 @@ app.registerModule("samples.importExport", {
         const seenIdentifiers = new Map();
         result.rows.forEach((row, idx) => {
           if (this.sampleIsReassembled(row)) return;
-          for (const ident of this.sampleIdentifierSet(row)) {
+          const identifiers = [row.sn, row.imei, row.boardSn]
+            .map(value => String(value || "").trim().toLowerCase())
+            .filter(Boolean);
+          if (new Set(identifiers).size !== identifiers.length) {
+            localDupIndexes.add(idx);
+            return;
+          }
+          for (const ident of identifiers) {
             if (seenIdentifiers.has(ident)) {
               localDupIndexes.add(idx);
               return;

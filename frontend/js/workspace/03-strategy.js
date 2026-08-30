@@ -451,6 +451,10 @@ app.registerModule("workspace.strategy", {
           if (category.startsWith("如：") || category === "测试大类") continue;
           rows.push({ category, item });
         }
+        if (!rows.length) {
+          alert("XLSX中没有可导入的有效测试用例，已保留当前用例集。");
+          return;
+        }
         const p = this.currentProject();
         if (!p) { alert("请先选择一个项目。"); return; }
         const snapshot = this.dataSnapshot();

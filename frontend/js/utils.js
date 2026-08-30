@@ -104,26 +104,75 @@ const Utils = {
   /** JSON字符串安全处理 */
   jsArg(v) { return JSON.stringify(String(v ?? "")); },
 
-  /** CSV行解析 */
-  parseCsvLine(line) {
-    const out = []; let cur = "", inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i], next = line[i + 1];
-      if (ch === '"' && inQuotes && next === '"') { cur += '"'; i++; continue; }
-      if (ch === '"') { inQuotes = !inQuotes; continue; }
-      if (ch === ',' && !inQuotes) { out.push(cur); cur = ""; continue; }
-      cur += ch;
+  /** 完整 CSV 解析：支持引号内逗号、双引号和跨行字段。 */
+  parseCsv(text) {
+    const source = String(text ?? "").replace(/^﻿/, "");
+    const rows = [];
+    let row = [];
+    let field = "";
+    let inQuotes = false;
+    let quoteClosed = false;
+    let fieldPresent = false;
+    const pushField = () => {
+      row.push(field.trim());
+      field = "";
+      quoteClosed = false;
+      fieldPresent = false;
+    };
+    const pushRow = () => { pushField(); rows.push(row); row = []; };
+    for (let i = 0; i < source.length; i++) {
+      const ch = source[i];
+      const next = source[i + 1];
+      if (inQuotes) {
+        if (ch === '"' && next === '"') { field += '"'; i++; continue; }
+        if (ch === '"') { inQuotes = false; quoteClosed = true; continue; }
+        field += ch;
+        fieldPresent = true;
+        continue;
+      }
+      if (quoteClosed) {
+        if (ch === ",") { pushField(); continue; }
+        if (ch === "\r" || ch === "\n") {
+          if (ch === "\r" && next === "\n") i++;
+          pushRow();
+          continue;
+        }
+        if (/\s/.test(ch)) continue;
+        throw new Error("CSV 引号字段结束后包含非法字符");
+      }
+      if (ch === '"') {
+        if (field.trim()) throw new Error("CSV 未引用字段中包含非法引号");
+        field = "";
+        fieldPresent = true;
+        inQuotes = true;
+        continue;
+      }
+      if (ch === "," && !inQuotes) { pushField(); continue; }
+      if ((ch === "\r" || ch === "\n") && !inQuotes) {
+        if (ch === "\r" && next === "\n") i++;
+        pushRow();
+        continue;
+      }
+      field += ch;
+      fieldPresent = true;
     }
-    out.push(cur);
-    return out.map(x => x.trim());
+    if (inQuotes) throw new Error("CSV 包含未闭合的引号字段");
+    if (fieldPresent || row.length) pushRow();
+    return rows;
+  },
+
+  /** CSV行解析（兼容旧调用）。 */
+  parseCsvLine(line) {
+    return Utils.parseCsv(String(line ?? ""))[0] || [];
   },
 
   /** 解析测试用例CSV */
   parseTestCaseCsv(text) {
-    const lines = String(text || "").replace(/^﻿/, "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    let lines;
+    try { lines = Utils.parseCsv(text).filter(cols => cols.some(value => String(value || "").trim())); }
+    catch (_) { return []; }
     const rows = [];
-    lines.forEach((line, idx) => {
-      const cols = Utils.parseCsvLine(line);
+    lines.forEach((cols, idx) => {
       if (cols.length < 2) return;
       const category = (cols[0] || "").trim();
       const item = (cols[1] || "").trim();
@@ -136,7 +185,12 @@ const Utils = {
 
   /** 解析项目人员CSV：支持旧版单列 "姓名/工号"，以及新版 "姓名/工号,人员类型" */
   parseProjectMembersCsv(text) {
-    const lines = String(text || "").replace(/^﻿/, "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    let lines;
+    try {
+      lines = Utils.parseCsv(text).filter(cols => cols.some(value => String(value || "").trim()));
+    } catch (e) {
+      return { error: e.message || String(e), rows: [] };
+    }
     if (!lines.length) return { error: "CSV文件没有可读取的数据", rows: [] };
 
     const rows = [];
@@ -144,7 +198,7 @@ const Utils = {
     let skipped = 0;
 
     for (let i = 0; i < lines.length; i++) {
-      const cols = Utils.parseCsvLine(lines[i]);
+      const cols = lines[i];
       if (cols.every(c => !c.trim())) continue;
       const first = String(cols[0] || "").trim();
       const second = String(cols[1] || "").trim();
@@ -356,9 +410,12 @@ const Utils = {
 
   /** 解析样机导入CSV */
   parseSampleImportCsv(text) {
-    const lines = String(text || "").replace(/^﻿/, "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-    const matrix = lines.map(line => Utils.parseCsvLine(line));
-    return Utils.parseSampleImportMatrix(matrix, "CSV文件");
+    try {
+      const matrix = Utils.parseCsv(text).filter(row => row.some(value => String(value || "").trim()));
+      return Utils.parseSampleImportMatrix(matrix, "CSV文件");
+    } catch (e) {
+      return { error: e.message || String(e), rows: [] };
+    }
   },
 
   async parseSampleImportXlsx(buffer) {
@@ -377,6 +434,11 @@ const Utils = {
 
   async unzipXlsxFiles(buffer) {
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    const MAX_ARCHIVE_BYTES = 25 * 1024 * 1024;
+    const MAX_ENTRY_BYTES = 20 * 1024 * 1024;
+    const MAX_TOTAL_XML_BYTES = 50 * 1024 * 1024;
+    const MAX_ENTRIES = 2048;
+    if (bytes.length > MAX_ARCHIVE_BYTES) throw new Error("XLSX文件过大，最大支持 25MB");
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     let eocd = -1;
     for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 66000); i--) {
@@ -384,14 +446,18 @@ const Utils = {
     }
     if (eocd < 0) throw new Error("不是有效的XLSX文件");
     const total = view.getUint16(eocd + 10, true);
+    if (total > MAX_ENTRIES) throw new Error(`XLSX文件条目过多，最大支持 ${MAX_ENTRIES} 项`);
     let ptr = view.getUint32(eocd + 16, true);
     const decoder = new TextDecoder("utf-8");
     const files = {};
+    let totalXmlBytes = 0;
 
     for (let i = 0; i < total; i++) {
+      if (ptr < 0 || ptr + 46 > bytes.length) throw new Error("XLSX目录结构越界");
       if (view.getUint32(ptr, true) !== 0x02014b50) throw new Error("XLSX目录结构损坏");
       const method = view.getUint16(ptr + 10, true);
       const compressedSize = view.getUint32(ptr + 20, true);
+      const uncompressedSize = view.getUint32(ptr + 24, true);
       const fileNameLen = view.getUint16(ptr + 28, true);
       const extraLen = view.getUint16(ptr + 30, true);
       const commentLen = view.getUint16(ptr + 32, true);
@@ -399,36 +465,63 @@ const Utils = {
       const nameBytes = bytes.slice(ptr + 46, ptr + 46 + fileNameLen);
       const fileName = decoder.decode(nameBytes);
 
+      const nextPtr = ptr + 46 + fileNameLen + extraLen + commentLen;
+      if (nextPtr > bytes.length) throw new Error("XLSX目录条目越界");
+      ptr = nextPtr;
+      if (!/\.(xml|rels)$/i.test(fileName)) continue;
+      if (Object.prototype.hasOwnProperty.call(files, fileName)) throw new Error(`XLSX包含重复条目：${fileName}`);
+      if (uncompressedSize > MAX_ENTRY_BYTES) throw new Error(`XLSX条目过大：${fileName}`);
+      totalXmlBytes += uncompressedSize;
+      if (totalXmlBytes > MAX_TOTAL_XML_BYTES) throw new Error("XLSX解压后的XML内容过大");
+
+      if (localOffset < 0 || localOffset + 30 > bytes.length) throw new Error("XLSX文件头越界");
       if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error("XLSX文件头损坏");
       const localNameLen = view.getUint16(localOffset + 26, true);
       const localExtraLen = view.getUint16(localOffset + 28, true);
       const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+      if (dataStart < 0 || dataStart + compressedSize > bytes.length) throw new Error("XLSX压缩数据越界");
       const compressed = bytes.slice(dataStart, dataStart + compressedSize);
       let dataBytes;
       if (method === 0) {
         dataBytes = compressed;
       } else if (method === 8) {
-        dataBytes = await Utils.inflateRawBytes(compressed);
+        dataBytes = await Utils.inflateRawBytes(compressed, uncompressedSize || MAX_ENTRY_BYTES);
       } else {
-        dataBytes = null;
+        throw new Error(`XLSX使用了不支持的压缩方式：${method}`);
       }
-      if (dataBytes && /\.(xml|rels)$/i.test(fileName)) files[fileName] = decoder.decode(dataBytes);
-      ptr += 46 + fileNameLen + extraLen + commentLen;
+      if (dataBytes.length !== uncompressedSize) throw new Error(`XLSX条目解压大小不匹配：${fileName}`);
+      files[fileName] = decoder.decode(dataBytes);
     }
     return files;
   },
 
-  async inflateRawBytes(compressed) {
+  async inflateRawBytes(compressed, maxOutputBytes = 20 * 1024 * 1024) {
     const root = typeof globalThis !== "undefined" ? globalThis : window;
     const NativeDecompressionStream = root.DecompressionStream || root.window?.DecompressionStream;
     if (NativeDecompressionStream && root.Blob && root.Response) {
       const stream = new root.Blob([compressed]).stream().pipeThrough(new NativeDecompressionStream("deflate-raw"));
-      return new Uint8Array(await new root.Response(stream).arrayBuffer());
+      const reader = stream.getReader();
+      const chunks = [];
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > maxOutputBytes) {
+          await reader.cancel();
+          throw new Error("XLSX解压内容超过安全上限");
+        }
+        chunks.push(value);
+      }
+      const output = new Uint8Array(total);
+      let offset = 0;
+      chunks.forEach(chunk => { output.set(chunk, offset); offset += chunk.byteLength; });
+      return output;
     }
-    return Utils.inflateRawBytesFallback(compressed);
+    return Utils.inflateRawBytesFallback(compressed, maxOutputBytes);
   },
 
-  inflateRawBytesFallback(compressed) {
+  inflateRawBytesFallback(compressed, maxOutputBytes = 20 * 1024 * 1024) {
     const input = compressed instanceof Uint8Array ? compressed : new Uint8Array(compressed);
     let bitPos = 0;
     const output = [];
@@ -436,6 +529,10 @@ const Utils = {
     const lengthExtra = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
     const distBase = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
     const distExtra = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+    const appendOutput = value => {
+      if (output.length >= maxOutputBytes) throw new Error("XLSX解压内容超过安全上限");
+      output.push(value);
+    };
 
     const readBits = count => {
       let value = 0;
@@ -524,7 +621,7 @@ const Utils = {
       while (true) {
         const symbol = decodeSymbol(literalTree);
         if (symbol < 256) {
-          output.push(symbol);
+          appendOutput(symbol);
         } else if (symbol === 256) {
           return;
         } else if (symbol <= 285) {
@@ -535,7 +632,7 @@ const Utils = {
           if (distSymbol >= distBase.length) throw new Error("XLSX压缩距离损坏");
           const distance = distBase[distSymbol] + readBits(distExtra[distSymbol]);
           if (!distance || distance > output.length) throw new Error("XLSX压缩距离损坏");
-          for (let i = 0; i < length; i++) output.push(output[output.length - distance]);
+          for (let i = 0; i < length; i++) appendOutput(output[output.length - distance]);
         } else {
           throw new Error("XLSX压缩长度损坏");
         }
@@ -551,7 +648,7 @@ const Utils = {
         const len = readBits(16);
         const nlen = readBits(16);
         if (((len ^ 0xffff) & 0xffff) !== nlen) throw new Error("XLSX未压缩块损坏");
-        for (let i = 0; i < len; i++) output.push(readBits(8));
+        for (let i = 0; i < len; i++) appendOutput(readBits(8));
       } else if (type === 1) {
         const trees = fixedTrees();
         inflateCompressedBlock(trees.literalTree, trees.distanceTree);

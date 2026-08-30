@@ -6,6 +6,8 @@ import json
 from collections import defaultdict
 from typing import Callable
 
+from server_modules import sample_constraints, sample_queries
+
 
 FINISHED_TASK_STATUSES = {"正常完成", "异常终止"}
 
@@ -111,6 +113,15 @@ def apply_id_maps(data: dict,
                     old_sample_id = record.get("sampleId")
                     if old_sample_id and old_sample_id in sample_id_map:
                         record["sampleId"] = sample_id_map[old_sample_id]
+                for upload in task.get("resultUploads") or []:
+                    if not isinstance(upload, dict):
+                        continue
+                    for sample_ref in upload.get("samples") or []:
+                        if not isinstance(sample_ref, dict):
+                            continue
+                        old_sample_id = sample_ref.get("sampleId")
+                        if old_sample_id and old_sample_id in sample_id_map:
+                            sample_ref["sampleId"] = sample_id_map[old_sample_id]
 
     for category in (data.get("sampleLibrary") or {}).get("categories") or []:
         for sample in category.get("samples") or []:
@@ -127,23 +138,52 @@ def apply_id_maps(data: dict,
 
 def validate_import_commit_state(data: dict, project_ids: set[str]) -> list[str]:
     """Validate imported project subtrees before writing them to storage."""
-    if not project_ids:
-        return []
     target_project_ids = {str(project_id) for project_id in project_ids if project_id}
-    sample_ids = {
-        str(sample.get("id"))
-        for category in (data.get("sampleLibrary") or {}).get("categories") or []
-        for sample in (category.get("samples") or [])
-        if isinstance(sample, dict) and sample.get("id")
-    }
     errors: list[str] = []
+    sample_ids: set[str] = set()
+    seen_photo_owners: dict[str, str] = {}
+    for category in (data.get("sampleLibrary") or {}).get("categories") or []:
+        if not isinstance(category, dict):
+            continue
+        category_id = str(category.get("id") or "")
+        for sample in category.get("samples") or []:
+            if not isinstance(sample, dict):
+                continue
+            sample_id = str(sample.get("id") or "")
+            if sample_id:
+                if sample_id in sample_ids:
+                    errors.append(f"样机 ID 重复: {sample_id}")
+                sample_ids.add(sample_id)
+            for photo in sample.get("photos") or []:
+                if not isinstance(photo, dict):
+                    continue
+                photo_id = str(photo.get("id") or "")
+                if not photo_id:
+                    errors.append(f"样机 {sample_id or '(无ID)'} 包含缺少 ID 的照片")
+                    continue
+                previous_owner = seen_photo_owners.get(photo_id)
+                if previous_owner is not None:
+                    errors.append(f"照片 ID {photo_id} 重复，涉及样机 {previous_owner} 和 {sample_id}")
+                else:
+                    seen_photo_owners[photo_id] = sample_id
 
+    seen_event_ids: set[str] = set()
+    for event in (data.get("sampleLibrary") or {}).get("logs") or []:
+        if not isinstance(event, dict):
+            continue
+        event_id = str(event.get("id") or "")
+        if event_id and event_id in seen_event_ids:
+            errors.append(f"样机事件 ID 重复: {event_id}")
+        if event_id:
+            seen_event_ids.add(event_id)
+
+    seen_stage_owners: dict[str, str] = {}
+    seen_task_owners: dict[str, tuple[str, str]] = {}
+    seen_task_log_owners: dict[str, str] = {}
     for project in data.get("projects") or []:
         if not isinstance(project, dict):
             continue
         project_id = str(project.get("id") or "")
-        if project_id not in target_project_ids:
-            continue
         seen_stage_ids: set[str] = set()
         for stage in project.get("stages") or []:
             if not isinstance(stage, dict):
@@ -153,6 +193,11 @@ def validate_import_commit_state(data: dict, project_ids: set[str]) -> list[str]
                 if stage_id in seen_stage_ids:
                     errors.append(f"项目 {project_id} 内阶段 ID 重复: {stage_id}")
                 seen_stage_ids.add(stage_id)
+                previous_project_id = seen_stage_owners.get(stage_id)
+                if previous_project_id and previous_project_id != project_id:
+                    errors.append(f"阶段 ID {stage_id} 同时属于项目 {previous_project_id} 和 {project_id}")
+                else:
+                    seen_stage_owners[stage_id] = project_id
             seen_task_ids: set[str] = set()
             for task in stage.get("tasks") or []:
                 if not isinstance(task, dict):
@@ -162,12 +207,70 @@ def validate_import_commit_state(data: dict, project_ids: set[str]) -> list[str]
                     if task_id in seen_task_ids:
                         errors.append(f"阶段 {stage_id or '(无ID)'} 内任务 ID 重复: {task_id}")
                     seen_task_ids.add(task_id)
-                for sample_id in task.get("sampleIds") or []:
-                    sid = str(sample_id or "")
-                    if sid and sid not in sample_ids:
-                        errors.append(f"任务 {task_id or '(无ID)'} 引用不存在的样机: {sid}")
+                    previous_owner = seen_task_owners.get(task_id)
+                    if previous_owner and previous_owner != (project_id, stage_id):
+                        errors.append(f"任务 ID {task_id} 同时属于阶段 {previous_owner[1]} 和 {stage_id}")
+                    else:
+                        seen_task_owners[task_id] = (project_id, stage_id)
+                if project_id in target_project_ids:
+                    for sample_id in task.get("sampleIds") or []:
+                        sid = str(sample_id or "")
+                        if sid and sid not in sample_ids:
+                            errors.append(f"任务 {task_id or '(无ID)'} 引用不存在的样机: {sid}")
+                for log in task.get("logs") or []:
+                    if not isinstance(log, dict):
+                        continue
+                    log_id = str(log.get("id") or "")
+                    if not log_id:
+                        continue
+                    previous_task_id = seen_task_log_owners.get(log_id)
+                    if previous_task_id and previous_task_id != task_id:
+                        errors.append(f"任务日志 ID {log_id} 同时属于任务 {previous_task_id} 和 {task_id}")
+                    else:
+                        seen_task_log_owners[log_id] = task_id
                 if len(errors) >= 20:
                     return errors
+    return errors
+
+
+def validate_touched_sample_identities(data: dict, touched_sample_ids: set[str]) -> list[str]:
+    """Reject new non-reassembled identity duplicates without blocking unrelated legacy rows."""
+    touched = {str(value) for value in touched_sample_ids if str(value or "").strip()}
+    if not touched:
+        return []
+    identity_owners: dict[str, tuple[str, str]] = {}
+    errors: list[str] = []
+    for category in (data.get("sampleLibrary") or {}).get("categories") or []:
+        for sample in category.get("samples") or []:
+            if not isinstance(sample, dict) or sample_queries.sample_is_reassembled(sample):
+                continue
+            sample_id = str(sample.get("id") or "")
+            fields = sample_constraints.sample_identity_fields(sample)
+            seen_values: set[str] = set()
+            for field in fields:
+                value = str(field.get("value") or "").strip()
+                key = value.lower()
+                if not key:
+                    continue
+                if key in seen_values:
+                    if sample_id in touched:
+                        errors.append(
+                            f"样机 {sample_id} 的 SN/IMEI/主板SN 不能使用相同值: {value}"
+                        )
+                        if len(errors) >= 20:
+                            return errors
+                    continue
+                seen_values.add(key)
+                previous = identity_owners.get(key)
+                if previous and previous[0] != sample_id and (sample_id in touched or previous[0] in touched):
+                    errors.append(
+                        f"样机身份标识重复: {field.get('label') or field.get('field')}={value} "
+                        f"同时属于 {previous[0]} 和 {sample_id}"
+                    )
+                    if len(errors) >= 20:
+                        return errors
+                else:
+                    identity_owners[key] = (sample_id, str(field.get("field") or ""))
     return errors
 
 
@@ -292,6 +395,11 @@ def merge_import_sample_events(current_data: dict,
         for log in logs
         if isinstance(log, dict)
     }
+    existing_ids = {
+        str(log.get("id"))
+        for log in logs
+        if isinstance(log, dict) and log.get("id")
+    }
     added = 0
 
     for raw in (incoming.get("sampleLibrary") or {}).get("logs") or []:
@@ -307,10 +415,13 @@ def merge_import_sample_events(current_data: dict,
         if target_sample_id and target_sample_id not in target_sample_ids:
             continue
 
+        event_id = str(log.get("id") or "")
         event_hash = content_hash(log)
-        if event_hash in existing_hashes:
+        if (event_id and event_id in existing_ids) or event_hash in existing_hashes:
             continue
         logs.append(log)
+        if event_id:
+            existing_ids.add(event_id)
         existing_hashes.add(event_hash)
         added += 1
 

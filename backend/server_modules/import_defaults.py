@@ -3,8 +3,31 @@
 from __future__ import annotations
 
 import copy
+import re
 
 from server_modules import status_normalization
+
+
+_UNSAFE_IMPORT_ID_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_DEVICE_NAMES = {
+    "con", "prn", "aux", "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+
+
+def _validate_import_id(value: object, label: str) -> str:
+    item_id = str(value or "").strip()
+    if not item_id:
+        raise ValueError(f"{label} 缺少 id")
+    if (
+        len(item_id) > 200
+        or item_id in {".", ".."}
+        or _UNSAFE_IMPORT_ID_RE.search(item_id)
+        or item_id.rstrip(" .").lower().split(".", 1)[0] in _WINDOWS_DEVICE_NAMES
+    ):
+        raise ValueError(f"{label} id 包含不安全字符: {item_id}")
+    return item_id
 
 
 def _ensure_list(obj: dict, key: str) -> list:
@@ -172,3 +195,87 @@ def normalize_import_state(state: dict, *, source_format: str = "") -> dict:
 
     data["_importNormalizedFrom"] = source_format or "unknown"
     return status_normalization.normalize_state_payload(data)
+
+
+def validate_import_state_structure(state: dict) -> None:
+    """Reject ambiguous IDs and broken parent/reference relationships before diff/commit."""
+    if not isinstance(state, dict):
+        raise ValueError("导入包 state 数据格式不正确")
+
+    seen_project_ids: set[str] = set()
+    seen_stage_ids: set[str] = set()
+    seen_task_ids: set[str] = set()
+    task_sample_refs: list[tuple[str, str]] = []
+
+    for project_index, project in enumerate(state.get("projects") or [], start=1):
+        if not isinstance(project, dict):
+            raise ValueError(f"导入包项目第 {project_index} 项格式不正确")
+        project_id = _validate_import_id(project.get("id"), f"导入包项目第 {project_index} 项")
+        if project_id in seen_project_ids:
+            raise ValueError(f"导入包项目 id 重复: {project_id}")
+        seen_project_ids.add(project_id)
+        for stage_index, stage in enumerate(project.get("stages") or [], start=1):
+            if not isinstance(stage, dict):
+                raise ValueError(f"导入包项目 {project_id} 的阶段第 {stage_index} 项格式不正确")
+            stage_id = _validate_import_id(stage.get("id"), f"导入包项目 {project_id} 的阶段第 {stage_index} 项")
+            if stage_id in seen_stage_ids:
+                raise ValueError(f"导入包阶段 id 重复: {stage_id}")
+            seen_stage_ids.add(stage_id)
+            if str(stage.get("projectId") or "") != project_id:
+                raise ValueError(f"导入包阶段 {stage_id} 的 projectId 与所属项目不一致")
+            for task_index, task in enumerate(stage.get("tasks") or [], start=1):
+                if not isinstance(task, dict):
+                    raise ValueError(f"导入包阶段 {stage_id} 的任务第 {task_index} 项格式不正确")
+                task_id = _validate_import_id(task.get("id"), f"导入包阶段 {stage_id} 的任务第 {task_index} 项")
+                if task_id in seen_task_ids:
+                    raise ValueError(f"导入包任务 id 重复: {task_id}")
+                seen_task_ids.add(task_id)
+                if str(task.get("projectId") or "") != project_id or str(task.get("stageId") or "") != stage_id:
+                    raise ValueError(f"导入包任务 {task_id} 的项目/阶段归属不一致")
+                for sample_id in task.get("sampleIds") or []:
+                    value = str(sample_id or "").strip()
+                    if value:
+                        task_sample_refs.append((task_id, value))
+
+    seen_category_ids: set[str] = set()
+    seen_sample_ids: set[str] = set()
+    seen_photo_ids: set[str] = set()
+    for category_index, category in enumerate((state.get("sampleLibrary") or {}).get("categories") or [], start=1):
+        if not isinstance(category, dict):
+            raise ValueError(f"导入包样机池第 {category_index} 项格式不正确")
+        category_id = _validate_import_id(category.get("id"), f"导入包样机池第 {category_index} 项")
+        if category_id in seen_category_ids:
+            raise ValueError(f"导入包样机池 id 重复: {category_id}")
+        seen_category_ids.add(category_id)
+        for sample_index, sample in enumerate(category.get("samples") or [], start=1):
+            if not isinstance(sample, dict):
+                raise ValueError(f"导入包样机池 {category_id} 的样机第 {sample_index} 项格式不正确")
+            sample_id = _validate_import_id(sample.get("id"), f"导入包样机池 {category_id} 的样机第 {sample_index} 项")
+            if sample_id in seen_sample_ids:
+                raise ValueError(f"导入包样机 id 重复: {sample_id}")
+            seen_sample_ids.add(sample_id)
+            if str(sample.get("categoryId") or "") != category_id:
+                raise ValueError(f"导入包样机 {sample_id} 的 categoryId 与所属样机池不一致")
+            for photo in sample.get("photos") or []:
+                if not isinstance(photo, dict):
+                    raise ValueError(f"导入包样机 {sample_id} 包含格式不正确的照片记录")
+                photo_id = _validate_import_id(photo.get("id"), f"导入包样机 {sample_id} 的照片记录")
+                if photo_id in seen_photo_ids:
+                    raise ValueError(f"导入包照片 id 重复: {photo_id}")
+                seen_photo_ids.add(photo_id)
+
+    for task_id, sample_id in task_sample_refs:
+        if sample_id not in seen_sample_ids:
+            raise ValueError(f"导入包任务 {task_id} 引用不存在的样机: {sample_id}")
+
+    seen_event_ids: set[str] = set()
+    for event_index, event in enumerate((state.get("sampleLibrary") or {}).get("logs") or [], start=1):
+        if not isinstance(event, dict):
+            raise ValueError(f"导入包样机事件第 {event_index} 项格式不正确")
+        event_id = _validate_import_id(event.get("id"), f"导入包样机事件第 {event_index} 项")
+        sample_id = str(event.get("sampleId") or "").strip()
+        if event_id in seen_event_ids:
+            raise ValueError(f"导入包样机事件 id 重复: {event_id}")
+        seen_event_ids.add(event_id)
+        if sample_id not in seen_sample_ids:
+            raise ValueError(f"导入包样机事件 {event_id} 引用不存在的样机: {sample_id or '(空)'}")

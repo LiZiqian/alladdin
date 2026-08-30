@@ -122,6 +122,19 @@ def filter_state_by_selection(state: dict, selection: object | None) -> dict:
                 selected_category_ids.add(default_category_id)
 
     selected_sample_ids.update(referenced_sample_ids)
+    # 项目/阶段/任务事件可能引用已从任务当前 sampleIds 移出的历史样机；
+    # 先把这些事件的样机一并纳入，避免导出包携带事件却缺少其样机实体。
+    for log in (state.get("sampleLibrary") or {}).get("logs") or []:
+        if not isinstance(log, dict):
+            continue
+        if (
+            str(log.get("projectId") or "") in included_project_ids
+            or str(log.get("stageId") or "") in included_stage_ids
+            or str(log.get("taskId") or "") in included_task_ids
+        ):
+            sample_id = str(log.get("sampleId") or "").strip()
+            if sample_id:
+                selected_sample_ids.add(sample_id)
     library = copy.deepcopy(state.get("sampleLibrary") or {})
     library["categories"] = []
     all_included_sample_ids: set[str] = set()

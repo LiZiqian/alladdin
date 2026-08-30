@@ -46,7 +46,15 @@ def send_file(handler, target: Path, content_type: str, *, cache: str = STATIC_A
 
 
 def read_body(handler, max_bytes: int) -> bytes:
-    length = int(handler.headers.get("Content-Length", "0"))
+    try:
+        length = int(handler.headers.get("Content-Length", "0"))
+    except (TypeError, ValueError):
+        raise ValueError("Content-Length 格式不正确")
+    if length < 0:
+        raise ValueError("Content-Length 不能为负数")
     if length > max_bytes:
         raise ValueError(f"上传内容超过限制：{max_bytes // 1024 // 1024}MB")
-    return handler.rfile.read(length)
+    body = handler.rfile.read(length)
+    if len(body) != length:
+        raise ValueError("请求体未完整上传")
+    return body

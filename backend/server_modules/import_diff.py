@@ -32,6 +32,8 @@ def entity_label_for_conflict(entity: str, item: dict) -> str:
     if entity == "sample":
         parts = [s for s in [item.get("sn"), item.get("imei"), item.get("sampleNo")] if s]
         return " / ".join(parts) if parts else item.get("id", "")
+    if entity == "sampleCategory":
+        return item.get("name", "") or item.get("id", "")
     return item.get("id", "")
 
 
@@ -92,6 +94,11 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
     curr_projects = {p["id"]: p for p in (current.get("projects") or [])}
     curr_project_codes = {p.get("code", ""): p for p in (current.get("projects") or []) if p.get("code")}
     curr_project_names = {p.get("name", "").strip().lower(): p for p in (current.get("projects") or []) if p.get("name")}
+    curr_categories_by_id = {
+        str(category.get("id") or ""): category
+        for category in (current.get("sampleLibrary") or {}).get("categories") or []
+        if isinstance(category, dict) and category.get("id")
+    }
 
     curr_samples: list[dict] = []
     for cat in (current.get("sampleLibrary") or {}).get("categories") or []:
@@ -133,7 +140,20 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
         zip_path = str(asset.get("zipPath") or "")
         return chamber_package.safe_package_member_path(tmp_path, zip_path)
 
+    def asset_is_corrupt(asset: dict | None, asset_path: Path) -> bool:
+        if not asset:
+            return False
+        try:
+            expected_bytes = int(asset.get("bytes") or 0)
+        except (TypeError, ValueError):
+            return True
+        if asset.get("exists") and asset_path.stat().st_size != expected_bytes:
+            return True
+        expected_hash = str(asset.get("sha256") or "")
+        return bool(expected_hash and chamber_package.sha256_file(asset_path) != expected_hash)
+
     checked_manifest_assets: set[tuple[str, str, str]] = set()
+    incoming_sample_target_candidates: dict[str, str] = {}
     for cat in (incoming.get("sampleLibrary") or {}).get("categories") or []:
         for sample in cat.get("samples") or []:
             sample_id = sample.get("id", "")
@@ -147,13 +167,14 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                     asset_path = asset_path_from_index(asset)
                     if asset_path is None:
                         filename = Path(rel).name
-                        asset_path = tmp_path / "assets" / "samples" / str(sample_id) / "photos" / filename
-                    if not asset_path.is_file():
+                        asset_path = chamber_package.safe_package_member_path(
+                            tmp_path,
+                            f"assets/samples/{sample_id}/photos/{filename}",
+                        )
+                    if asset_path is None or not asset_path.is_file():
                         missing_photo_assets.append(photo_id)
-                    elif asset and asset.get("sha256"):
-                        actual_hash = chamber_package.sha256_file(asset_path)
-                        if actual_hash != str(asset.get("sha256") or ""):
-                            corrupt_photo_assets.append(photo_id)
+                    elif asset_is_corrupt(asset, asset_path):
+                        corrupt_photo_assets.append(photo_id)
                 thumb_rel = photo.get("thumbRelativePath", "")
                 if thumb_rel and asset_index is not None:
                     key = (str(sample_id), str(photo_id), "thumbnail")
@@ -162,10 +183,8 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                     asset_path = asset_path_from_index(asset)
                     if asset_path is None or not asset_path.is_file():
                         missing_photo_assets.append(f"{photo_id}::thumbnail")
-                    elif asset.get("sha256"):
-                        actual_hash = chamber_package.sha256_file(asset_path)
-                        if actual_hash != str(asset.get("sha256") or ""):
-                            corrupt_photo_assets.append(f"{photo_id}::thumbnail")
+                    elif asset_is_corrupt(asset, asset_path):
+                        corrupt_photo_assets.append(f"{photo_id}::thumbnail")
 
     if asset_index is not None:
         for key, asset in asset_lookup.items():
@@ -177,7 +196,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
             asset_id = str(asset.get("metadataId") or asset.get("assetId") or "")
             if not asset_path or not asset_path.is_file():
                 missing_photo_assets.append(asset_id)
-            elif asset.get("sha256") and chamber_package.sha256_file(asset_path) != str(asset.get("sha256") or ""):
+            elif asset_is_corrupt(asset, asset_path):
                 corrupt_photo_assets.append(asset_id)
 
     blockers = []
@@ -193,6 +212,116 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
             "assetIds": corrupt_photo_assets[:20],
             "count": len(corrupt_photo_assets),
         })
+
+    incoming_identity_owner: dict[str, str] = {}
+    duplicate_incoming_identities: list[str] = []
+    for category in (incoming.get("sampleLibrary") or {}).get("categories") or []:
+        for sample in category.get("samples") or []:
+            if not isinstance(sample, dict) or sample_queries.sample_is_reassembled(sample):
+                continue
+            sample_id = str(sample.get("id") or "")
+            raw_values = [
+                str(sample.get(field) or "").strip().lower()
+                for field in ("sn", "imei", "boardSn")
+                if str(sample.get(field) or "").strip()
+            ]
+            values = set(raw_values)
+            if len(values) != len(raw_values):
+                duplicate_incoming_identities.extend(
+                    value for value in values if raw_values.count(value) > 1
+                )
+            for value in values:
+                owner = incoming_identity_owner.get(value)
+                if owner and owner != sample_id:
+                    duplicate_incoming_identities.append(value)
+                else:
+                    incoming_identity_owner[value] = sample_id
+    if duplicate_incoming_identities:
+        unique_values = sorted(set(duplicate_incoming_identities))
+        blockers.append({
+            "type": "duplicate_sample_identities",
+            "identityValues": unique_values[:20],
+            "count": len(unique_values),
+        })
+
+    current_stage_owner: dict[str, str] = {}
+    current_task_owner: dict[str, tuple[str, str]] = {}
+    current_stages_by_project: dict[str, list[dict]] = {}
+    for project in current.get("projects") or []:
+        if not isinstance(project, dict):
+            continue
+        project_id = str(project.get("id") or "")
+        current_stages_by_project[project_id] = [stage for stage in (project.get("stages") or []) if isinstance(stage, dict)]
+        for stage in current_stages_by_project[project_id]:
+            stage_id = str(stage.get("id") or "")
+            if stage_id:
+                current_stage_owner[stage_id] = project_id
+            for task in stage.get("tasks") or []:
+                if isinstance(task, dict) and task.get("id"):
+                    current_task_owner[str(task.get("id"))] = (project_id, stage_id)
+
+    ownership_collisions: list[dict] = []
+    for project in incoming.get("projects") or []:
+        incoming_project_id = str(project.get("id") or "")
+        project_code = str(project.get("code") or "").strip()
+        project_name = str(project.get("name") or "").strip().lower()
+        potential_project = curr_projects.get(incoming_project_id)
+        if potential_project is None and project_code:
+            potential_project = curr_project_codes.get(project_code)
+        if potential_project is None and project_name:
+            potential_project = curr_project_names.get(project_name)
+        target_project_id = str((potential_project or {}).get("id") or incoming_project_id)
+        target_stages = current_stages_by_project.get(target_project_id, [])
+        target_stage_names = {
+            str(stage.get("name") or "").strip().lower(): str(stage.get("id") or "")
+            for stage in target_stages
+            if str(stage.get("name") or "").strip()
+        }
+        for stage in project.get("stages") or []:
+            stage_id = str(stage.get("id") or "")
+            stage_name = str(stage.get("name") or "").strip().lower()
+            existing_stage_owner = current_stage_owner.get(stage_id)
+            target_stage_id = stage_id if existing_stage_owner == target_project_id else target_stage_names.get(stage_name, stage_id)
+            if existing_stage_owner and existing_stage_owner != target_project_id:
+                ownership_collisions.append({"entity": "stage", "id": stage_id, "currentProjectId": existing_stage_owner, "incomingProjectId": incoming_project_id})
+            for task in stage.get("tasks") or []:
+                task_id = str(task.get("id") or "")
+                existing_task_owner = current_task_owner.get(task_id)
+                if existing_task_owner and existing_task_owner != (target_project_id, target_stage_id):
+                    ownership_collisions.append({
+                        "entity": "task",
+                        "id": task_id,
+                        "currentProjectId": existing_task_owner[0],
+                        "currentStageId": existing_task_owner[1],
+                        "incomingProjectId": incoming_project_id,
+                        "incomingStageId": stage_id,
+                    })
+    if ownership_collisions:
+        blockers.append({
+            "type": "entity_id_ownership_collision",
+            "items": ownership_collisions[:20],
+            "count": len(ownership_collisions),
+        })
+
+    for category in (incoming.get("sampleLibrary") or {}).get("categories") or []:
+        category_id = str(category.get("id") or "")
+        current_category = curr_categories_by_id.get(category_id)
+        if not current_category:
+            continue
+        field_diffs = diff_fields(current_category, category, skip_keys={"samples"})
+        if field_diffs:
+            conflicts.append({
+                "conflictId": next_conflict_id(),
+                "type": "field_conflict",
+                "entity": "sampleCategory",
+                "currentId": category_id,
+                "incomingId": category_id,
+                "label": entity_label_for_conflict("sampleCategory", category),
+                "current": {key: current_category.get(key) for key in field_diffs},
+                "incoming": {key: category.get(key) for key in field_diffs},
+                "diffFields": list(field_diffs),
+                "allowedActions": ["apply_field_choices", "skip"],
+            })
 
     for project in incoming.get("projects") or []:
         project_id = project.get("id", "")
@@ -213,7 +342,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                     "current": {key: current_project.get(key) for key in field_diffs},
                     "incoming": {key: project.get(key) for key in field_diffs},
                     "diffFields": list(field_diffs),
-                    "allowedActions": ["apply_field_choices"],
+                    "allowedActions": ["apply_field_choices", "skip"],
                 })
             diff_stages(current_project, project, project_id, project_id, next_conflict_id, conflicts, auto_apply)
             continue
@@ -300,6 +429,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
             board_sn = (sample.get("boardSn") or "").strip()
 
             if sample_id and sample_id in curr_samples_by_id:
+                incoming_sample_target_candidates[str(sample_id)] = str(sample_id)
                 current_sample = curr_samples_by_id[sample_id]
                 field_diffs = diff_fields(current_sample, sample, skip_keys={"photos", "logs", "problemRecords", "_categoryName"})
                 if field_diffs:
@@ -313,7 +443,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                         "current": {key: current_sample.get(key) for key in field_diffs},
                         "incoming": {key: sample.get(key) for key in field_diffs},
                         "diffFields": list(field_diffs),
-                        "allowedActions": ["apply_field_choices"],
+                        "allowedActions": ["apply_field_choices", "skip"],
                         "mergeableFields": list(field_diffs),
                     })
                 continue
@@ -328,6 +458,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                 current_sample = blocking_sample_identity_match(index, value, sample, sample_id)
                 if current_sample:
                     append_sample_identity_conflict(current_sample, sample, sample_id, match_by, label)
+                    incoming_sample_target_candidates[str(sample_id)] = str(current_sample.get("id") or sample_id)
                     identity_conflicted = True
                     break
             if identity_conflicted:
@@ -340,25 +471,28 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                 "label": entity_label_for_conflict("sample", sample),
                 "categoryName": category_name,
             })
+            incoming_sample_target_candidates[str(sample_id)] = str(sample_id)
 
     for project in incoming.get("projects") or []:
         for stage in project.get("stages") or []:
             for task in stage.get("tasks") or []:
                 if task.get("status") in ("进行中", "阻塞中"):
                     for sample_id in task.get("sampleIds") or []:
-                        if sample_id in curr_samples_by_id:
-                            current_sample = curr_samples_by_id[sample_id]
+                        target_sample_id = incoming_sample_target_candidates.get(str(sample_id), str(sample_id))
+                        if target_sample_id in curr_samples_by_id:
+                            current_sample = curr_samples_by_id[target_sample_id]
                             if current_sample.get("currentTaskId") and current_sample["currentTaskId"] != task.get("id"):
                                 conflicts.append({
                                     "conflictId": next_conflict_id(),
                                     "type": "task_occupancy_conflict",
                                     "entity": "sample",
                                     "sampleId": sample_id,
+                                    "targetSampleId": target_sample_id,
                                     "label": entity_label_for_conflict("sample", current_sample),
                                     "currentTaskId": current_sample["currentTaskId"],
                                     "incomingTaskId": task.get("id"),
                                     "incomingTaskLabel": entity_label_for_conflict("task", task),
-                                    "allowedActions": ["skip_occupancy", "import_no_occupy"],
+                                    "allowedActions": ["skip_occupancy", "import_no_occupy", "skip"],
                                 })
 
     summary = {
@@ -423,7 +557,7 @@ def diff_stages(curr_proj: dict, incoming_proj: dict, curr_proj_id: str, inc_pro
                     "current": {key: current_stage.get(key) for key in field_diffs},
                     "incoming": {key: stage.get(key) for key in field_diffs},
                     "diffFields": list(field_diffs),
-                    "allowedActions": ["apply_field_choices"],
+                    "allowedActions": ["apply_field_choices", "skip"],
                 })
             curr_tasks = {t["id"]: t for t in (current_stage.get("tasks") or [])}
             for task in stage.get("tasks") or []:
@@ -447,7 +581,7 @@ def diff_stages(curr_proj: dict, incoming_proj: dict, curr_proj_id: str, inc_pro
                             "current": {key: current_task.get(key) for key in field_diffs},
                             "incoming": {key: task.get(key) for key in field_diffs},
                             "diffFields": list(field_diffs),
-                            "allowedActions": ["apply_field_choices"],
+                            "allowedActions": ["apply_field_choices", "skip"],
                             "mergeableFields": list(field_diffs),
                         })
                 else:

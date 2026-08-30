@@ -211,7 +211,7 @@ app.registerModule("import-export-bundle", {
     if (blockers.length > 0) {
       html += `<div class="import-blockers">
         <strong>⛔ 阻断项：</strong>
-        ${blockers.map(b => `缺失照片 ${b.count} 张`).join("；")}
+        ${Utils.esc(this._sampleArchiveBatchReasonFromBlockers(blockers))}
         <br><small>存在阻断项时无法提交导入</small>
       </div>`;
     }
@@ -323,8 +323,12 @@ app.registerModule("import-export-bundle", {
   _collectImportSelection() {
     if (!this._importState) return;
     const modal = this._importModalRoot();
+    // A real preview always has a modal.  Keeping an absent selection distinct
+    // from an explicitly empty selection preserves older programmatic callers
+    // while still preventing the UI from turning "unchecked all" into full import.
+    if (!modal) return;
     const selection = { projectIds: [], stageIds: [], taskIds: [], sampleCategoryIds: [], sampleIds: [] };
-    modal?.querySelectorAll("[data-import-select]:checked").forEach(box => {
+    modal.querySelectorAll("[data-import-select]:checked").forEach(box => {
       const key = box.dataset.importSelect;
       if (selection[key]) selection[key].push(box.value);
     });
@@ -332,17 +336,34 @@ app.registerModule("import-export-bundle", {
   },
 
   _conflictInCurrentSelection(conflict) {
-    const selection = this._importState?.selection || {};
+    const selection = this._importState?.selection;
+    if (!selection) return true;
     const hasAny = ["projectIds", "stageIds", "taskIds", "sampleCategoryIds", "sampleIds"]
       .some(key => (selection[key] || []).length > 0);
-    if (!hasAny) return true;
+    if (!hasAny) return false;
     const has = (key, ...ids) => (selection[key] || []).some(value => ids.includes(String(value)));
     const incomingId = String(conflict.incomingId || "");
     const currentId = String(conflict.currentId || "");
-    if (conflict.entity === "project") return has("projectIds", incomingId, currentId);
-    if (conflict.entity === "stage") return has("stageIds", incomingId, currentId);
+    const tree = this._importState?.preview?.selectionTree || {};
+    const projectNode = (tree.projects || []).find(project => String(project.id || "") === incomingId);
+    const stageNode = (projectNode?.stages || []).find(stage => String(stage.id || "") === incomingId)
+      || (tree.projects || []).flatMap(project => project.stages || []).find(stage => String(stage.id || "") === incomingId);
+    const categoryNode = (tree.sampleCategories || []).find(category => String(category.id || "") === incomingId);
+    if (conflict.entity === "project") {
+      return has("projectIds", incomingId, currentId)
+        || (projectNode?.stages || []).some(stage => has("stageIds", String(stage.id || ""))
+          || (stage.tasks || []).some(task => has("taskIds", String(task.id || ""))));
+    }
+    if (conflict.entity === "stage") {
+      return has("stageIds", incomingId, currentId)
+        || (stageNode?.tasks || []).some(task => has("taskIds", String(task.id || "")));
+    }
     if (conflict.entity === "task") return has("taskIds", incomingId, currentId, String(conflict.incomingTaskId || ""));
     if (conflict.entity === "sample") return has("sampleIds", incomingId, currentId, String(conflict.sampleId || ""));
+    if (conflict.entity === "sampleCategory") {
+      return has("sampleCategoryIds", incomingId, currentId)
+        || (categoryNode?.samples || []).some(sample => has("sampleIds", String(sample.id || "")));
+    }
     return true;
   },
 
@@ -494,7 +515,7 @@ app.registerModule("import-export-bundle", {
   // 字段冲突
   _renderFieldConflictBody(c) {
     const cid = c.conflictId;
-    const entityLabel = c.entity === "sample" ? "样机" : c.entity === "project" ? "项目" : c.entity;
+    const entityLabel = c.entity === "sample" ? "样机" : c.entity === "project" ? "项目" : c.entity === "sampleCategory" ? "样机池" : c.entity;
     const diffFields = c.diffFields || [];
     const curr = c.current || {};
     const inc = c.incoming || {};
@@ -681,6 +702,14 @@ app.registerModule("import-export-bundle", {
     if (unprocessedEl) unprocessedEl.textContent = String(Math.max(0, totalConflicts - processed));
     const okBtn = document.getElementById("modalOk");
     if (!okBtn) return;
+    const selectedCount = ["projectIds", "stageIds", "taskIds", "sampleCategoryIds", "sampleIds"]
+      .reduce((sum, key) => sum + (this._importState.selection?.[key] || []).length, 0);
+    if (this._importState.selection && selectedCount === 0) {
+      okBtn.disabled = true;
+      okBtn.textContent = "请先选择导入内容";
+      okBtn.title = "空选择不会执行导入";
+      return;
+    }
 
     if (totalConflicts === 0) {
       okBtn.disabled = false;
@@ -726,6 +755,13 @@ app.registerModule("import-export-bundle", {
   async _onQuickImport() {
     // 跳过所有冲突项，只提交 autoApply
     if (!this._importState) return;
+    this._collectImportSelection();
+    const selectedCount = ["projectIds", "stageIds", "taskIds", "sampleCategoryIds", "sampleIds"]
+      .reduce((sum, key) => sum + (this._importState.selection?.[key] || []).length, 0);
+    if (this._importState.selection && !selectedCount) {
+      Utils.toast("请至少选择一项要导入的内容");
+      return;
+    }
     const modalId = this._currentModalId;
     if (modalId) this.setModalBusy?.(modalId, true);
     const conflicts = this._importState.preview.conflicts || [];
@@ -753,6 +789,12 @@ app.registerModule("import-export-bundle", {
     // 先收集决策（quick import 可跳过）
     if (!skipCollect) this._collectImportDecisions();
     this._collectImportSelection();
+    const selectedCount = ["projectIds", "stageIds", "taskIds", "sampleCategoryIds", "sampleIds"]
+      .reduce((sum, key) => sum + (this._importState.selection?.[key] || []).length, 0);
+    if (this._importState.selection && !selectedCount) {
+      Utils.toast("请至少选择一项要导入的内容");
+      return true;
+    }
 
     const relevantConflicts = (this._importState.preview.conflicts || []).filter(c => this._conflictInCurrentSelection(c));
     const totalConflicts = relevantConflicts.length;
@@ -843,6 +885,8 @@ app.registerModule("import-export-bundle", {
       const suffix = ids ? `：${ids}${count > 3 ? " 等" : ""}` : "";
       if (type === "missing_photos") return `缺失照片资源 ${count} 项${suffix}`;
       if (type === "asset_integrity_mismatch") return `照片/资源校验失败 ${count} 项${suffix}`;
+      if (type === "duplicate_sample_identities") return `导入包内样机身份标识重复 ${count} 项`;
+      if (type === "entity_id_ownership_collision") return `阶段/任务 ID 与主库归属冲突 ${count} 项`;
       return `${type || "阻断项"} ${count} 项${suffix}`;
     }).join("；");
   },
@@ -1058,21 +1102,25 @@ app.registerModule("import-export-bundle", {
     const totals = { samplesAdded: 0, samplesMerged: 0, sampleEventsAdded: 0, skipped: 0 };
     let successCount = 0;
     let failCount = 0;
-    let lastResult = null;
+    const successfulResults = [];
     for (let idx = 0; idx < selectedRows.length; idx += 1) {
       const row = selectedRows[idx];
       row.status = "importing";
       this._refreshSampleArchiveBatchModal();
       try {
         Utils.toast(`正在导入样机档案 ${idx + 1}/${selectedRows.length}：${row.file?.name || ""}`);
-        const result = await this.importSampleArchiveCommit(row.preview.previewId);
+        // 每次提交前重新预览：前一档案提交会推进 revision，初检 preview 随即过期。
+        const freshPreview = await this.importSampleArchivePreview(row.file, state.targetCategoryId);
+        const freshBlockers = freshPreview.blockers || [];
+        if (freshBlockers.length) throw new Error(this._sampleArchiveBatchReasonFromBlockers(freshBlockers));
+        const result = await this.importSampleArchiveCommit(freshPreview.previewId);
         const stats = result.stats || {};
         totals.samplesAdded += Number(stats.samplesAdded || 0);
         totals.samplesMerged += Number(stats.samplesMerged || 0);
         totals.sampleEventsAdded += Number(stats.sampleEventsAdded || 0);
         totals.skipped += Number(stats.skipped || 0);
         successCount += 1;
-        lastResult = result;
+        successfulResults.push(result);
         row.status = "imported";
         row.summary = this._sampleArchiveBatchCommitSummary(result);
       } catch (e) {
@@ -1082,7 +1130,16 @@ app.registerModule("import-export-bundle", {
       }
       this._refreshSampleArchiveBatchModal();
     }
-    if (lastResult) await this.applyImportBundleMutationResult(lastResult, { render: true });
+    if (successfulResults.length) {
+      const lastResult = successfulResults[successfulResults.length - 1];
+      const idKeys = ["projectIds", "stageIds", "taskIds", "sampleCategoryIds", "sampleIds"];
+      const mutationSummary = { summaryVersion: 1, requiresFullState: false };
+      idKeys.forEach(key => {
+        mutationSummary[key] = [...new Set(successfulResults.flatMap(result => result.mutationSummary?.[key] || []))];
+      });
+      mutationSummary.requiresFullState = successfulResults.some(result => result.mutationSummary?.requiresFullState);
+      await this.applyImportBundleMutationResult({ ...lastResult, mutationSummary }, { render: true });
+    }
     state.phase = "done";
     this._refreshSampleArchiveBatchModal();
     Utils.toast(`样机档案批量导入完成：成功 ${successCount} 个，失败 ${failCount} 个，新增 ${totals.samplesAdded}，合并 ${totals.samplesMerged}，事件 ${totals.sampleEventsAdded}`);

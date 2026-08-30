@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -74,9 +75,27 @@ def _safe_data_path(data_dir: Path, relative_path: str) -> Path | None:
     return target
 
 
+def _safe_zip_segment(value: object, fallback: str) -> str:
+    text = str(value or "").strip()
+    if text and text not in {".", ".."} and re.fullmatch(r"[A-Za-z0-9._-]+", text):
+        return text
+    digest = sha256_bytes(text.encode("utf-8"))[:16] if text else "empty"
+    return f"{fallback}_{digest}"
+
+
+def _safe_asset_filename(value: object) -> str:
+    original = Path(str(value or "")).name.strip()
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", original).strip(" .")
+    if cleaned and cleaned not in {".", ".."}:
+        return cleaned
+    suffix = Path(original).suffix[:16]
+    return f"asset_{sha256_bytes(original.encode('utf-8'))[:16]}{suffix}"
+
+
 def _asset_entry(data_dir: Path, sample_id: str, photo_id: str, role: str, relative_path: str) -> dict:
-    filename = Path(relative_path or "").name
-    zip_path = f"assets/samples/{sample_id}/photos/{filename}" if filename else ""
+    filename = _safe_asset_filename(relative_path) if relative_path else ""
+    sample_segment = _safe_zip_segment(sample_id, "sample")
+    zip_path = f"assets/samples/{sample_segment}/photos/{filename}" if filename else ""
     source_path = _safe_data_path(data_dir, relative_path)
     exists = bool(source_path and source_path.is_file())
     entry = {
@@ -94,9 +113,8 @@ def _asset_entry(data_dir: Path, sample_id: str, photo_id: str, role: str, relat
         "sha256": "",
     }
     if exists and source_path:
-        raw = source_path.read_bytes()
-        entry["bytes"] = len(raw)
-        entry["sha256"] = sha256_bytes(raw)
+        entry["bytes"] = source_path.stat().st_size
+        entry["sha256"] = sha256_file(source_path)
     return entry
 
 
@@ -109,6 +127,24 @@ def build_domain_documents(state: dict, data_dir: Path) -> tuple[dict[str, objec
     samples: list[dict] = []
     sample_assets: list[dict] = []
     asset_entries: list[dict] = []
+    asset_zip_paths: set[str] = set()
+
+    def append_asset_entry(entry: dict) -> None:
+        zip_path = str(entry.get("zipPath") or "")
+        if zip_path:
+            candidate = zip_path
+            suffix_index = 1
+            while candidate.casefold() in asset_zip_paths:
+                parent, _, filename = zip_path.rpartition("/")
+                stem = Path(filename).stem or "asset"
+                suffix = Path(filename).suffix
+                role = _safe_zip_segment(entry.get("role"), "role")
+                extra = f"_{role}" if suffix_index == 1 else f"_{role}_{suffix_index}"
+                candidate = f"{parent}/{stem}{extra}{suffix}"
+                suffix_index += 1
+            entry["zipPath"] = candidate
+            asset_zip_paths.add(candidate.casefold())
+        asset_entries.append(entry)
 
     for project in state.get("projects") or []:
         if not isinstance(project, dict):
@@ -158,10 +194,10 @@ def build_domain_documents(state: dict, data_dir: Path) -> tuple[dict[str, objec
                 photo_id = str(photo.get("id") or "")
                 rel = str(photo.get("relativePath") or "")
                 if rel:
-                    asset_entries.append(_asset_entry(data_dir, sample_id, photo_id, "original", rel))
+                    append_asset_entry(_asset_entry(data_dir, sample_id, photo_id, "original", rel))
                 thumb_rel = str(photo.get("thumbRelativePath") or "")
                 if thumb_rel:
-                    asset_entries.append(_asset_entry(data_dir, sample_id, photo_id, "thumbnail", thumb_rel))
+                    append_asset_entry(_asset_entry(data_dir, sample_id, photo_id, "thumbnail", thumb_rel))
 
     app_doc = copy.deepcopy(state)
     app_doc["projects"] = []
@@ -362,6 +398,29 @@ def _manifest_count_value(counts: dict, key: str) -> int | None:
 
 
 def validate_domain_documents(manifest: dict, domains: dict[str, object], asset_index: dict | None) -> None:
+    if not isinstance(manifest, dict):
+        raise ValueError("导入包 manifest.json 格式不正确")
+    if str(manifest.get("format") or FORMAT_V2) != FORMAT_V2:
+        raise ValueError("导入包 ChamberData format 不受支持")
+    if str(manifest.get("protocol") or PROTOCOL_NAME) != PROTOCOL_NAME:
+        raise ValueError("导入包 ChamberData protocol 不受支持")
+    try:
+        schema_version = int(manifest.get("schemaVersion"))
+    except (TypeError, ValueError):
+        schema_version = -1
+    if schema_version != SCHEMA_VERSION:
+        raise ValueError(f"导入包 ChamberData schemaVersion 不受支持: {manifest.get('schemaVersion')}")
+    package_kind = str(manifest.get("packageKind") or "full")
+    if package_kind not in {"full", "sample-archive"}:
+        raise ValueError(f"导入包 packageKind 不受支持: {package_kind}")
+    scope = str(manifest.get("scope") or "all")
+    if scope not in {"all", "selected-projects", "selected-sample-categories", "selected-samples"}:
+        raise ValueError(f"导入包 scope 不受支持: {scope}")
+    if "domainPaths" in manifest and manifest.get("domainPaths") != DOMAIN_PATHS:
+        raise ValueError("导入包 domainPaths 与 ChamberData v2 协议不一致")
+    if "assetIndexPath" in manifest and str(manifest.get("assetIndexPath") or "") != ASSET_INDEX_PATH:
+        raise ValueError("导入包 assetIndexPath 与 ChamberData v2 协议不一致")
+
     if not isinstance(domains.get("app"), dict):
         raise ValueError(f"导入包 {DOMAIN_PATHS['app']} 格式不正确")
     for key in LIST_DOMAIN_KEYS:
@@ -374,6 +433,91 @@ def validate_domain_documents(manifest: dict, domains: dict[str, object], asset_
         for idx, item in enumerate(asset_index.get("assets") or [], start=1):
             if not isinstance(item, dict):
                 raise ValueError(f"导入包 {ASSET_INDEX_PATH} 第 {idx} 项格式不正确")
+
+    def index_ids(domain_key: str, label: str) -> dict[str, dict]:
+        indexed: dict[str, dict] = {}
+        for idx, item in enumerate(domains.get(domain_key) or [], start=1):
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                raise ValueError(f"导入包 {label} 第 {idx} 项缺少 id")
+            if item_id in indexed:
+                raise ValueError(f"导入包 {label} id 重复: {item_id}")
+            indexed[item_id] = item
+        return indexed
+
+    projects = index_ids("projects", "projects")
+    stages = index_ids("stages", "stages")
+    tasks = index_ids("tasks", "tasks")
+    categories = index_ids("sampleCategories", "sampleCategories")
+    samples = index_ids("samples", "samples")
+    sample_assets = index_ids("sampleAssets", "sampleAssets")
+
+    stage_owner: dict[str, str] = {}
+    for stage_id, stage in stages.items():
+        project_id = str(stage.get("projectId") or "").strip()
+        if project_id not in projects:
+            raise ValueError(f"导入包阶段 {stage_id} 引用不存在的项目: {project_id or '(空)'}")
+        stage_owner[stage_id] = project_id
+    for task_id, task in tasks.items():
+        project_id = str(task.get("projectId") or "").strip()
+        stage_id = str(task.get("stageId") or "").strip()
+        if stage_id not in stages:
+            raise ValueError(f"导入包任务 {task_id} 引用不存在的阶段: {stage_id or '(空)'}")
+        if project_id not in projects or stage_owner.get(stage_id) != project_id:
+            raise ValueError(f"导入包任务 {task_id} 的项目/阶段归属不一致")
+    for sample_id, sample in samples.items():
+        category_id = str(sample.get("categoryId") or "").strip()
+        if category_id not in categories:
+            raise ValueError(f"导入包样机 {sample_id} 引用不存在的样机池: {category_id or '(空)'}")
+
+    photo_owners: dict[str, str] = {}
+    for photo_id, photo in sample_assets.items():
+        sample_id = str(photo.get("sampleId") or "").strip()
+        if sample_id not in samples:
+            raise ValueError(f"导入包照片 {photo_id} 引用不存在的样机: {sample_id or '(空)'}")
+        photo_owners[photo_id] = sample_id
+
+    for idx, event in enumerate(domains.get("sampleEvents") or [], start=1):
+        sample_id = str(event.get("sampleId") or "").strip()
+        if sample_id not in samples:
+            raise ValueError(f"导入包样机事件第 {idx} 项引用不存在的样机: {sample_id or '(空)'}")
+
+    seen_asset_ids: set[str] = set()
+    seen_asset_keys: set[tuple[str, str, str]] = set()
+    for idx, asset in enumerate(asset_entries(asset_index), start=1):
+        asset_id = str(asset.get("assetId") or "").strip()
+        entity_id = str(asset.get("entityId") or "").strip()
+        metadata_id = str(asset.get("metadataId") or "").strip()
+        role = str(asset.get("role") or "original").strip()
+        if not asset_id or asset_id in seen_asset_ids:
+            raise ValueError(f"导入包资产索引 assetId 缺失或重复: {asset_id or idx}")
+        seen_asset_ids.add(asset_id)
+        if str(asset.get("entity") or "") != "sample" or str(asset.get("kind") or "") != "sample_photo":
+            raise ValueError(f"导入包资产索引第 {idx} 项类型不受支持")
+        if role not in {"original", "thumbnail"}:
+            raise ValueError(f"导入包资产索引第 {idx} 项 role 不受支持: {role}")
+        if entity_id not in samples or photo_owners.get(metadata_id) != entity_id:
+            raise ValueError(f"导入包资产索引第 {idx} 项照片归属不一致")
+        asset_key = (entity_id, metadata_id, role)
+        if asset_key in seen_asset_keys:
+            raise ValueError(f"导入包资产索引重复引用: {metadata_id}::{role}")
+        seen_asset_keys.add(asset_key)
+        exists = asset.get("exists")
+        if not isinstance(exists, bool):
+            raise ValueError(f"导入包资产索引第 {idx} 项 exists 格式不正确")
+        try:
+            byte_count = int(asset.get("bytes") or 0)
+        except (TypeError, ValueError):
+            raise ValueError(f"导入包资产索引第 {idx} 项 bytes 格式不正确")
+        if byte_count < 0:
+            raise ValueError(f"导入包资产索引第 {idx} 项 bytes 格式不正确")
+        if exists:
+            zip_path = str(asset.get("zipPath") or "").replace("\\", "/")
+            digest = str(asset.get("sha256") or "").strip().lower()
+            if not zip_path.startswith("assets/samples/") or "/../" in f"/{zip_path}/":
+                raise ValueError(f"导入包资产索引第 {idx} 项路径不安全")
+            if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
+                raise ValueError(f"导入包资产索引第 {idx} 项 sha256 格式不正确")
 
     counts = manifest.get("counts") if isinstance(manifest, dict) else None
     if not isinstance(counts, dict):

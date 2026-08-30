@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import shutil
 import tempfile
@@ -212,6 +213,19 @@ def prepare_export_bundle_parts(
         package_kind=package_kind,
         scope=resolved_scope,
     )
+    # Never hand the user a ZIP that our own importer would reject. This also
+    # catches duplicate IDs and orphan references already present in live data.
+    chamber_package.validate_domain_documents(
+        package.get("manifest") or {},
+        package.get("domains") or {},
+        package.get("assetIndex") or {"assets": []},
+    )
+    export_roundtrip = chamber_package.state_from_domain_documents(
+        package.get("manifest") or {},
+        package.get("domains") or {},
+    )
+    export_roundtrip = import_defaults.normalize_import_state(export_roundtrip, source_format=chamber_package.FORMAT_V2)
+    import_defaults.validate_import_state_structure(export_roundtrip)
     payloads = chamber_package.package_payloads(package, pretty=True, extra_payloads=extra_payloads)
     checksums = {path: text_sha256(text) for path, text in payloads.items()}
     payloads["checksums.json"] = ctx.json_dumps(checksums, pretty=True)
@@ -235,10 +249,24 @@ def write_export_bundle_zip(ctx: BundlePreviewContext, zf: zipfile.ZipFile, expo
             continue
         try:
             source_path = ctx.path_inside_data(rel)
-            if source_path.is_file():
-                zf.write(source_path, zip_path)
+            if not source_path.is_file():
+                raise FileNotFoundError(f"导出资产在生成索引后消失: {rel}")
+            digest = hashlib.sha256()
+            byte_count = 0
+            with source_path.open("rb") as src, zf.open(zip_path, "w") as dst:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    digest.update(chunk)
+                    byte_count += len(chunk)
+            expected_bytes = int(asset.get("bytes") or 0)
+            expected_digest = str(asset.get("sha256") or "").lower()
+            if byte_count != expected_bytes or digest.hexdigest() != expected_digest:
+                raise RuntimeError(f"导出资产在打包期间发生变化: {rel}")
         except (ValueError, OSError, RuntimeError) as e:
-            print(f"[EXPORT] 跳过资产 {asset.get('assetId')}: {e}")
+            raise RuntimeError(f"导出资产失败 {asset.get('assetId')}: {e}") from e
 
 
 def build_export_bundle(ctx: BundlePreviewContext) -> tuple[bytes, str]:
@@ -336,6 +364,8 @@ def _target_archive_category(current_data: dict, target_category_id: str) -> dic
                 "name": str(category.get("name") or "外部导入样机"),
                 "description": str(category.get("description") or ""),
             }
+    if str(target_category_id or "").strip():
+        raise ValueError("目标样机池不存在或已被删除，请刷新页面后重试")
     return {
         "id": "cat_external_imported_samples",
         "name": "外部导入样机",
@@ -364,6 +394,7 @@ def _prepare_sample_archive_import_state(incoming_state: dict, current_data: dic
                 sample["currentStageId"] = None
                 sample["currentTaskId"] = None
                 sample["currentTestItem"] = ""
+                sample["categoryId"] = str(target.get("id") or "")
                 if status_normalization.normalize_sample_usage_status(sample.get("status")) in ("测试中", "在位等待"):
                     sample["status"] = "闲置"
                     sample["borrower"] = ""
@@ -429,17 +460,23 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
         manifest_path = tmp_path / "manifest.json"
         if not manifest_path.is_file():
             raise ValueError("导入包缺少 manifest.json")
+        if manifest_path.stat().st_size > ctx.import_preview_max_state_bytes:
+            raise ValueError(f"导入包 manifest.json 过大，超过 {ctx.import_preview_max_state_bytes} bytes 上限")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            raise ValueError("导入包 manifest.json 格式不正确")
 
         asset_index = None
         if chamber_package.is_chamberdata_manifest(manifest):
             checksums = None
             checksums_path = tmp_path / chamber_package.CHECKSUMS_PATH
+            # Early ChamberData v2 packages did not always include checksums.json.
+            # Keep them importable, but verify every declared digest when present.
             if checksums_path.is_file():
                 if checksums_path.stat().st_size > ctx.import_preview_max_state_bytes:
                     raise ValueError(f"导入包 {chamber_package.CHECKSUMS_PATH} 过大，超过 {ctx.import_preview_max_state_bytes} bytes 上限")
                 checksums = json.loads(checksums_path.read_text(encoding="utf-8"))
-            chamber_package.verify_checksums(tmp_path, checksums)
+                chamber_package.verify_checksums(tmp_path, checksums)
 
             def _read_package_json(rel_path: str):
                 path = tmp_path / rel_path
@@ -469,11 +506,21 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
             incoming_state,
             source_format=str(manifest.get("format") or manifest.get("protocol") or ""),
         )
+        import_defaults.validate_import_state_structure(incoming_state)
 
         current_data, current_revision, _ = ctx.get_state(compact=True)
         package_kind = str(manifest.get("packageKind") or "full")
         target_category_id = str(fields.get("targetCategoryId") or "")
         if package_kind == "sample-archive":
+            raw_samples = [
+                sample
+                for category in (incoming_state.get("sampleLibrary") or {}).get("categories") or []
+                if isinstance(category, dict)
+                for sample in (category.get("samples") or [])
+                if isinstance(sample, dict)
+            ]
+            if str(manifest.get("scope") or "") != "selected-samples" or incoming_state.get("projects") != [] or len(raw_samples) != 1:
+                raise ValueError("样机档案包必须且只能包含一台样机，且不能携带项目树")
             incoming_state = _prepare_sample_archive_import_state(incoming_state, current_data, target_category_id)
 
         result = import_diff.diff_import_bundle(current_data, incoming_state, manifest, tmp_path, asset_index=asset_index)

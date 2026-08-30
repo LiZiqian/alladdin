@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Callable
 
-from server_modules import mutation_summary, record_writers, sample_assets, sample_queries, status_normalization, task_mutation_rules
+from server_modules import mutation_summary, record_writers, sample_assets, sample_constraints, sample_queries, status_normalization, task_mutation_rules
 
 
 @dataclass(frozen=True)
@@ -1635,6 +1635,78 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
         )
         if event_scope_failure:
             return False, {**event_scope_failure, "server_revision": current_revision}
+
+        if payload.get("createSamples"):
+            incoming_samples = [sample for sample in (payload.get("samples") or []) if isinstance(sample, dict)]
+            incoming_ids = [str(sample.get("id") or "") for sample in incoming_samples if str(sample.get("id") or "")]
+            if len(incoming_ids) != len(incoming_samples):
+                return False, {
+                    "status": 400,
+                    "error_code": "SAMPLE_ID_REQUIRED",
+                    "error": "批量导入包含缺少 ID 的样机，已拒绝写入。",
+                    "server_revision": current_revision,
+                }
+            if len(set(incoming_ids)) != len(incoming_ids):
+                return False, {
+                    "status": 409,
+                    "error_code": "DUPLICATE_SAMPLE_ID",
+                    "error": "批量导入包含重复的样机 ID，已拒绝写入。",
+                    "server_revision": current_revision,
+                }
+            for start in range(0, len(incoming_ids), 250):
+                chunk = incoming_ids[start:start + 250]
+                placeholders = ",".join("?" for _ in chunk)
+                if chunk and conn.execute(
+                    f"SELECT 1 FROM sample_records WHERE id IN ({placeholders}) AND deleted_at IS NULL LIMIT 1",
+                    chunk,
+                ).fetchone():
+                    return False, {
+                        "status": 409,
+                        "error_code": "DUPLICATE_SAMPLE_ID",
+                        "error": "批量导入的样机 ID 已存在，已拒绝覆盖现有档案。",
+                        "server_revision": current_revision,
+                    }
+
+            seen_identity_values: dict[str, str] = {}
+            for sample in incoming_samples:
+                if sample_queries.sample_is_reassembled(sample):
+                    continue
+                sample_id = str(sample.get("id") or "")
+                local_values: set[str] = set()
+                for field in sample_constraints.sample_identity_fields(sample):
+                    value = str(field.get("value") or "").strip()
+                    key = value.lower()
+                    if not key:
+                        continue
+                    if key in local_values or (key in seen_identity_values and seen_identity_values[key] != sample_id):
+                        return False, {
+                            "status": 409,
+                            "error_code": "SAMPLE_IDENTITY_CONFLICT",
+                            "error": f"批量导入包含重复样机标识：{value}",
+                            "server_revision": current_revision,
+                        }
+                    local_values.add(key)
+                    seen_identity_values[key] = sample_id
+
+            identity_check = sample_constraints.check_sample_identity_conflicts(conn, {
+                "categoryId": category_id,
+                "samples": [
+                    {
+                        **sample,
+                        "index": index,
+                        "categoryId": category_id,
+                    }
+                    for index, sample in enumerate(incoming_samples)
+                ],
+            })
+            if identity_check.get("count"):
+                return False, {
+                    "status": 409,
+                    "error_code": "SAMPLE_IDENTITY_CONFLICT",
+                    "error": "批量导入的样机标识与现有档案冲突，请刷新后重新导入。",
+                    "conflicts": identity_check.get("conflicts") or [],
+                    "server_revision": current_revision,
+                }
 
         if not delete_category:
             category = payload.get("category")

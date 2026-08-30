@@ -9,16 +9,19 @@ from pathlib import Path
 
 MAX_FILE_BYTES = 100 * 1024 * 1024
 MAX_TOTAL_BYTES = 500 * 1024 * 1024
-ALLOWED_PREFIXES = (
+ALLOWED_FILES = {
     "manifest.json",
     "state.json",
     "checksums.json",
     "dossier.json",
+    "assets/index.json",
+}
+ALLOWED_PREFIXES = (
     "sample/",
     "domains/",
-    "assets/index.json",
     "assets/samples/",
 )
+ALLOWED_DIRECTORIES = {"assets/", "domains/", "sample/", "assets/samples/"}
 DANGEROUS_RE = re.compile(
     r"(^|[/\\])\.\.[/\\]"
     r"|^[/\\]"
@@ -29,10 +32,16 @@ DANGEROUS_RE = re.compile(
 def safe_extract_zip(zf: zipfile.ZipFile, dest_dir: str | Path) -> None:
     dest = Path(dest_dir).resolve()
     total_bytes = 0
+    seen_paths: set[str] = set()
 
     for entry in zf.infolist():
         name = entry.filename
         normalized = name.replace("\\", "/")
+
+        normalized_key = normalized.casefold()
+        if normalized_key in seen_paths:
+            raise ValueError(f"ZIP 包含重复文件路径，拒绝: {name}")
+        seen_paths.add(normalized_key)
 
         if DANGEROUS_RE.search(normalized):
             raise ValueError(f"ZIP 包含不安全路径: {name}")
@@ -41,7 +50,11 @@ def safe_extract_zip(zf: zipfile.ZipFile, dest_dir: str | Path) -> None:
         if mode == 0o120000:
             raise ValueError(f"ZIP 包含符号链接，拒绝: {name}")
 
-        allowed = any(name == prefix or name.startswith(prefix) for prefix in ALLOWED_PREFIXES)
+        allowed = (
+            normalized in ALLOWED_FILES
+            or any(normalized.startswith(prefix) for prefix in ALLOWED_PREFIXES)
+            or (entry.is_dir() and normalized in ALLOWED_DIRECTORIES)
+        )
         if not allowed:
             raise ValueError(f"ZIP 包含不允许的文件: {name}")
 
