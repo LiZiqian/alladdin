@@ -388,15 +388,26 @@ app.registerModule("app.server", {
 
   applySamplePhotosMutationResult(sampleId, json = {}, { renderPanel = false, statusText = "已保存" } = {}) {
     const found = this.findSample(sampleId);
+    const accessProjectId = this.sampleAccessProjectId();
     this.serverRevision = json.revision || json.newRevision || this.serverRevision;
     this.serverUpdatedAt = json.updated_at || json.updatedAt || new Date().toISOString();
     this.serverOnline = true;
 
     if (found?.sample && Array.isArray(json.photos)) {
+      this.invalidateSampleDetailAccessCache?.(sampleId, { photos: true, events: false });
       found.sample.photos = json.photos;
       found.sample.photoCount = json.photos.length;
       found.sample.photosLoaded = true;
+      found.sample.photosAccessProjectId = accessProjectId;
       found.sample.updatedAt = json.updated_at || json.updatedAt || Utils.now();
+      const detailCache = this.sampleDetailAccessCache?.();
+      if (detailCache) {
+        detailCache[this.sampleAccessScopeKey(sampleId, accessProjectId)] = {
+          ...(detailCache[this.sampleAccessScopeKey(sampleId, accessProjectId)] || {}),
+          photos: json.photos,
+          photosLoaded: true,
+        };
+      }
     }
 
     if (found?.category?.id) this.invalidatePagedCaches({ categoryId: found.category.id });
@@ -414,11 +425,19 @@ app.registerModule("app.server", {
 
   invalidateSampleHistoryCache(sampleIds = []) {
     const ids = Array.isArray(sampleIds) ? sampleIds : [sampleIds];
-    if (!this._sampleHistoryCache) return;
     ids.map(id => String(id || "")).filter(Boolean).forEach(id => {
-      delete this._sampleHistoryCache[id];
+      if (this._sampleHistoryCache) {
+        delete this._sampleHistoryCache[id];
+        Object.keys(this._sampleHistoryCache).forEach(key => {
+          if (this.sampleAccessScopeKeyMatchesSample?.(key, id)) delete this._sampleHistoryCache[key];
+        });
+      }
+      this.invalidateSampleDetailAccessCache?.(id, { photos: false, events: true });
       const sample = this.findSample(id)?.sample;
-      if (sample) sample.historyLoaded = false;
+      if (sample) {
+        sample.historyLoaded = false;
+        delete sample.historyAccessProjectId;
+      }
     });
   },
 
@@ -558,24 +577,99 @@ app.registerModule("app.server", {
     return false;
   },
 
-  async fetchSamplePhotos(sampleId) {
-    const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/photos`, { cache: "no-store" });
+  sampleAccessProjectId(explicitProjectId = "") {
+    if (explicitProjectId) return String(explicitProjectId);
+    const moduleName = this.viewModule?.() || this.view?.module || "";
+    return moduleName === "projectWorkspace" ? String(this.view?.selectedProjectId || "") : "";
+  },
+
+  sampleAccessScopeKey(sampleId, explicitProjectId = "") {
+    return JSON.stringify([
+      String(sampleId || ""),
+      this.sampleAccessProjectId(explicitProjectId),
+    ]);
+  },
+
+  sampleHistoryCacheKey(sampleId, explicitProjectId = "") {
+    return this.sampleAccessScopeKey(sampleId, explicitProjectId);
+  },
+
+  sampleAccessScopeKeyMatchesSample(key, sampleId) {
+    try {
+      const value = JSON.parse(String(key || ""));
+      return Array.isArray(value) && String(value[0] || "") === String(sampleId || "");
+    } catch (_error) {
+      return String(key || "") === String(sampleId || "");
+    }
+  },
+
+  sampleAccessScopeIsCurrent(projectId = "") {
+    return this.sampleAccessProjectId() === String(projectId || "");
+  },
+
+  sampleDetailAccessCache() {
+    if (!this._sampleDetailAccessCache || typeof this._sampleDetailAccessCache !== "object") {
+      this._sampleDetailAccessCache = {};
+    }
+    return this._sampleDetailAccessCache;
+  },
+
+  invalidateSampleDetailAccessCache(sampleIds = [], { photos = true, events = true } = {}) {
+    const ids = (Array.isArray(sampleIds) ? sampleIds : [sampleIds])
+      .map(id => String(id || ""))
+      .filter(Boolean);
+    if (!ids.length) return;
+    const cache = this.sampleDetailAccessCache();
+    Object.keys(cache).forEach(key => {
+      if (!ids.some(id => this.sampleAccessScopeKeyMatchesSample(key, id))) return;
+      if (photos) {
+        delete cache[key].photos;
+        delete cache[key].photosLoaded;
+      }
+      if (events) {
+        delete cache[key].events;
+        delete cache[key].eventsLoaded;
+      }
+      if (!cache[key].photosLoaded && !cache[key].eventsLoaded) delete cache[key];
+    });
+    ids.forEach(id => {
+      const sample = this.findSample?.(id)?.sample;
+      if (!sample) return;
+      if (photos) {
+        sample.photosLoaded = false;
+        delete sample.photosAccessProjectId;
+      }
+      if (events) {
+        sample.eventsLoaded = false;
+        delete sample.eventsAccessProjectId;
+      }
+    });
+  },
+
+  async fetchSamplePhotos(sampleId, { projectId = "" } = {}) {
+    const pid = this.sampleAccessProjectId(projectId);
+    const suffix = pid ? `?projectId=${encodeURIComponent(pid)}` : "";
+    const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/photos${suffix}`, { cache: "no-store" });
     const json = await resp.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
     if (!resp.ok || !json.ok) throw new Error(json.error || ("HTTP " + resp.status));
     return json.photos || [];
   },
 
-  async fetchSampleEvents(sampleId) {
-    const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/events`, { cache: "no-store" });
+  async fetchSampleEvents(sampleId, { projectId = "" } = {}) {
+    const pid = this.sampleAccessProjectId(projectId);
+    const suffix = pid ? `?projectId=${encodeURIComponent(pid)}` : "";
+    const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/events${suffix}`, { cache: "no-store" });
     const json = await resp.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
     if (!resp.ok || !json.ok) throw new Error(json.error || ("HTTP " + resp.status));
     return json.logs || [];
   },
 
-  async fetchSampleHistory(sampleId, { page = 1, pageSize = 20 } = {}) {
+  async fetchSampleHistory(sampleId, { page = 1, pageSize = 20, projectId = "" } = {}) {
     const params = new URLSearchParams();
     params.set("page", String(page || 1));
     params.set("pageSize", String(pageSize || 20));
+    const pid = this.sampleAccessProjectId(projectId);
+    if (pid) params.set("projectId", pid);
     const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/history?${params.toString()}`, { cache: "no-store" });
     const json = await resp.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
     if (!resp.ok || !json.ok) throw new Error(json.error || ("HTTP " + resp.status));
@@ -770,6 +864,12 @@ app.registerModule("app.server", {
     const lookupValues = this.sampleLookupIdentityValues(id, snapshot);
     const current = this.findSampleByLookupValues?.(lookupValues) || this.findSample?.(id);
     if (current) return current;
+    const projectId = String(snapshot?.projectId || snapshot?.sourceProjectId || this.selectedProjectId?.() || "").trim();
+    const accessEpoch = Number(this._accessEpoch || 0);
+    if (!projectId && this.isLocalAdminAccess && !this.isLocalAdminAccess()) {
+      this._lastSampleLookupError = new Error("缺少项目上下文，不能执行全局样机查询");
+      return null;
+    }
     this._lastSampleLookupError = null;
     this._lastSampleLookupMissingIds = [];
     if (!this._sampleLookupPromises) this._sampleLookupPromises = {};
@@ -779,7 +879,13 @@ app.registerModule("app.server", {
       const hadLocalUnsavedChanges = this.hasLocalUnsavedChanges?.() === true;
       this._sampleLookupPromises[lookupKey] = (async () => {
         try {
-          const selectedResult = await this.fetchTaskSampleCandidates({ selectedIds: [id], page: 1, pageSize: 20 });
+          const selectedResult = await this.fetchTaskSampleCandidates({
+            selectedIds: [id],
+            ...(projectId ? { projectId } : {}),
+            page: 1,
+            pageSize: 20,
+          });
+          if (accessEpoch !== Number(this._accessEpoch || 0)) return null;
           this.mergeSampleLookupResult(selectedResult);
           this._lastSampleLookupMissingIds = selectedResult.selectedMissingIds || [];
           let found = this.findSampleByLookupValues?.(lookupValues) || this.findSample?.(id) || null;
@@ -788,7 +894,8 @@ app.registerModule("app.server", {
             for (const value of searchValues) {
               const keyword = String(value || "").trim();
               if (!keyword) continue;
-              const result = await this.fetchTaskSampleCandidates({ keyword, page: 1, pageSize: 20 });
+              const result = await this.fetchTaskSampleCandidates({ keyword, ...(projectId ? { projectId } : {}), page: 1, pageSize: 20 });
+              if (accessEpoch !== Number(this._accessEpoch || 0)) return null;
               this.mergeSampleLookupResult(result);
               found = this.findSampleByLookupValues?.(lookupValues) || null;
               if (found) break;
@@ -899,7 +1006,12 @@ app.registerModule("app.server", {
     const suffix = includeTasks ? "?includeTasks=1" : "";
     const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}${suffix}`, { cache: "no-store" });
     const json = await resp.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
-    if (!resp.ok || !json.ok) throw new Error(json.error || ("HTTP " + resp.status));
+    if (!resp.ok || !json.ok) {
+      if (resp.status === 403 && this.accessDeniedError) throw this.accessDeniedError(json.error || "当前 IP 无权访问该项目");
+      const error = new Error(json.error || ("HTTP " + resp.status));
+      error.status = resp.status;
+      throw error;
+    }
     return json.project || null;
   },
 
@@ -907,7 +1019,12 @@ app.registerModule("app.server", {
     const suffix = includePhotos ? "?includePhotos=1" : "";
     const resp = await fetch(`/api/sample-categories/${encodeURIComponent(categoryId)}${suffix}`, { cache: "no-store" });
     const json = await resp.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
-    if (!resp.ok || !json.ok) throw new Error(json.error || ("HTTP " + resp.status));
+    if (!resp.ok || !json.ok) {
+      if (resp.status === 403 && this.accessDeniedError) throw this.accessDeniedError(json.error || "当前 IP 无权访问该样机池");
+      const error = new Error(json.error || ("HTTP " + resp.status));
+      error.status = resp.status;
+      throw error;
+    }
     return json.category || null;
   },
 
@@ -1180,11 +1297,13 @@ app.registerModule("app.server", {
     const current = (this.data.projects || []).find(project => String(project.id || "") === id);
     if (current?._detailLoaded && (!includeTasks || current._tasksFullyLoaded)) return current;
     const key = `${id}:${includeTasks ? "tasks" : "detail"}`;
+    const accessEpoch = Number(this._accessEpoch || 0);
     if (!this._projectDetailPromises) this._projectDetailPromises = {};
     if (!this._projectDetailPromises[key]) {
       this.updateServerStatus("加载项目");
       this._projectDetailPromises[key] = this.fetchProjectDetail(id, { includeTasks })
         .then(project => {
+          if (accessEpoch !== Number(this._accessEpoch || 0)) return null;
           const merged = this.mergeProjectDetail(project, { includeTasks });
           this._baseData = this.cloneData(this.data);
           this.updateServerStatus("已加载");
@@ -1194,7 +1313,7 @@ app.registerModule("app.server", {
         .catch(e => {
           this.updateServerStatus("加载失败");
           console.error("项目详情加载失败：", e);
-          alert("项目详情加载失败：" + e.message);
+          if (!this.isAccessDeniedError?.(e)) alert("项目详情加载失败：" + e.message);
           return null;
         })
         .finally(() => { delete this._projectDetailPromises[key]; });
@@ -1210,11 +1329,13 @@ app.registerModule("app.server", {
     const currentCount = Array.isArray(current?.samples) ? current.samples.length : 0;
     if (current?.samplesLoaded && !includePhotos && (!expectedCount || currentCount >= expectedCount)) return current;
     const key = `${id}:${includePhotos ? "photos" : "detail"}`;
+    const accessEpoch = Number(this._accessEpoch || 0);
     if (!this._sampleCategoryDetailPromises) this._sampleCategoryDetailPromises = {};
     if (!this._sampleCategoryDetailPromises[key]) {
       this.updateServerStatus("加载样机池");
       this._sampleCategoryDetailPromises[key] = this.fetchSampleCategoryDetail(id, { includePhotos })
         .then(category => {
+          if (accessEpoch !== Number(this._accessEpoch || 0)) return null;
           const merged = this.mergeSampleCategoryDetail(category);
           this._baseData = this.cloneData(this.data);
           this.updateServerStatus("已加载");
@@ -1224,7 +1345,7 @@ app.registerModule("app.server", {
         .catch(e => {
           this.updateServerStatus("加载失败");
           console.error("样机池详情加载失败：", e);
-          alert("样机池详情加载失败：" + e.message);
+          if (!this.isAccessDeniedError?.(e)) alert("样机池详情加载失败：" + e.message);
           return null;
         })
         .finally(() => { delete this._sampleCategoryDetailPromises[key]; });
@@ -1236,17 +1357,22 @@ app.registerModule("app.server", {
     try {
       this.updateServerStatus("加载影响范围");
       const scope = await this.fetchSampleDestroyImpactScope({ sampleId, categoryId });
+      const localAdmin = typeof this.isLocalAdminAccess !== "function" || this.isLocalAdminAccess();
       const categoryIds = new Set((scope.sampleCategoryIds || []).map(id => String(id || "")).filter(Boolean));
       if (categoryId) categoryIds.add(String(categoryId));
+      if (scope.categoryId) categoryIds.add(String(scope.categoryId));
       const projectIds = new Set((scope.projectIds || []).map(id => String(id || "")).filter(Boolean));
       const categoryList = [...categoryIds];
       const projectList = [...projectIds];
 
       const categories = await Promise.all(categoryList.map(id => this.ensureSampleCategoryLoaded(id, { render: false })));
       if (categories.some((item, idx) => !item && categoryList[idx])) return null;
-      const projects = await Promise.all(projectList.map(id => this.ensureProjectLoaded(id, { includeTasks: true, render: false })));
-      if (projects.some((item, idx) => !item && projectList[idx])) return null;
+      if (localAdmin) {
+        const projects = await Promise.all(projectList.map(id => this.ensureProjectLoaded(id, { includeTasks: true, render: false })));
+        if (projects.some((item, idx) => !item && projectList[idx])) return null;
+      }
 
+      this._lastSampleDestroyImpactScope = scope;
       this.updateServerStatus("已加载");
       return scope;
     } catch (e) {
@@ -1628,19 +1754,26 @@ app.registerModule("app.server", {
 
   async commitSampleMutation(sample, { action = "sample_mutation", remark = "样机增量变更", user = "", deleteSample = false, taskMutations = [], samples = [], sampleEvents = null, render = true } = {}) {
     if (!sample?.id) return false;
-    const events = sampleEvents || (this.data?.sampleLibrary?.logs || []).filter(log => String(log?.sampleId || "") === String(sample.id));
+    const serverManagedDestroy = action === "destroy_sample"
+      && typeof this.isLocalAdminAccess === "function"
+      && !this.isLocalAdminAccess();
+    const events = serverManagedDestroy
+      ? []
+      : (sampleEvents || (this.data?.sampleLibrary?.logs || []).filter(log => String(log?.sampleId || "") === String(sample.id)));
     const payload = {
       revision: this.serverRevision,
       sampleId: sample.id,
       sample: deleteSample ? null : this.compactSampleForMutation(sample),
-      samples: (samples || []).map(s => this.compactSampleForMutation(s)).filter(Boolean),
-      sampleEvents: events,
-      taskMutations,
       action,
       remark,
       user,
       deleteSample,
     };
+    if (!serverManagedDestroy) {
+      payload.samples = (samples || []).map(s => this.compactSampleForMutation(s)).filter(Boolean);
+      payload.sampleEvents = events;
+      payload.taskMutations = taskMutations;
+    }
     this.updateServerStatus("同步中");
     try {
       const resp = await fetch(`/api/samples/${encodeURIComponent(sample.id)}/mutation`, {
@@ -1655,6 +1788,7 @@ app.registerModule("app.server", {
       this.serverOnline = true;
       this.applyMutationAffected(json.affected);
       this.invalidateSampleHistoryCache([sample.id, ...(samples || []).map(s => s?.id), ...(events || []).map(log => log?.sampleId)]);
+      if (deleteSample) this.invalidateSampleDetailAccessCache(sample.id);
       await this.refreshSampleListAfterMutation(sample, { render, affected: json.affected });
       this.markDataSynced();
       this.updateServerStatus("已保存");
@@ -1669,13 +1803,16 @@ app.registerModule("app.server", {
 
   async commitSampleCategoryMutation(category, { action = "sample_category_mutation", remark = "样机池增量变更", user = "", createIfMissing = false, createSamples = false, deleteCategory = false, taskMutations = [], samples = [], sampleEvents = [], render = true } = {}) {
     if (!category?.id) return false;
+    const categorySampleIds = deleteCategory
+      ? (category.samples || []).map(sample => String(sample?.id || "")).filter(Boolean)
+      : [];
+    const serverManagedDestroy = action === "destroy_sample_category"
+      && typeof this.isLocalAdminAccess === "function"
+      && !this.isLocalAdminAccess();
     const payload = {
       revision: this.serverRevision,
       categoryId: category.id,
       category: this.compactSampleCategoryForMutation(category),
-      samples: (samples || []).map(s => this.compactSampleForMutation(s)).filter(Boolean),
-      sampleEvents: sampleEvents || [],
-      taskMutations,
       action,
       remark,
       user,
@@ -1683,6 +1820,11 @@ app.registerModule("app.server", {
       createSamples,
       deleteCategory,
     };
+    if (!serverManagedDestroy) {
+      payload.samples = (samples || []).map(s => this.compactSampleForMutation(s)).filter(Boolean);
+      payload.sampleEvents = sampleEvents || [];
+      payload.taskMutations = taskMutations;
+    }
     this.updateServerStatus("同步中");
     try {
       const resp = await fetch(`/api/sample-categories/${encodeURIComponent(category.id)}/mutation`, {
@@ -1696,7 +1838,8 @@ app.registerModule("app.server", {
       this.serverUpdatedAt = json.updated_at || new Date().toISOString();
       this.serverOnline = true;
       this.applyMutationAffected(json.affected);
-      this.invalidateSampleHistoryCache([...(samples || []).map(s => s?.id), ...(sampleEvents || []).map(log => log?.sampleId)]);
+      this.invalidateSampleHistoryCache([...categorySampleIds, ...(samples || []).map(s => s?.id), ...(sampleEvents || []).map(log => log?.sampleId)]);
+      if (deleteCategory && categorySampleIds.length) this.invalidateSampleDetailAccessCache(categorySampleIds);
       if (createSamples && !deleteCategory) {
         await this.refreshSampleListAfterMutation(category, { render, affected: json.affected });
       } else {
@@ -1714,72 +1857,110 @@ app.registerModule("app.server", {
     }
   },
 
-  async ensureSampleDetailsLoaded(sampleId, { photos = true, events = true, renderPanels = true } = {}) {
+  async ensureSampleDetailsLoaded(sampleId, { photos = true, events = true, renderPanels = true, projectId = "" } = {}) {
     const found = this.findSample(sampleId);
     if (!found) return null;
     const sample = found.sample;
     const tasks = [];
-    let hydratedPhotos = null;
-    let hydratedEvents = null;
-    if (photos && sample.photosLoaded !== true) {
-      tasks.push(this.fetchSamplePhotos(sampleId).then(list => {
-        hydratedPhotos = list;
-        sample.photos = list;
-        sample.photoCount = list.length;
+    const accessProjectId = this.sampleAccessProjectId(projectId);
+    const cache = this.sampleDetailAccessCache();
+    const cacheKey = this.sampleAccessScopeKey(sampleId, accessProjectId);
+    const cached = cache[cacheKey] || (cache[cacheKey] = {});
+    const applyPhotos = list => {
+      cached.photos = Array.isArray(list) ? list : [];
+      cached.photosLoaded = true;
+      if (this.sampleAccessScopeIsCurrent(accessProjectId)) {
+        const hydratedPhotos = cached.photos;
+        sample.photos = hydratedPhotos;
+        sample.photoCount = hydratedPhotos.length;
         sample.photosLoaded = true;
-      }));
-    }
-    if (events && sample.eventsLoaded !== true) {
-      tasks.push(this.fetchSampleEvents(sampleId).then(list => {
-        hydratedEvents = list;
-        if (!Array.isArray(this.data.sampleLibrary.logs)) this.data.sampleLibrary.logs = [];
-        const byId = new Map(this.data.sampleLibrary.logs.filter(log => log?.id).map(log => [log.id, log]));
-        list.forEach(log => {
-          if (log?.id && !byId.has(log.id)) {
-            this.data.sampleLibrary.logs.push(log);
-            byId.set(log.id, log);
-          }
-        });
-        sample.eventsLoaded = true;
-      }));
-    }
-    if (tasks.length) {
-      await Promise.all(tasks);
-      if (hydratedPhotos) {
+        sample.photosAccessProjectId = accessProjectId;
         this.syncHydratedSamplePatchBaseline(sampleId, {
           photos: hydratedPhotos,
           photoCount: hydratedPhotos.length,
           photosLoaded: true,
+          photosAccessProjectId: accessProjectId,
         });
       }
-      if (hydratedEvents) {
-        this.syncHydratedSamplePatchBaseline(sampleId, { eventsLoaded: true });
-        this.syncHydratedSampleLogsBaseline(hydratedEvents);
+      return cached.photos;
+    };
+    const applyEvents = list => {
+      cached.events = Array.isArray(list) ? list : [];
+      cached.eventsLoaded = true;
+      if (this.sampleAccessScopeIsCurrent(accessProjectId)) {
+        if (!accessProjectId) {
+          if (!Array.isArray(this.data.sampleLibrary.logs)) this.data.sampleLibrary.logs = [];
+          const byId = new Map(this.data.sampleLibrary.logs.filter(log => log?.id).map(log => [log.id, log]));
+          cached.events.forEach(log => {
+            if (log?.id && !byId.has(log.id)) {
+              this.data.sampleLibrary.logs.push(log);
+              byId.set(log.id, log);
+            }
+          });
+          this.syncHydratedSampleLogsBaseline(cached.events);
+        }
+        sample.eventsLoaded = true;
+        sample.eventsAccessProjectId = accessProjectId;
+        this.syncHydratedSamplePatchBaseline(sampleId, {
+          eventsLoaded: true,
+          eventsAccessProjectId: accessProjectId,
+        });
+      }
+      return cached.events;
+    };
+    if (photos) {
+      if (cached.photosLoaded === true) applyPhotos(cached.photos);
+      else if (sample.photosLoaded === true && String(sample.photosAccessProjectId || "") === accessProjectId) {
+        applyPhotos(sample.photos || []);
+      } else {
+        tasks.push(this.fetchSamplePhotos(sampleId, { projectId: accessProjectId }).then(applyPhotos));
       }
     }
-    if (renderPanels) this.refreshSampleArchivePanels(sampleId);
+    if (events) {
+      if (cached.eventsLoaded === true) applyEvents(cached.events);
+      else if (!accessProjectId && sample.eventsLoaded === true && String(sample.eventsAccessProjectId || "") === accessProjectId) {
+        const existing = (this.data?.sampleLibrary?.logs || [])
+          .filter(log => String(log?.sampleId || "") === String(sampleId));
+        applyEvents(existing);
+      } else {
+        tasks.push(this.fetchSampleEvents(sampleId, { projectId: accessProjectId }).then(applyEvents));
+      }
+    }
+    if (tasks.length) {
+      await Promise.all(tasks);
+    }
+    if (renderPanels && this.sampleAccessScopeIsCurrent(accessProjectId)) this.refreshSampleArchivePanels(sampleId);
     return sample;
   },
 
-  async ensureSampleHistoryLoaded(sampleId, { page = 1, pageSize = 20, renderPanels = true, force = false } = {}) {
+  async ensureSampleHistoryLoaded(sampleId, { page = 1, pageSize = 20, renderPanels = true, force = false, projectId = "" } = {}) {
     const found = this.findSample(sampleId);
     if (!found) return null;
     if (!this._sampleHistoryCache) this._sampleHistoryCache = {};
-    const key = String(sampleId || "");
+    const accessProjectId = this.sampleAccessProjectId(projectId);
+    const key = this.sampleHistoryCacheKey(sampleId, accessProjectId);
+    const accessEpoch = Number(this._accessEpoch || 0);
     const cached = this._sampleHistoryCache[key];
-    if (!force && cached && cached.page === page && cached.pageSize === pageSize) return cached;
-    this._sampleHistoryCache[key] = { loading: true, page, pageSize, items: [], total: 0, totalPages: 1 };
-    if (renderPanels) this.refreshSampleArchivePanels(sampleId);
+    if (!force && cached && cached.page === page && cached.pageSize === pageSize && String(cached.projectId || "") === accessProjectId) return cached;
+    this._sampleHistoryCache[key] = { loading: true, page, pageSize, projectId: accessProjectId, items: [], total: 0, totalPages: 1 };
+    if (renderPanels && this.sampleAccessScopeIsCurrent(accessProjectId)) this.refreshSampleArchivePanels(sampleId);
     try {
-      const result = await this.fetchSampleHistory(sampleId, { page, pageSize });
-      this._sampleHistoryCache[key] = result;
-      found.sample.historyLoaded = true;
-      this.syncHydratedSamplePatchBaseline(sampleId, { historyLoaded: true });
-      if (renderPanels) this.refreshSampleArchivePanels(sampleId);
+      const result = await this.fetchSampleHistory(sampleId, { page, pageSize, projectId: accessProjectId });
+      if (accessEpoch !== Number(this._accessEpoch || 0)) return null;
+      this._sampleHistoryCache[key] = { ...result, projectId: accessProjectId };
+      if (this.sampleAccessScopeIsCurrent(accessProjectId)) {
+        found.sample.historyLoaded = true;
+        found.sample.historyAccessProjectId = accessProjectId;
+        this.syncHydratedSamplePatchBaseline(sampleId, {
+          historyLoaded: true,
+          historyAccessProjectId: accessProjectId,
+        });
+        if (renderPanels) this.refreshSampleArchivePanels(sampleId);
+      }
       return result;
     } catch (e) {
-      this._sampleHistoryCache[key] = { error: e.message || String(e), page, pageSize, items: [], total: 0, totalPages: 1 };
-      if (renderPanels) this.refreshSampleArchivePanels(sampleId);
+      this._sampleHistoryCache[key] = { error: e.message || String(e), page, pageSize, projectId: accessProjectId, items: [], total: 0, totalPages: 1 };
+      if (renderPanels && this.sampleAccessScopeIsCurrent(accessProjectId)) this.refreshSampleArchivePanels(sampleId);
       throw e;
     }
   },
@@ -1799,7 +1980,12 @@ app.registerModule("app.server", {
     const resp = await fetch("/api/import-bundle/commit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ previewId, decisions, selection: this._importState?.selection || null }),
+      body: JSON.stringify({
+        previewId,
+        decisions,
+        selection: this._importState?.selection || null,
+        accessPolicyMode: this._importState?.accessPolicyMode || "skip",
+      }),
     });
     const json = await resp.json();
     if (!json.ok) throw new Error(json.error || "导入失败");

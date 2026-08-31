@@ -49,18 +49,19 @@
 
 /* 样机池卡片 — 标题 / 说明 / 分隔线 / 底部统计四区布局 */
 .sample-category-grid {
-  grid-template-columns: repeat(auto-fill, 330px);
+  grid-template-columns: repeat(auto-fill, 380px);
   justify-content: start;
   overflow: visible;
 }
 .sample-category-grid > .sample-card {
-  height: 300px; min-height: 300px; max-height: 300px;
+  height: 360px; min-height: 360px; max-height: 360px;
   box-sizing: border-box; overflow: visible;
-  display: grid;
-  grid-template-rows: auto minmax(20px, auto) 2px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 18px 28px 34px 40px;
+  padding: 18px 28px 18px 40px;
   border-radius: 14px;
+  cursor: default;
 }
 .sample-category-grid > .sample-card:hover {
   z-index: 30;
@@ -71,12 +72,16 @@
   background: var(--primary);
 }
 .sample-category-grid > .sample-card .sample-card-destroy-btn {
-  right: 28px;
-  top: 24px;
-  bottom: auto;
+  position: static;
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  font-size: 16px;
   z-index: 2;
-  opacity: 0;
-  pointer-events: none;
+  opacity: .75;
+  pointer-events: auto;
 }
 .sample-category-grid > .sample-card:hover .sample-card-destroy-btn,
 .sample-category-grid > .sample-card:focus-within .sample-card-destroy-btn {
@@ -86,9 +91,9 @@
 .sample-pool-card-header {
   display: flex;
   align-items: baseline;
+  justify-content: space-between;
   gap: 8px;
   min-width: 0;
-  padding-right: 46px;
 }
 .sample-pool-card-name {
   min-width: 0;
@@ -146,13 +151,20 @@
   background: var(--primary);
   border-radius: 999px;
 }
+.sample-pool-card-enter-row {
+  min-height: 32px;
+}
+.sample-pool-card-enter-btn {
+  min-width: 112px;
+}
 .sample-pool-card-body {
   display: grid;
-  grid-template-columns: 110px max-content;
+  grid-template-columns: minmax(118px, 1fr) minmax(142px, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   align-items: start;
-  column-gap: 18px;
+  column-gap: 22px;
   row-gap: 10px;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
 }
@@ -226,14 +238,14 @@
   gap: 4px;
   align-self: end;
   justify-self: start;
-  width: max-content;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   padding-top: 1px;
 }
 .sample-pool-status-row {
   display: grid;
-  grid-template-columns: 12px 4em 5ch;
+  grid-template-columns: 12px minmax(4em, 1fr) 5ch;
   align-items: center;
   column-gap: 8px;
   min-width: 0;
@@ -242,6 +254,19 @@
   font-size: 14px;
   font-weight: 700;
   line-height: 1;
+}
+.sample-pool-card-footer {
+  margin-top: 0;
+}
+.sample-pool-card-footer .access-role-badge {
+  margin-top: 0;
+}
+.sample-category-grid > .add-card {
+  width: 380px;
+  height: 360px;
+  min-height: 360px;
+  max-height: 360px;
+  box-sizing: border-box;
 }
 .sample-pool-status-dot {
   width: 9px;
@@ -796,7 +821,7 @@
   gap: 6px;
 }
 .sample-archive-nav button {
-  border: 1px solid transparent;
+  border: 1px solid var(--card-border);
   background: transparent;
   color: #475569;
   border-radius: 9px;

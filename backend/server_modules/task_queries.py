@@ -607,9 +607,22 @@ def list_task_sample_candidates_page(conn: sqlite3.Connection, query: dict[str, 
     status = first_query_value(query, "status", "").strip()
     status = sample_queries.sample_effective_status({"status": status}) if status else ""
 
+    allowed_category_ids_value = query.get("_allowedCategoryIds")
+    allowed_category_ids = None
+    if isinstance(allowed_category_ids_value, (list, tuple, set)):
+        allowed_category_ids = {str(value or "") for value in allowed_category_ids_value if str(value or "")}
     categories = sample_queries.list_sample_categories_summary(conn)
+    if allowed_category_ids is not None:
+        categories = [item for item in categories if str(item.get("id") or "") in allowed_category_ids]
     where = ["r.deleted_at IS NULL", "c.deleted_at IS NULL"]
     args: list[object] = []
+    if allowed_category_ids is not None:
+        if not allowed_category_ids:
+            where.append("1 = 0")
+        else:
+            placeholders = ",".join("?" for _ in allowed_category_ids)
+            where.append(f"r.category_id IN ({placeholders})")
+            args.extend(sorted(allowed_category_ids))
     if category_id:
         where.append("r.category_id = ?")
         args.append(category_id)

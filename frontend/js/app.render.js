@@ -24,6 +24,7 @@ app.registerModule("app.render", {
     }[this.viewModule()] || this.renderHome;
     fn.call(this);
     this.updateSelectPlaceholderState();
+    this.applyAccessUiPolicy?.(document);
   },
 
   textEl(tag, text, className = "") {
@@ -112,11 +113,11 @@ app.registerModule("app.render", {
     const items = [
       { id: "home", icon: "🏠", label: "首页" },
       { id: "projects", icon: "📁", label: "项目管理", sub: this.projectRecords().map(p => ({
-          id: `proj_${p.id}`, label: p.name,
+          id: `proj_${p.id}`, label: p.name, locked: this.resourceCanOpen ? !this.resourceCanOpen(p) : p.canOpen === false,
           active: this.isProjectNavActive(p.id)
         })) },
       { id: "samples", icon: "📦", label: "样机档案池", sub: this.sampleCategoryRecords().map(c => ({
-          id: `cat_${c.id}`, label: c.name,
+          id: `cat_${c.id}`, label: c.name, locked: this.resourceCanOpen ? !this.resourceCanOpen(c) : c.canOpen === false,
           active: this.isSampleCategoryNavActive(c.id)
         })) },
       { id: "devices", icon: "🔬", label: "测试设备仓库" }
@@ -139,6 +140,7 @@ app.registerModule("app.render", {
     );
 
     this.applySidebarState();
+    this.applyAccessUiPolicy?.(document);
   },
 
   navItemNode(item, { hasSub = false, isExpanded = false, active = false } = {}) {
@@ -180,7 +182,7 @@ app.registerModule("app.render", {
     sub.className = `nav-sub ${isExpanded ? "open" : ""}`.trim();
     items.forEach(item => {
       const node = document.createElement("div");
-      node.className = `nav-sub-item ${item.active ? "active" : ""}`.trim();
+      node.className = `nav-sub-item ${item.active ? "active" : ""} ${item.locked ? "access-locked" : ""}`.trim();
       node.title = item.label;
       node.dataset.appAction = "nav-go-sub";
       node.dataset.id = item.id;
@@ -189,7 +191,7 @@ app.registerModule("app.render", {
       node.setAttribute("aria-label", item.label);
       if (item.active) node.setAttribute("aria-current", "page");
       node.tabIndex = 0;
-      node.textContent = item.label;
+      node.textContent = `${item.locked ? "🔒 " : ""}${item.label}`;
       sub.append(node);
     });
     return sub;
@@ -224,7 +226,8 @@ app.registerModule("app.render", {
       await this.selectProject(id);
       return;
     } else if (type === "cat") {
-      this.selectSampleCategoryState(id);
+      this.openCategory(id);
+      return;
     }
     this.render();
   },

@@ -17,6 +17,7 @@ import sqlite3
 import sys
 import threading
 import time
+import traceback
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -27,7 +28,7 @@ BACKEND_DIR = PROJECT_ROOT / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from server_modules import app_metadata, bundle_preview_service, chamber_package, database_backfills, database_schema, http_handler, http_helpers, http_multipart, http_routes, http_runtime, import_bundle_service, import_commit, import_defaults, import_diff, mutation_services, mutation_summary, project_library, project_queries, record_writers, runtime_paths, sample_assets, sample_constraints, sample_history, sample_library, sample_queries, server_runner, state_externalization, state_merge, state_persistence, state_read_service, status_normalization, storage_core, task_mutation_rules, task_queries, version, zip_security
+from server_modules import access_control, app_metadata, bundle_preview_service, chamber_package, database_backfills, database_schema, http_handler, http_helpers, http_multipart, http_routes, http_runtime, import_bundle_service, import_commit, import_defaults, import_diff, mutation_services, mutation_summary, project_library, project_queries, record_writers, runtime_paths, sample_assets, sample_constraints, sample_history, sample_library, sample_queries, server_runner, state_externalization, state_merge, state_persistence, state_read_service, status_normalization, storage_core, task_mutation_rules, task_queries, version, zip_security
 
 
 APP_VERSION = version.APP_VERSION
@@ -182,6 +183,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     backfill_status_normalization(conn)
     backfill_sample_identity_columns(conn)
     backfill_project_task_samples(conn)
+    backfill_sample_asset_context(conn)
     backfill_query_state_columns(conn)
     record_writers.prune_orphan_operational_logs(conn, clear_empty_platform_audit=True)
 
@@ -361,6 +363,10 @@ def replace_task_sample_links(
 
 def backfill_project_task_samples(conn: sqlite3.Connection) -> None:
     database_backfills.backfill_project_task_samples(_database_backfill_context(), conn)
+
+
+def backfill_sample_asset_context(conn: sqlite3.Connection, *, force: bool = False) -> None:
+    database_backfills.backfill_sample_asset_context(_database_backfill_context(), conn, force=force)
 
 
 person_name_from_text = task_queries.person_name_from_text
@@ -543,6 +549,14 @@ def build_export_bundle_file(selection: dict | None = None) -> tuple[Path, str]:
     return bundle_preview_service.build_export_bundle_file(_bundle_preview_context(), selection=selection)
 
 
+def build_remote_export_bundle_file(selection: dict, client_ip: str) -> tuple[Path, str]:
+    return bundle_preview_service.build_remote_export_bundle_file(
+        _bundle_preview_context(),
+        selection=selection,
+        client_ip=client_ip,
+    )
+
+
 def build_sample_archive_file(sample_id: str) -> tuple[Path, str]:
     return bundle_preview_service.build_sample_archive_file(_bundle_preview_context(), sample_id)
 
@@ -629,6 +643,7 @@ def _import_bundle_commit_context() -> import_bundle_service.ImportBundleCommitC
         load_sample_photos=load_sample_photos,
         url_for_asset=url_for_asset,
         thumbnail_asset_id=thumbnail_asset_id,
+        backfill_sample_asset_context=backfill_sample_asset_context,
     )
 
 
@@ -774,40 +789,257 @@ existing_finished_task = task_mutation_rules.existing_finished_task
 sample_record_status = task_mutation_rules.sample_record_status
 detect_task_mutation_sample_status_blockers = task_mutation_rules.detect_task_mutation_sample_status_blockers
 
+# Fixed-IP access control is intentionally kept outside the business JSON.
+normalize_client_ip = access_control.normalize_client_ip
+get_access_context = access_control.access_context
+get_project_role = access_control.project_role
+get_pool_role = access_control.pool_role
+has_project_role = access_control.has_project_role
+has_pool_role = access_control.has_pool_role
+project_id_for_stage = access_control.project_id_for_stage
+task_scope = access_control.task_scope
+category_id_for_sample = access_control.category_id_for_sample
+sample_is_linked_to_project = access_control.sample_is_linked_to_project
+can_read_sample = access_control.can_read_sample
+list_access_rules = access_control.list_access_rules
+upsert_access_rule = access_control.upsert_access_rule
+delete_access_rule = access_control.delete_access_rule
+decorate_project_summaries = access_control.decorate_project_summaries
+decorate_pool_summaries = access_control.decorate_pool_summaries
+decorate_bootstrap = access_control.decorate_bootstrap
+access_rule_route = access_control.access_rule_route
+filter_sample_events_for_actor = access_control.filter_sample_events_for_actor
+filter_sample_history_for_actor = access_control.filter_sample_history_for_actor
+sanitize_sample_page_for_actor = access_control.sanitize_sample_page
+sanitize_category_detail_for_actor = access_control.sanitize_category_detail
+filter_photo_list_for_actor = access_control.filter_photo_list
+photo_is_visible = access_control.photo_is_visible
+sanitize_identity_conflicts = access_control.sanitize_identity_conflicts
+sanitize_destroy_impact = access_control.sanitize_destroy_impact
+project_bound_pool_ids = access_control.project_bound_pool_ids
+sanitize_task_sample_candidates = access_control.sanitize_task_sample_candidates
+validate_safe_photo_upload = sample_assets.validate_safe_photo_upload
+record_security_audit_in_transaction = access_control.record_security_audit
+
+
+def audit_security_event(
+    client_ip: str,
+    action: str,
+    *,
+    resource_type: str = "platform",
+    resource_id: str = "",
+    allowed: bool,
+    actor_role: str = "",
+    detail: dict | None = None,
+) -> None:
+    # Security telemetry is append-only and important, but a secondary audit
+    # storage failure after a committed business write must never turn a
+    # successful mutation into an HTTP 500 or invite a duplicate retry.
+    try:
+        with write_db_connection() as conn:
+            access_control.record_security_audit(
+                conn,
+                time=now_iso(),
+                client_ip=client_ip,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                allowed=allowed,
+                actor_role=actor_role,
+                detail=detail,
+            )
+            if allowed:
+                access_control.touch_access_rule(conn, resource_type, resource_id, client_ip, now=now_iso())
+    except Exception:
+        traceback.print_exc()
+
+
+def touch_access_seen(client_ip: str, resource_type: str, resource_id: str) -> None:
+    with write_db_connection() as conn:
+        access_control.touch_access_rule(conn, resource_type, resource_id, client_ip, now=now_iso())
+
+
+def _guard_mutation(authorizer, payload: dict, client_ip: str, *, audit_action: str, resource_type: str, **kwargs):
+    with connect_db() as conn:
+        allowed, decision = authorizer(conn, payload, client_ip, **kwargs)
+    resource_id = str(
+        decision.get("projectId")
+        or decision.get("categoryId")
+        or decision.get("sampleId")
+        or payload.get("projectId")
+        or payload.get("categoryId")
+        or payload.get("sampleId")
+        or payload.get("taskId")
+        or payload.get("stageId")
+        or ""
+    )
+    if not allowed:
+        audit_security_event(
+            client_ip,
+            audit_action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            allowed=False,
+            detail={"reason": decision.get("error", "")},
+        )
+    return allowed, decision, resource_id
+
 
 def _mutation_service_context() -> mutation_services.MutationServiceContext:
     return mutation_services.MutationServiceContext(
         write_db_connection=write_db_connection,
         now_iso=now_iso,
         unlink_asset_relative_paths=unlink_asset_relative_paths,
+        authorize_mutation=_authorize_mutation_in_transaction,
     )
 
 
+def _audit_mutation_completion(
+    client_ip: str,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    actor_role: str,
+    ok: bool,
+    result: dict,
+) -> None:
+    if ok:
+        audit_security_event(
+            client_ip,
+            action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            allowed=True,
+            actor_role=actor_role,
+        )
+    elif int(result.get("status") or 0) == 403:
+        # The transaction-level authorization is authoritative and can reject
+        # after a route-level check if ACL/scope changed in between. Record that
+        # denial too, without changing the original response.
+        audit_security_event(
+            client_ip,
+            action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            allowed=False,
+            actor_role=actor_role,
+            detail={"reason": str(result.get("error") or "事务内二次授权拒绝")},
+        )
+
+
+def _authorize_mutation_in_transaction(kind: str, conn: sqlite3.Connection, payload: dict, client_ip: str):
+    authorizers = {
+        "task": lambda: access_control.authorize_task_mutation(conn, payload, client_ip),
+        "task_batch": lambda: access_control.authorize_task_mutation(conn, payload, client_ip, batch=True),
+        "sample": lambda: access_control.authorize_sample_mutation(conn, payload, client_ip),
+        "project": lambda: access_control.authorize_project_mutation(conn, payload, client_ip),
+        "stage": lambda: access_control.authorize_stage_mutation(conn, payload, client_ip),
+        "sample_category": lambda: access_control.authorize_sample_category_mutation(conn, payload, client_ip),
+    }
+    authorizer = authorizers.get(kind)
+    if not authorizer:
+        return False, {"status": 403, "errorCode": "ACCESS_DENIED", "error": "未知写入授权范围"}
+    return authorizer()
+
+
 def commit_task_mutation(payload: dict, client_ip: str) -> tuple[bool, dict]:
-    return mutation_services.commit_task_mutation(_mutation_service_context(), payload, client_ip)
+    audit_action = mutation_services.canonical_mutation_action("task", payload)
+    allowed, decision, resource_id = _guard_mutation(
+        access_control.authorize_task_mutation,
+        payload,
+        client_ip,
+        audit_action=audit_action,
+        resource_type="project",
+    )
+    if not allowed:
+        return False, decision
+    ok, result = mutation_services.commit_task_mutation(_mutation_service_context(), payload, client_ip)
+    _audit_mutation_completion(client_ip, audit_action, "project", resource_id, str(decision.get("actorRole") or ""), ok, result)
+    return ok, result
 
 
 def commit_task_batch_mutation(payload: dict, client_ip: str) -> tuple[bool, dict]:
-    return mutation_services.commit_task_batch_mutation(_mutation_service_context(), payload, client_ip)
+    audit_action = mutation_services.canonical_mutation_action("task_batch", payload)
+    allowed, decision, resource_id = _guard_mutation(
+        access_control.authorize_task_mutation,
+        payload,
+        client_ip,
+        audit_action=audit_action,
+        resource_type="project",
+        batch=True,
+    )
+    if not allowed:
+        return False, decision
+    ok, result = mutation_services.commit_task_batch_mutation(_mutation_service_context(), payload, client_ip)
+    _audit_mutation_completion(client_ip, audit_action, "project", resource_id, str(decision.get("actorRole") or ""), ok, result)
+    return ok, result
 
 
 def commit_sample_mutation(payload: dict, client_ip: str) -> tuple[bool, dict]:
-    return mutation_services.commit_sample_mutation(_mutation_service_context(), payload, client_ip)
+    audit_action = mutation_services.canonical_mutation_action("sample", payload)
+    allowed, decision, resource_id = _guard_mutation(
+        access_control.authorize_sample_mutation,
+        payload,
+        client_ip,
+        audit_action=audit_action,
+        resource_type="sample_pool",
+    )
+    if not allowed:
+        return False, decision
+    ok, result = mutation_services.commit_sample_mutation(_mutation_service_context(), payload, client_ip)
+    _audit_mutation_completion(client_ip, audit_action, "sample_pool", resource_id, str(decision.get("actorRole") or ""), ok, result)
+    return ok, result
 
 
 def commit_project_mutation(payload: dict, client_ip: str) -> tuple[bool, dict]:
-    return mutation_services.commit_project_mutation(_mutation_service_context(), payload, client_ip)
+    audit_action = mutation_services.canonical_mutation_action("project", payload)
+    allowed, decision, resource_id = _guard_mutation(
+        access_control.authorize_project_mutation,
+        payload,
+        client_ip,
+        audit_action=audit_action,
+        resource_type="project",
+    )
+    if not allowed:
+        return False, decision
+    ok, result = mutation_services.commit_project_mutation(_mutation_service_context(), payload, client_ip)
+    _audit_mutation_completion(client_ip, audit_action, "project", resource_id, str(decision.get("actorRole") or ""), ok, result)
+    return ok, result
 
 
 def commit_stage_mutation(payload: dict, client_ip: str) -> tuple[bool, dict]:
-    return mutation_services.commit_stage_mutation(_mutation_service_context(), payload, client_ip)
+    audit_action = mutation_services.canonical_mutation_action("stage", payload)
+    allowed, decision, resource_id = _guard_mutation(
+        access_control.authorize_stage_mutation,
+        payload,
+        client_ip,
+        audit_action=audit_action,
+        resource_type="project",
+    )
+    if not allowed:
+        return False, decision
+    ok, result = mutation_services.commit_stage_mutation(_mutation_service_context(), payload, client_ip)
+    _audit_mutation_completion(client_ip, audit_action, "project", resource_id, str(decision.get("actorRole") or ""), ok, result)
+    return ok, result
 
 
 delete_sample_category_record = mutation_services.delete_sample_category_record
 
 
 def commit_sample_category_mutation(payload: dict, client_ip: str) -> tuple[bool, dict]:
-    return mutation_services.commit_sample_category_mutation(_mutation_service_context(), payload, client_ip)
+    audit_action = mutation_services.canonical_mutation_action("sample_category", payload)
+    allowed, decision, resource_id = _guard_mutation(
+        access_control.authorize_sample_category_mutation,
+        payload,
+        client_ip,
+        audit_action=audit_action,
+        resource_type="sample_pool",
+    )
+    if not allowed:
+        return False, decision
+    ok, result = mutation_services.commit_sample_category_mutation(_mutation_service_context(), payload, client_ip)
+    _audit_mutation_completion(client_ip, audit_action, "sample_pool", resource_id, str(decision.get("actorRole") or ""), ok, result)
+    return ok, result
 
 
 def http_runtime_context() -> SimpleNamespace:

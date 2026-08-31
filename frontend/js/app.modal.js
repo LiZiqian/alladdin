@@ -201,6 +201,7 @@ app.registerModule("app.modal", {
     modalMask.setAttribute("aria-hidden", "false");
     modalBody.scrollTop = Number(options.bodyScrollTop || 0);
     this.updateSelectPlaceholderState(document.getElementById("modalBody"));
+    this.applyAccessUiPolicy?.(document);
     this.bindDialogKeyboardEvents();
     this.focusDialog(modal);
     return modalId;

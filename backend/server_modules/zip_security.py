@@ -15,13 +15,14 @@ ALLOWED_FILES = {
     "checksums.json",
     "dossier.json",
     "assets/index.json",
+    "access/access-policy.json",
 }
 ALLOWED_PREFIXES = (
     "sample/",
     "domains/",
     "assets/samples/",
 )
-ALLOWED_DIRECTORIES = {"assets/", "domains/", "sample/", "assets/samples/"}
+ALLOWED_DIRECTORIES = {"access/", "assets/", "domains/", "sample/", "assets/samples/"}
 DANGEROUS_RE = re.compile(
     r"(^|[/\\])\.\.[/\\]"
     r"|^[/\\]"

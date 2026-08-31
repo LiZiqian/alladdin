@@ -267,6 +267,11 @@ def build_export_package(
             "assetFiles": len(asset_index["assets"]),
         },
     }
+    if package_kind != "sample-archive":
+        # Access policy is a portable companion document.  It is deliberately
+        # outside business domains so importing data can explicitly merge,
+        # replace selected ACLs, or skip them.
+        manifest["accessPolicyPath"] = "access/access-policy.json"
     return {"manifest": manifest, "domains": domains, "assetIndex": asset_index}
 
 
@@ -420,6 +425,8 @@ def validate_domain_documents(manifest: dict, domains: dict[str, object], asset_
         raise ValueError("导入包 domainPaths 与 ChamberData v2 协议不一致")
     if "assetIndexPath" in manifest and str(manifest.get("assetIndexPath") or "") != ASSET_INDEX_PATH:
         raise ValueError("导入包 assetIndexPath 与 ChamberData v2 协议不一致")
+    if "accessPolicyPath" in manifest and str(manifest.get("accessPolicyPath") or "") != "access/access-policy.json":
+        raise ValueError("导入包 accessPolicyPath 与 ChamberData v2 协议不一致")
 
     if not isinstance(domains.get("app"), dict):
         raise ValueError(f"导入包 {DOMAIN_PATHS['app']} 格式不正确")

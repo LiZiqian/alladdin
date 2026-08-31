@@ -13,7 +13,7 @@
   display: flex;
   gap: 12px;
   align-items: center;
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border);
   padding: 10px 14px;
   border-radius: 8px;
   background: #fff;
@@ -22,7 +22,7 @@
   min-width: 0;
 }
 .task-sample-row:hover {
-  border-color: var(--border);
+  border-color: var(--card-border);
   background: #f8fafc;
 }
 .task-sample-row.is-removed {
@@ -164,6 +164,13 @@
   cursor: pointer;
   transition: .16s ease;
 }
+#taskFlowShell .task-add-footer .task-add-main {
+  border: 2px solid #15803d;
+  background: #f0fdf4;
+}
+#taskFlowShell .task-add-footer .task-add-main:hover {
+  border-color: #166534;
+}
 .task-add-main:hover {
   transform: translateY(-1px);
   border-color: var(--status-sample-add-hover-border);
@@ -272,7 +279,7 @@
   padding: 8px 10px;
   background: #f8fafc;
   border-radius: 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border-soft);
 }
 .sample-destination-extra label {
   font-size: 12px;

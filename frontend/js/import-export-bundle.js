@@ -76,6 +76,29 @@ app.registerModule("import-export-bundle", {
     }
   },
 
+  async exportScopedBundle(resourceType, resourceId, resourceName = "") {
+    const id = String(resourceId || "").trim();
+    if (!id) return;
+    const isProject = resourceType === "project";
+    const query = new URLSearchParams({
+      [isProject ? "projectIds" : "sampleCategoryIds"]: id,
+    });
+    const label = isProject ? "项目" : "样机池";
+    const safeName = this._downloadFilenameSegment(resourceName || id, label);
+    Utils.toast(`正在生成${label}范围数据包…`);
+    try {
+      const resp = await fetch(`/api/export-bundle?${query.toString()}`);
+      await this._downloadZipResponse(
+        resp,
+        `${isProject ? "project" : "sample-pool"}-${safeName}.zip`,
+        `${label}范围数据包导出完成`,
+      );
+    } catch (e) {
+      console.error("[SCOPED EXPORT] 请求异常:", e);
+      Utils.toast(`${label}范围导出失败：${e.message || "网络错误"}`);
+    }
+  },
+
   async exportSampleArchive(sampleId) {
     if (!sampleId) return;
     Utils.toast("正在生成样机档案包…");
@@ -141,6 +164,7 @@ app.registerModule("import-export-bundle", {
       decisions: {},        // {conflictId: decision}
       selection: this._defaultImportSelection(preview.selectionTree),
       processedConflicts: new Set(),
+      accessPolicyMode: preview.accessPolicy?.available ? "merge" : "skip",
     };
 
     const body = this._renderImportPreviewBody(preview);
@@ -160,6 +184,7 @@ app.registerModule("import-export-bundle", {
     // 绑定冲突处理事件
     this._bindConflictHandlers();
     this._bindImportSelectionHandlers();
+    this._bindAccessPolicyModeHandlers();
   },
 
   // ── 渲染预览主体 ──
@@ -178,31 +203,41 @@ app.registerModule("import-export-bundle", {
     const newSamples = autoApply.filter(a => a.type === "new_sample").length;
     const totalConflicts = conflicts.length;
     const unprocessedCount = totalConflicts - this._importState.processedConflicts.size;
+    const packageCounts = this._importSelectionTreeCounts(preview.selectionTree);
 
     let html = "";
 
-    // 1) 来源信息
-    html += `<div class="import-section import-source">
-      <div class="import-section-title">📦 数据包来源</div>
-      <div class="import-source-grid">
-        <span>部署ID：</span><code>${Utils.esc(src.deploymentId || "未知")}</code>
-        <span>导出时间：</span><span>${Utils.esc(src.exportedAt || "")}</span>
-        <span>数据版本：</span><span>${Utils.esc(src.appVersion || "")} / Rev ${src.revision || 0}</span>
+    // 1) 来源与包内资源总量。总量和“本次新增”分开显示，避免同 Host 回导时误以为数据包为空。
+    html += `<div class="import-overview-grid">
+      <div class="import-section import-overview-card import-source">
+        <div class="import-section-title">📦 数据包来源</div>
+        <div class="import-source-grid">
+          <div class="import-source-item"><span>来源部署</span><code title="${Utils.esc(src.deploymentId || src.sourceDeploymentId || "未知")}">${Utils.esc(src.deploymentId || src.sourceDeploymentId || "未知")}</code></div>
+          <div class="import-source-item"><span>导出时间</span><b>${Utils.esc(src.exportedAt || "—")}</b></div>
+          <div class="import-source-item"><span>数据版本</span><b>${Utils.esc(src.appVersion || "—")} / Rev ${src.revision || 0}</b></div>
+        </div>
+      </div>
+      <div class="import-section import-overview-card import-package-summary">
+        <div class="import-section-title">📊 数据包内容</div>
+        <div class="import-summary-group">
+          <span class="import-summary-label">包内资源</span>
+          <div class="import-stats import-stat-pills">
+            <span>项目 ${packageCounts.projects}</span><span>阶段 ${packageCounts.stages}</span><span>任务 ${packageCounts.tasks}</span>
+            <span>样机池 ${packageCounts.sampleCategories}</span><span>样机 ${packageCounts.samples}</span>
+          </div>
+        </div>
+        <div class="import-summary-group">
+          <span class="import-summary-label">本次新增</span>
+          <div class="import-stats import-stat-pills import-stat-pills-muted">
+            <span>项目 ${newProjects}</span><span>阶段 ${newStages}</span><span>任务 ${newTasks}</span><span>样机 ${newSamples}</span>
+          </div>
+        </div>
       </div>
     </div>`;
 
-    // 2) 可自动导入
+    // 2) 选择范围与权限策略
     html += this._renderImportSelectionTree(preview.selectionTree);
-
-    html += `<div class="import-section import-auto">
-      <div class="import-section-title">✅ 可自动导入</div>
-      <div class="import-stats">
-        <span>新增项目：${newProjects}</span>
-        <span>新增阶段：${newStages}</span>
-        <span>新增任务：${newTasks}</span>
-        <span>新增样机：${newSamples}</span>
-      </div>
-    </div>`;
+    html += this._renderAccessPolicyImportOptions(preview.accessPolicy);
 
     // 3) 冲突区
     html += `<div class="import-section import-conflicts">
@@ -230,6 +265,130 @@ app.registerModule("import-export-bundle", {
     return html;
   },
 
+  _accessPolicyPreviewCounts(policy = {}) {
+    const summary = policy.summary || {};
+    const projectRules = Number(
+      policy.projectRuleCount ?? summary.projectRuleCount ?? summary.projectRules ?? policy.projectRules?.length ?? 0
+    ) || 0;
+    const poolRules = Number(
+      policy.samplePoolRuleCount ?? policy.poolRuleCount ?? summary.samplePoolRuleCount ?? summary.poolRuleCount ?? summary.poolRules ?? policy.poolRules?.length ?? 0
+    ) || 0;
+    const conflicts = Number(
+      policy.conflictCount ?? summary.conflictCount ?? policy.conflicts?.length ?? 0
+    ) || 0;
+    const projects = Number(policy.projectCount ?? summary.projectCount ?? 0) || 0;
+    const samplePools = Number(policy.samplePoolCount ?? policy.poolCount ?? summary.samplePoolCount ?? summary.poolCount ?? 0) || 0;
+    return {
+      projectRules,
+      poolRules,
+      conflicts,
+      projects,
+      samplePools,
+      total: projectRules + poolRules,
+      resourceTotal: projects + samplePools,
+    };
+  },
+
+  _importSelectionTreeCounts(tree = {}) {
+    const projects = tree.projects || [];
+    const categories = tree.sampleCategories || [];
+    return {
+      projects: projects.length,
+      stages: projects.reduce((count, project) => count + (project.stages || []).length, 0),
+      tasks: projects.reduce((count, project) => count + (project.stages || [])
+        .reduce((stageCount, stage) => stageCount + (stage.tasks || []).length, 0), 0),
+      sampleCategories: categories.length,
+      samples: categories.reduce((count, category) => count + (category.samples || []).length, 0),
+    };
+  },
+
+  _accessPolicyCommitSummary(policy = {}, fallbackMode = "skip") {
+    const supportedModes = ["merge", "replace_selected", "skip"];
+    const reportedMode = String(policy?.mode || fallbackMode || "skip");
+    const mode = supportedModes.includes(reportedMode) ? reportedMode : "skip";
+    const count = value => {
+      if (Array.isArray(value)) return value.length;
+      const numeric = Number(value || 0);
+      return Number.isFinite(numeric) ? numeric : 0;
+    };
+    const outcome = ({
+      merge: "权限已自动合并",
+      replace_selected: "权限已替换所选范围",
+      skip: "权限已跳过",
+    })[mode];
+    return `${outcome}（${mode}）：新增 ${count(policy?.added)}、` +
+      `去重 ${count(policy?.deduplicated)}、替换 ${count(policy?.replaced)}、` +
+      `冲突 ${count(policy?.conflicts)}`;
+  },
+
+  _renderAccessPolicyImportOptions(policy = {}) {
+    if (!policy?.available) return "";
+    const counts = this._accessPolicyPreviewCounts(policy);
+    return `<div class="import-section access-policy-import-section">
+      <div class="import-section-heading">
+        <div class="import-section-title">🛡 固定 IP 访问权限</div>
+        <div class="import-stats import-stat-pills">
+          <span>覆盖项目 ${counts.projects}</span>
+          <span>覆盖样机池 ${counts.samplePools}</span>
+          <span>项目规则 ${counts.projectRules}</span>
+          <span>样机池规则 ${counts.poolRules}</span>
+          <span>角色冲突 ${counts.conflicts}</span>
+        </div>
+      </div>
+      ${counts.total === 0 ? `<div class="access-policy-empty-hint">此数据包没有显式 IP 名单规则；localhost 本机管理员由 Host 动态识别，本来就不会写入或导出。</div>` : ""}
+      <div class="access-policy-mode-options" role="radiogroup" aria-label="权限策略导入方式">
+        <label class="access-policy-mode-card recommended">
+          <input type="radio" name="accessPolicyMode" value="merge" checked>
+          <span class="access-policy-mode-copy"><b>合并（推荐）</b><small>新增 Host B 没有的规则；冲突时保留 Host B 并报告。</small></span>
+        </label>
+        <label class="access-policy-mode-card">
+          <input type="radio" name="accessPolicyMode" value="replace_selected">
+          <span class="access-policy-mode-copy"><b>替换所选范围</b><small>仅替换本次勾选资源的访问规则，其他资源不变。</small></span>
+        </label>
+        <label class="access-policy-mode-card">
+          <input type="radio" name="accessPolicyMode" value="skip">
+          <span class="access-policy-mode-copy"><b>不导入权限</b><small>只导入业务数据，保留 Host B 当前全部访问规则。</small></span>
+        </label>
+      </div>
+      <div class="access-policy-replace-warning" hidden>⚠ 替换会先清空所选资源在 Host B 的现有名单，再写入包内规则；包内规则为 0 的资源将变为空名单。</div>
+      <p class="import-section-note">权限与资源 ID 映射由 Host 服务端在同一事务中提交。</p>
+    </div>`;
+  },
+
+  _bindAccessPolicyModeHandlers() {
+    const modal = this._importModalRoot();
+    if (!modal || !this._importState?.preview?.accessPolicy?.available) return;
+    modal.querySelectorAll('input[name="accessPolicyMode"]').forEach(input => {
+      input.addEventListener("change", () => {
+        if (input.checked && ["merge", "replace_selected", "skip"].includes(input.value)) {
+          this._importState.accessPolicyMode = input.value;
+          this._updateAccessPolicyReplaceWarning(modal, input.value);
+        }
+      });
+    });
+    this._updateAccessPolicyReplaceWarning(modal, this._importState.accessPolicyMode);
+  },
+
+  _updateAccessPolicyReplaceWarning(modal, mode) {
+    const warning = modal?.querySelector?.(".access-policy-replace-warning");
+    if (warning) warning.hidden = mode !== "replace_selected";
+  },
+
+  _collectAccessPolicyMode() {
+    if (!this._importState) return "skip";
+    if (!this._importState.preview?.accessPolicy?.available) {
+      this._importState.accessPolicyMode = "skip";
+      return "skip";
+    }
+    const selected = this._importModalRoot()?.querySelector?.('input[name="accessPolicyMode"]:checked')?.value;
+    this._importState.accessPolicyMode = ["merge", "replace_selected", "skip"].includes(selected)
+      ? selected
+      : ["merge", "replace_selected", "skip"].includes(this._importState.accessPolicyMode)
+        ? this._importState.accessPolicyMode
+        : "merge";
+    return this._importState.accessPolicyMode;
+  },
+
   _defaultImportSelection(tree = {}) {
     const selection = { projectIds: [], stageIds: [], taskIds: [], sampleCategoryIds: [], sampleIds: [] };
     (tree.projects || []).forEach(project => {
@@ -250,31 +409,38 @@ app.registerModule("import-export-bundle", {
     const hasProjects = (tree.projects || []).length > 0;
     const hasSamples = (tree.sampleCategories || []).length > 0;
     if (!hasProjects && !hasSamples) return "";
+    const counts = this._importSelectionTreeCounts(tree);
     let html = `<div class="import-section import-selection">
-      <div class="import-section-title">选择导入范围</div>
+      <div class="import-section-heading">
+        <div class="import-section-title">🎯 选择导入范围</div>
+        <div class="import-stats import-stat-pills">
+          ${hasProjects ? `<span>项目 ${counts.projects}</span><span>任务 ${counts.tasks}</span>` : ""}
+          ${hasSamples ? `<span>样机池 ${counts.sampleCategories}</span><span>样机 ${counts.samples}</span>` : ""}
+        </div>
+      </div>
       <div class="import-selection-grid">`;
     if (hasProjects) {
-      html += `<div class="import-selection-col"><strong>项目 / 阶段 / 任务</strong>`;
+      html += `<div class="import-selection-col"><div class="import-selection-col-title"><strong>项目 / 阶段 / 任务</strong><span>${counts.projects} 个项目 · ${counts.tasks} 个任务</span></div><div class="import-tree-list">`;
       (tree.projects || []).forEach(project => {
-        html += `<label class="import-tree-row import-tree-project"><input type="checkbox" checked data-import-select="projectIds" data-project-id="${Utils.esc(project.id)}" value="${Utils.esc(project.id)}"> ${Utils.esc(project.label)}</label>`;
+        html += `<label class="import-tree-row import-tree-project" title="${Utils.esc(project.label)}"><input type="checkbox" checked data-import-select="projectIds" data-project-id="${Utils.esc(project.id)}" value="${Utils.esc(project.id)}"><span class="import-tree-label">${Utils.esc(project.label)}</span></label>`;
         (project.stages || []).forEach(stage => {
-          html += `<label class="import-tree-row import-tree-stage"><input type="checkbox" checked data-import-select="stageIds" data-project-id="${Utils.esc(project.id)}" data-stage-id="${Utils.esc(stage.id)}" value="${Utils.esc(stage.id)}"> ${Utils.esc(stage.label)}</label>`;
+          html += `<label class="import-tree-row import-tree-stage" title="${Utils.esc(stage.label)}"><input type="checkbox" checked data-import-select="stageIds" data-project-id="${Utils.esc(project.id)}" data-stage-id="${Utils.esc(stage.id)}" value="${Utils.esc(stage.id)}"><span class="import-tree-label">${Utils.esc(stage.label)}</span></label>`;
           (stage.tasks || []).forEach(task => {
-            html += `<label class="import-tree-row import-tree-task"><input type="checkbox" checked data-import-select="taskIds" data-project-id="${Utils.esc(project.id)}" data-stage-id="${Utils.esc(stage.id)}" value="${Utils.esc(task.id)}"> ${Utils.esc(task.label)}</label>`;
+            html += `<label class="import-tree-row import-tree-task" title="${Utils.esc(task.label)}"><input type="checkbox" checked data-import-select="taskIds" data-project-id="${Utils.esc(project.id)}" data-stage-id="${Utils.esc(stage.id)}" value="${Utils.esc(task.id)}"><span class="import-tree-label">${Utils.esc(task.label)}</span></label>`;
           });
         });
       });
-      html += `</div>`;
+      html += `</div></div>`;
     }
     if (hasSamples) {
-      html += `<div class="import-selection-col"><strong>样机池 / 样机</strong>`;
+      html += `<div class="import-selection-col"><div class="import-selection-col-title"><strong>样机池 / 样机</strong><span>${counts.sampleCategories} 个样机池 · ${counts.samples} 台样机</span></div><div class="import-tree-list">`;
       (tree.sampleCategories || []).forEach(category => {
-        html += `<label class="import-tree-row import-tree-category"><input type="checkbox" checked data-import-select="sampleCategoryIds" data-category-id="${Utils.esc(category.id)}" value="${Utils.esc(category.id)}"> ${Utils.esc(category.label)}</label>`;
+        html += `<label class="import-tree-row import-tree-category" title="${Utils.esc(category.label)}"><input type="checkbox" checked data-import-select="sampleCategoryIds" data-category-id="${Utils.esc(category.id)}" value="${Utils.esc(category.id)}"><span class="import-tree-label">${Utils.esc(category.label)}</span></label>`;
         (category.samples || []).forEach(sample => {
-          html += `<label class="import-tree-row import-tree-sample"><input type="checkbox" checked data-import-select="sampleIds" data-category-id="${Utils.esc(category.id)}" value="${Utils.esc(sample.id)}"> ${Utils.esc(sample.label)}</label>`;
+          html += `<label class="import-tree-row import-tree-sample" title="${Utils.esc(sample.label)}"><input type="checkbox" checked data-import-select="sampleIds" data-category-id="${Utils.esc(category.id)}" value="${Utils.esc(sample.id)}"><span class="import-tree-label">${Utils.esc(sample.label)}</span></label>`;
         });
       });
-      html += `</div>`;
+      html += `</div></div>`;
     }
     html += `</div></div>`;
     return html;
@@ -737,9 +903,11 @@ app.registerModule("import-export-bundle", {
       const footer = document.querySelector(".modal-footer");
       if (!footer) return;
       document.getElementById("quickImportBtn")?.remove();
+      const conflicts = (this._importState?.preview?.conflicts || []).filter(c => this._conflictInCurrentSelection(c));
+      if (conflicts.length === 0) return;
       const btn = document.createElement("button");
       btn.className = "btn btn-outline";
-      btn.textContent = "仅导入无冲突数据";
+      btn.textContent = "跳过冲突并导入其余数据";
       btn.id = "quickImportBtn";
       btn.addEventListener("click", () => this._onQuickImport());
       // 插入到 cancel 和 ok 之间
@@ -789,6 +957,7 @@ app.registerModule("import-export-bundle", {
     // 先收集决策（quick import 可跳过）
     if (!skipCollect) this._collectImportDecisions();
     this._collectImportSelection();
+    this._collectAccessPolicyMode();
     const selectedCount = ["projectIds", "stageIds", "taskIds", "sampleCategoryIds", "sampleIds"]
       .reduce((sum, key) => sum + (this._importState.selection?.[key] || []).length, 0);
     if (this._importState.selection && !selectedCount) {
@@ -811,12 +980,16 @@ app.registerModule("import-export-bundle", {
         this._importState.preview.previewId,
         this._importState.decisions
       );
+      const accessPolicySummary = this._accessPolicyCommitSummary(
+        result.accessPolicy,
+        this._importState.accessPolicyMode
+      );
       Utils.toast(
         `导入完成：新增 ${result.stats?.projectsAdded || 0} 项目、` +
         `${result.stats?.samplesAdded || 0} 样机，` +
         `合并 ${result.stats?.samplesMerged || 0} 样机，` +
         `事件 ${result.stats?.sampleEventsAdded || 0} 条，` +
-        `跳过 ${result.stats?.skipped || 0} 项`
+        `跳过 ${result.stats?.skipped || 0} 项；${accessPolicySummary}`
       );
       await this.applyImportBundleMutationResult(result, { render: true });
     } catch (e) {

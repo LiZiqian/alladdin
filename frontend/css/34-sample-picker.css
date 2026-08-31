@@ -4,10 +4,10 @@
 
 /* ---- Dispatch Sample Picker ---- */
 .dispatch-sample-select {
-  border: 1px solid var(--border); border-radius: 12px;
+  border: 1px solid var(--card-border); border-radius: 12px;
   background: #f8fafc; padding: 8px;
 }
-.dispatch-sample-group { border: 1px solid var(--border); border-radius: 10px; background: #fff; margin: 8px 0; overflow: hidden }
+.dispatch-sample-group { border: 1px solid var(--card-border); border-radius: 10px; background: #fff; margin: 8px 0; overflow: hidden }
 .dispatch-sample-head {
   display: flex; gap: 8px; align-items: center; justify-content: space-between;
   padding: 8px 10px; background: #f8fafc; border-bottom: 1px solid var(--border);
@@ -22,7 +22,7 @@
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  border: 1px solid var(--border);
+  border: 1px solid var(--card-border);
   padding: 9px 14px;
   border-radius: 10px;
   margin: 0;
@@ -128,7 +128,7 @@
   background: #f8fafc;
   cursor: not-allowed;
 }
-.dispatch-sample-row.is-disabled:hover { border-color: var(--border) }
+.dispatch-sample-row.is-disabled:hover { border-color: var(--card-border) }
 .dispatch-sample-row.is-disabled input { cursor: not-allowed }
 .task-sample-picker {
   display: flex;
@@ -517,7 +517,7 @@
 
 .sample-limit-hint {
   margin: 8px 0; padding: 8px 10px;
-  border: 1px solid #e5e7eb; background: #f8fafc; color: var(--muted);
+  border: 1px solid var(--card-border-soft); background: #f8fafc; color: var(--muted);
   border-radius: 10px; font-size: 12px; font-weight: 700;
 }
 .sample-limit-hint.warn { border-color: #fbbf24; background: #fffbeb; color: #92400e }

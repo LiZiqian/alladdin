@@ -75,7 +75,7 @@
   width: 100%;
   font: inherit;
   color: inherit;
-  border: 1px solid transparent;
+  border: 1px solid var(--card-border);
   border-radius: 9px;
   background: transparent;
   padding: 10px 12px;
@@ -125,7 +125,7 @@
 }
 .task-config-shell:has(#tcPanelPlan .is-invalid) .task-config-nav-card[data-value="sample"] {
   background: transparent;
-  border-color: transparent;
+  border-color: var(--card-border);
   color: inherit;
   box-shadow: none;
 }

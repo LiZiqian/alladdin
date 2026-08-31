@@ -33,6 +33,24 @@ def thumbnail_asset_id(photo_id: str) -> str:
     return f"{photo_id}__thumb"
 
 
+def validate_safe_photo_upload(content: bytes, declared_mime: object = "") -> str:
+    """Return a canonical safe bitmap MIME after signature validation."""
+    data = bytes(content or b"")
+    detected = ""
+    if len(data) >= 3 and data[:3] == b"\xff\xd8\xff":
+        detected = "image/jpeg"
+    elif len(data) >= 8 and data[:8] == b"\x89PNG\r\n\x1a\n":
+        detected = "image/png"
+    elif len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        detected = "image/webp"
+    declared = str(declared_mime or "").split(";", 1)[0].strip().lower()
+    aliases = {"image/jpg": "image/jpeg", "image/pjpeg": "image/jpeg"}
+    declared = aliases.get(declared, declared)
+    if not detected or declared not in {"", detected}:
+        raise ValueError("照片仅支持经过文件签名校验的 JPEG、PNG 或 WebP 位图")
+    return detected
+
+
 def file_ext(original_name: str, mime_type: str) -> str:
     suffix = Path(original_name or "").suffix.lower()
     if suffix and re.fullmatch(r"\.[a-z0-9]{1,8}", suffix):
@@ -67,6 +85,9 @@ def normalize_photo_meta(ctx: AssetStorageContext, sample_id: str, photo: dict) 
         "url": str(photo.get("url") or url_for_asset(sample_id, photo_id)),
         "relativePath": relative_path,
         "uploadedAt": uploaded_at,
+        "projectId": str(photo.get("projectId") or ""),
+        "stageId": str(photo.get("stageId") or ""),
+        "taskId": str(photo.get("taskId") or ""),
     }
     thumb_url = str(photo.get("thumbUrl") or photo.get("thumbnailUrl") or "")
     thumb_relative_path = str(photo.get("thumbRelativePath") or photo.get("thumbnailRelativePath") or "")
@@ -138,8 +159,9 @@ def upsert_sample_asset_meta(
     conn.execute(
         """
         INSERT INTO sample_assets
-        (id, sample_id, kind, original_name, file_name, relative_path, mime_type, size, created_at, created_by, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        (id, sample_id, kind, original_name, file_name, relative_path, mime_type, size, created_at, created_by,
+         project_id, stage_id, task_id, deleted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT(id) DO UPDATE SET
             sample_id = excluded.sample_id,
             kind = excluded.kind,
@@ -150,6 +172,9 @@ def upsert_sample_asset_meta(
             size = excluded.size,
             created_at = excluded.created_at,
             created_by = excluded.created_by,
+            project_id = excluded.project_id,
+            stage_id = excluded.stage_id,
+            task_id = excluded.task_id,
             deleted_at = NULL
         """,
         (
@@ -163,6 +188,9 @@ def upsert_sample_asset_meta(
             int(meta.get("size") or 0),
             str(meta.get("uploadedAt") or ctx.now_iso()),
             uploaded_by,
+            str(meta.get("projectId") or "") or None,
+            str(meta.get("stageId") or "") or None,
+            str(meta.get("taskId") or "") or None,
         ),
     )
 
@@ -252,8 +280,9 @@ def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connecti
     conn.execute(
         """
         INSERT INTO sample_assets
-        (id, sample_id, kind, original_name, file_name, relative_path, mime_type, size, created_at, created_by, deleted_at)
-        VALUES (?, ?, 'photo', ?, ?, ?, ?, ?, ?, '', NULL)
+        (id, sample_id, kind, original_name, file_name, relative_path, mime_type, size, created_at, created_by,
+         project_id, stage_id, task_id, deleted_at)
+        VALUES (?, ?, 'photo', ?, ?, ?, ?, ?, ?, '', ?, ?, ?, NULL)
         ON CONFLICT(id) DO UPDATE SET
             sample_id = excluded.sample_id,
             kind = excluded.kind,
@@ -263,6 +292,9 @@ def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connecti
             mime_type = excluded.mime_type,
             size = excluded.size,
             created_at = excluded.created_at,
+            project_id = excluded.project_id,
+            stage_id = excluded.stage_id,
+            task_id = excluded.task_id,
             deleted_at = NULL
         """,
         (
@@ -274,6 +306,9 @@ def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connecti
             meta["type"],
             meta["size"],
             meta["uploadedAt"],
+            str(meta.get("projectId") or "") or None,
+            str(meta.get("stageId") or "") or None,
+            str(meta.get("taskId") or "") or None,
         ),
     )
     thumb_relative_path = meta.get("thumbRelativePath") or ""
@@ -283,8 +318,9 @@ def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connecti
         conn.execute(
             """
             INSERT INTO sample_assets
-            (id, sample_id, kind, original_name, file_name, relative_path, mime_type, size, created_at, created_by, deleted_at)
-            VALUES (?, ?, 'photo_thumb', ?, ?, ?, ?, ?, ?, '', NULL)
+            (id, sample_id, kind, original_name, file_name, relative_path, mime_type, size, created_at, created_by,
+             project_id, stage_id, task_id, deleted_at)
+            VALUES (?, ?, 'photo_thumb', ?, ?, ?, ?, ?, ?, '', ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
                 sample_id = excluded.sample_id,
                 kind = excluded.kind,
@@ -294,6 +330,9 @@ def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connecti
                 mime_type = excluded.mime_type,
                 size = excluded.size,
                 created_at = excluded.created_at,
+                project_id = excluded.project_id,
+                stage_id = excluded.stage_id,
+                task_id = excluded.task_id,
                 deleted_at = NULL
             """,
             (
@@ -305,6 +344,9 @@ def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connecti
                 str(photo.get("thumbType") or photo.get("thumbnailType") or "image/jpeg"),
                 int(photo.get("thumbSize") or photo.get("thumbnailSize") or 0),
                 meta["uploadedAt"],
+                str(meta.get("projectId") or "") or None,
+                str(meta.get("stageId") or "") or None,
+                str(meta.get("taskId") or "") or None,
             ),
         )
     return meta

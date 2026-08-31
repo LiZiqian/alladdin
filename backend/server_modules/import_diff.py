@@ -520,6 +520,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
     return {
         "source": {
             "deploymentId": manifest.get("sourceDeploymentId", ""),
+            "sourceDeploymentId": manifest.get("sourceDeploymentId", ""),
             "revision": manifest.get("revision", 0),
             "exportedAt": manifest.get("exportedAt", ""),
             "appVersion": manifest.get("appVersion", ""),

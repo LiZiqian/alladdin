@@ -198,6 +198,12 @@ const app = {
     const field = target.dataset.field || "";
     const isFormField = ["INPUT", "TEXTAREA", "SELECT", "OPTION", "LABEL"].includes(target.tagName || "");
     if (eventType === "click" && !isFormField) event.preventDefault();
+    if (typeof this.actionAllowedByCurrentAccess === "function" && !this.actionAllowedByCurrentAccess(action, target)) {
+      const resourceType = this.view?.module === "samples" ? "pool" : this.view?.module === "projectWorkspace" || this.view?.module === "projects" ? "project" : "resource";
+      const resourceId = resourceType === "pool" ? (target.dataset.id || this.view?.selectedCategoryId || "") : (target.dataset.id || this.view?.selectedProjectId || "");
+      this.showResourceAccessDenied?.(resourceType, resourceId);
+      return;
+    }
     switch (action) {
       case "go":
         this.go(module || value || "home");
@@ -238,6 +244,29 @@ const app = {
       case "project-delete":
         this.deleteProject(id);
         break;
+      case "project-export-scope": {
+        const project = this.findProjectRecord?.(id);
+        this.exportScopedBundle("project", id, project?.name || "");
+        break;
+      }
+      case "access-denied":
+        this.showResourceAccessDenied(target.dataset.resourceType || "resource", id);
+        break;
+      case "access-rules-open":
+        this.openAccessRules(target.dataset.resourceType || "project", id);
+        break;
+      case "access-rule-add":
+        this.addAccessRuleForm(target);
+        break;
+      case "access-rule-edit":
+        this.editAccessRuleForm(target);
+        break;
+      case "access-rule-confirm":
+        this.confirmAccessRuleInlineEdit(target);
+        break;
+      case "access-rule-delete":
+        this.deleteAccessRule(target.dataset.resourceType || "project", id, target.dataset.ip || "");
+        break;
       case "sample-page":
         this.setSamplePage(value);
         break;
@@ -256,11 +285,20 @@ const app = {
       case "sample-category-delete":
         this.deleteSampleCategory(id);
         break;
+      case "sample-pool-export-scope": {
+        const category = this.findSampleCategoryRecord?.(id);
+        this.exportScopedBundle("sample_pool", id, category?.name || "");
+        break;
+      }
       case "sample-add":
         this.addSample(id);
         break;
       case "sample-open":
-        this.openSampleDetail(id);
+        if (typeof this.samplePoolAccessRole === "function" && ["pool_viewer", "viewer", "none"].includes(this.samplePoolAccessRole())) {
+          this.openSampleReadonly(id);
+        } else {
+          this.openSampleDetail(id);
+        }
         break;
       case "sample-destroy":
         this.destroySample(id);
@@ -602,9 +640,11 @@ const app = {
 
   // ---- 初始化 ----
   async init() {
+    this.installAccessDeniedFetchHandler?.();
     try {
       const obj = await this.fetchBootstrapState();
       this.data = obj.data || this.emptyData();
+      this.applyBootstrapAccess?.(obj);
       this.serverRevision = obj.revision || 0;
       this.serverUpdatedAt = obj.updated_at || null;
       this.serverAppVersion = await this.resolveServerVersion(obj);
@@ -622,6 +662,7 @@ const app = {
       console.error("服务器数据读取失败：", e);
       this.serverOnline = false;
       this.data = this.emptyData();
+      this.applyBootstrapAccess?.({ accessContext: { clientIp: "", isLocalAdmin: false, platformRole: "none" } });
       this._statePartial = false;
       setTimeout(() => alert("无法连接内网服务器 API，页面将以空白只读状态打开。请确认后端服务正在运行。\n\n" + e.message), 50);
     }
@@ -632,6 +673,8 @@ const app = {
     this.view.stageStrategyId = null;
     this.bindDelegatedEvents();
     this.render();
+    this.installAccessUiObserver?.();
+    this.applyAccessUiPolicy?.(document);
     this.applySidebarState();
     this.updateServerStatus();
     if (this.serverVersionMismatch) this.updateServerStatus("版本不一致");

@@ -648,7 +648,8 @@ app.registerModule("app.data", {
       !!expanded.projects,
       !!expanded.samples,
       this.projectRecords().map(project => [project.id, project.name]),
-      this.sampleCategoryRecords().map(category => [category.id, category.name]),
+      this.projectRecords().map(project => [project.id, project.accessRole, project.canOpen, project.canManage]),
+      this.sampleCategoryRecords().map(category => [category.id, category.name, category.accessRole, category.canOpen, category.canManage]),
     ];
   },
 

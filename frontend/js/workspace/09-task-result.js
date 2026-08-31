@@ -556,10 +556,16 @@ app.registerModule("workspace.taskResult", {
         await this.appendPhotoUploadFiles(form, files);
         form.append("revision", String(this.serverRevision || 0));
         const ctx = this._taskResultUploadContext || {};
+        form.append("projectId", String(ctx.projectId || ""));
+        form.append("stageId", String(ctx.stageId || ""));
+        form.append("taskId", String(ctx.taskId || ""));
         form.append("remark", `任务结果图片：${ctx.taskLabel || "未命名任务"}`);
         const res = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/photos`, { method: "POST", body: form });
         const obj = await res.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
-        if (!res.ok || !obj.ok) throw new Error(obj.error || ("HTTP " + res.status));
+        if (!res.ok || !obj.ok) {
+          if (res.status === 403 && this.accessDeniedError) throw this.accessDeniedError(obj.error || "当前 IP 无权上传任务结果图片");
+          throw new Error(obj.error || ("HTTP " + res.status));
+        }
         const uploaded = (obj.uploaded || []).map(photo => ({
           id: photo.id,
           name: photo.name || "结果图片",
@@ -574,7 +580,7 @@ app.registerModule("workspace.taskResult", {
         this.setTaskResultRowPhotos(row, [...this.taskResultRowPhotos(row), ...uploaded]);
         Utils.toast(`已上传 ${uploaded.length || files.length} 张结果图片。`);
       } catch (e) {
-        alert("结果图片上传失败：" + (e.message || e));
+        if (!this.isAccessDeniedError?.(e)) alert("结果图片上传失败：" + (e.message || e));
       } finally {
         btn.disabled = false;
         btn.innerText = oldText;

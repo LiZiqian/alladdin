@@ -99,13 +99,15 @@
 }
 .home-entry-grid {
   display: grid;
-  grid-template-columns: repeat(3, 260px);
+  grid-template-columns: repeat(3, minmax(0, 260px));
   gap: 28px;
   justify-content: center;
+  width: 100%;
+  max-width: 836px;
 }
 .home-entry-card {
   min-height: 190px;
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--card-border);
   border-radius: 12px;
   background: #fff;
   box-shadow: 0 18px 44px rgba(15, 23, 42, .08);
@@ -140,6 +142,20 @@
   color: #64748b;
   font-size: 13px;
   font-weight: 700;
+}
+
+@media (max-width: 1100px) {
+  .home-entry-grid {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
+    max-width: 620px;
+  }
+}
+
+@media (max-width: 760px) {
+  .home-entry-grid {
+    grid-template-columns: minmax(220px, 1fr);
+    max-width: 320px;
+  }
 }
 
 .home-cache-tool {

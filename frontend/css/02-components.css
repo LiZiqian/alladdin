@@ -4,7 +4,7 @@
 
 /* ---- Cards & Layout ---- */
 .card {
-  background: var(--card); border: 1px solid var(--border);
+  background: var(--card); border: 1px solid var(--card-border);
   border-radius: var(--radius); box-shadow: var(--shadow);
   padding: 18px; margin-bottom: 16px;
 }
@@ -22,7 +22,7 @@
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
   min-height: 150px;
-  border: 2px dashed var(--border);
+  border: 2px dashed var(--card-border);
   background: var(--card); cursor: pointer;
   transition: border-color .2s, background .2s, box-shadow .2s;
 }

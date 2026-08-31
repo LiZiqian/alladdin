@@ -363,7 +363,8 @@ app.registerModule("samples.pool", {
   },
 
   samplePageGridNodes(cat, state) {
-    const nodes = [this.sampleAddCardNode(cat)];
+    const role = this.samplePoolAccessRole ? this.samplePoolAccessRole(cat) : "local_admin";
+    const nodes = ["local_admin", "pool_maintainer", "pool_admin"].includes(role) ? [this.sampleAddCardNode(cat)] : [];
     if (state.loading && !state.cached) {
       nodes.push(this.sampleEmptyHintNode(`正在加载第 ${state.page} 页样机...`, "sample-page-loading"));
     } else if (state.cached?.error) {
@@ -541,8 +542,11 @@ app.registerModule("samples.pool", {
     batch.dataset.appAction = "sample-batch-import";
     batch.dataset.id = cat.id || "";
     batch.textContent = "批量新增";
-    actions.append(template, batch);
-    toolbar.append(actions);
+    const role = this.samplePoolAccessRole ? this.samplePoolAccessRole(cat) : "local_admin";
+    if (["local_admin", "pool_maintainer", "pool_admin"].includes(role)) {
+      actions.append(template, batch);
+      toolbar.append(actions);
+    }
     return toolbar;
   },
 
@@ -573,7 +577,7 @@ app.registerModule("samples.pool", {
     const grid = document.createElement("div");
     grid.className = "grid sample-category-grid";
     (categories || []).forEach(category => grid.append(this.sampleCategoryCardNode(category)));
-    grid.append(this.addSampleCategoryCardNode());
+    if (this.isLocalAdminAccess ? this.isLocalAdminAccess() : true) grid.append(this.addSampleCategoryCardNode());
     this.scheduleSamplePoolDescriptionTooltipMeasure(grid);
     return grid;
   },
@@ -605,25 +609,32 @@ app.registerModule("samples.pool", {
   },
 
   sampleCategoryCardNode(category) {
+    const canOpen = this.resourceCanOpen ? this.resourceCanOpen(category) : category.canOpen !== false;
+    const canManage = this.resourceCanManage ? this.resourceCanManage(category) : category.canManage !== false;
+    const localAdmin = this.isLocalAdminAccess ? this.isLocalAdminAccess() : true;
     const card = document.createElement("div");
-    card.className = "card sample-card";
-    card.dataset.appAction = "sample-category-open";
+    card.className = `card sample-card access-resource-card${canOpen ? "" : " access-resource-locked"}`;
+    card.dataset.resourceType = "pool";
     card.dataset.id = category.id || "";
+    if (!canOpen) card.title = "当前 IP 未获授权，请点击下方按钮查看说明";
 
     const header = document.createElement("div");
     header.className = "sample-pool-card-header";
     const name = document.createElement("span");
     name.className = "sample-pool-card-name";
     name.textContent = category.name || "";
-    const edit = document.createElement("button");
-    edit.type = "button";
-    edit.className = "sample-card-edit-btn";
-    edit.dataset.appAction = "sample-category-edit";
-    edit.dataset.id = category.id || "";
-    edit.dataset.stopPropagation = "1";
-    edit.title = "编辑样机池";
-    edit.textContent = "✎";
-    header.append(name, edit);
+    header.append(name);
+    if (canManage) {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "sample-card-edit-btn";
+      edit.dataset.appAction = "sample-category-edit";
+      edit.dataset.id = category.id || "";
+      edit.dataset.stopPropagation = "1";
+      edit.title = "编辑样机池";
+      edit.textContent = "✎";
+      header.append(edit);
+    }
     card.append(header);
 
     const desc = document.createElement("div");
@@ -636,21 +647,73 @@ app.registerModule("samples.pool", {
     desc.append(descValue);
     card.append(desc);
 
+    const enterRow = document.createElement("div");
+    enterRow.className = "project-card-enter-row sample-pool-card-enter-row";
+    const enterButton = document.createElement("button");
+    enterButton.type = "button";
+    enterButton.className = "btn project-card-enter-btn sample-pool-card-enter-btn";
+    enterButton.dataset.appAction = canOpen ? "sample-category-open" : "access-denied";
+    enterButton.dataset.resourceType = "pool";
+    enterButton.dataset.id = category.id || "";
+    enterButton.append(document.createTextNode(canOpen ? "进入样机池" : "未授权"));
+    const arrow = document.createElement("b");
+    arrow.textContent = canOpen ? "▶" : "🔒";
+    enterButton.append(arrow);
+    enterRow.append(enterButton);
+    card.append(enterRow);
+
     const divider = document.createElement("div");
     divider.className = "sample-pool-card-divider";
     card.append(divider);
 
     card.append(this.sampleCategoryStatsNode(category));
 
-    const destroy = document.createElement("button");
-    destroy.type = "button";
-    destroy.className = "sample-card-destroy-btn";
-    destroy.dataset.appAction = "sample-category-delete";
-    destroy.dataset.id = category.id || "";
-    destroy.dataset.stopPropagation = "1";
-    destroy.title = "档案销毁";
-    destroy.textContent = "🗑";
-    card.append(destroy);
+    const footer = document.createElement("div");
+    footer.className = "project-card-footer sample-pool-card-footer";
+
+    const roleBadge = document.createElement("span");
+    roleBadge.className = `access-role-badge role-${category.accessRole || (localAdmin ? "local_admin" : "none")}`;
+    roleBadge.textContent = this.accessRoleLabel ? this.accessRoleLabel(category.accessRole || (localAdmin ? "local_admin" : "none")) : (canOpen ? "可访问" : "未授权");
+
+    const controls = document.createElement("span");
+    controls.className = "access-card-controls project-card-footer-controls sample-pool-card-footer-controls";
+    if (canManage) {
+      const acl = document.createElement("button");
+      acl.type = "button";
+      acl.className = "access-card-acl-btn";
+      acl.dataset.appAction = "access-rules-open";
+      acl.dataset.resourceType = "pool";
+      acl.dataset.id = category.id || "";
+      acl.dataset.stopPropagation = "1";
+      acl.title = "管理样机池 IP 访问名单";
+      acl.ariaLabel = "管理样机池 IP 访问名单";
+      acl.textContent = "🛡️";
+      controls.append(acl);
+
+      const exportButton = document.createElement("button");
+      exportButton.type = "button";
+      exportButton.className = "access-card-export-btn";
+      exportButton.dataset.appAction = "sample-pool-export-scope";
+      exportButton.dataset.id = category.id || "";
+      exportButton.dataset.stopPropagation = "1";
+      exportButton.title = "导出此样机池范围数据包";
+      exportButton.ariaLabel = "导出此样机池范围数据包";
+      exportButton.textContent = "⇩";
+      controls.append(exportButton);
+
+      const destroy = document.createElement("button");
+      destroy.type = "button";
+      destroy.className = "sample-card-destroy-btn";
+      destroy.dataset.appAction = "sample-category-delete";
+      destroy.dataset.id = category.id || "";
+      destroy.dataset.stopPropagation = "1";
+      destroy.title = "档案销毁";
+      destroy.ariaLabel = "档案销毁";
+      destroy.textContent = "🗑";
+      controls.append(destroy);
+    }
+    footer.append(roleBadge, controls);
+    card.append(footer);
     return card;
   },
 
@@ -768,10 +831,11 @@ app.registerModule("samples.pool", {
     const problemText = this.sampleProblemSummaryText(s);
     const stageText = [s.sourceStageName || "-", s.sourceSkuName || "-"].filter(Boolean).join(" · ");
     const displayCode = this.sampleDisplayCode(s);
+    const canDestroy = ["local_admin", "pool_admin"].includes(this.samplePoolAccessRole ? this.samplePoolAccessRole() : "local_admin");
     return `<div class="card sample-card sample-archive-card status-${usageClass} ${hasProblem ? "has-problem" : "is-ok"}" data-usage-status="${Utils.esc(usageStatus)}" data-quality-status="${hasProblem ? "fault" : "ok"}" data-reassembly-status="${isReassembled ? "reassembled" : "normal"}" data-app-action="sample-open" data-id="${Utils.esc(s.id)}">
       <div class="sample-card-top">
         <button type="button" class="sample-card-code sample-card-open-btn" data-app-action="sample-open" data-id="${Utils.esc(s.id)}" aria-label="查看样机 ${Utils.esc(displayCode)}">${Utils.esc(displayCode)}</button>
-        <button type="button" class="sample-card-destroy-btn" data-app-action="sample-destroy" data-id="${Utils.esc(s.id)}" data-stop-propagation="1" title="档案销毁" aria-label="档案销毁">🗑</button>
+        ${canDestroy ? `<button type="button" class="sample-card-destroy-btn" data-app-action="sample-destroy" data-id="${Utils.esc(s.id)}" data-stop-propagation="1" title="档案销毁" aria-label="档案销毁">🗑</button>` : ""}
       </div>
       <div class="sample-card-content">
         <div class="sample-card-main">
@@ -876,10 +940,13 @@ app.registerModule("samples.pool", {
   },
 
   async deleteSampleCategory(id) {
-    if (!await this.ensureSampleDestroyImpactScope({ categoryId: id })) return;
+    const destroyScope = await this.ensureSampleDestroyImpactScope({ categoryId: id });
+    if (!destroyScope) return;
     const c = this.sampleCategoryRecords().find(x => x.id === id);
     if (!c) return;
     const impact = this.collectSampleCategoryDestroyImpact(c);
+    const localAdmin = typeof this.isLocalAdminAccess !== "function" || this.isLocalAdminAccess();
+    if (!localAdmin && destroyScope.serverManagedLinkage) impact.serverScope = destroyScope;
     this.confirmDeleteKeyword(
       "档案销毁",
       "档案销毁会物理删除该样机池、池内样机、照片/CT文件、问题表和样机事件数据。此操作不可恢复。",
@@ -891,41 +958,44 @@ app.registerModule("samples.pool", {
           ...(impact.pending || [])
         ];
         const affectedSampleIds = new Set();
-        impactedItems.forEach(item => {
-          (item.allSampleIds || item.task?.sampleIds || []).forEach(id => {
-            const sid = String(id || "");
-            if (sid && !destroyedIds.has(sid)) affectedSampleIds.add(sid);
+        if (localAdmin) {
+          impactedItems.forEach(item => {
+            (item.allSampleIds || item.task?.sampleIds || []).forEach(id => {
+              const sid = String(id || "");
+              if (sid && !destroyedIds.has(sid)) affectedSampleIds.add(sid);
+            });
           });
-        });
-        this.applySampleCategoryDestroyImpact(c, impact);
-        const taskMutations = impactedItems
-          .map(item => this.taskMutationPayloadFor(item.project, item.stage, item.task))
-          .filter(item => item?.taskId);
-        const affectedSamples = [...affectedSampleIds]
-          .map(id => this.findSample(id)?.sample)
-          .filter(Boolean);
+          this.applySampleCategoryDestroyImpact(c, impact);
+        }
+        const taskMutations = localAdmin
+          ? impactedItems.map(item => this.taskMutationPayloadFor(item.project, item.stage, item.task)).filter(item => item?.taskId)
+          : [];
+        const affectedSamples = localAdmin
+          ? [...affectedSampleIds].map(id => this.findSample(id)?.sample).filter(Boolean)
+          : [];
         const eventSampleIds = new Set([...destroyedIds, ...affectedSampleIds]);
-        const sampleEvents = this.sampleEventRecords().filter(log => eventSampleIds.has(String(log?.sampleId || "")));
+        const sampleEvents = localAdmin
+          ? this.sampleEventRecords().filter(log => eventSampleIds.has(String(log?.sampleId || "")))
+          : [];
         const categoryRecords = this.sampleCategoryRecords();
         const categoryIndex = categoryRecords.findIndex(x => x.id === id);
         if (categoryIndex >= 0) categoryRecords.splice(categoryIndex, 1);
         this.patchViewState({ selectedCategoryId: null });
-        const saved = await this.commitSampleCategoryMutation(c, {
+        const mutationOptions = {
           action: "destroy_sample_category",
           remark: "样机池档案销毁",
           user: "管理员",
           deleteCategory: true,
-          taskMutations,
-          samples: affectedSamples,
-          sampleEvents,
           render: false
-        });
+        };
+        if (localAdmin) Object.assign(mutationOptions, { taskMutations, samples: affectedSamples, sampleEvents });
+        const saved = await this.commitSampleCategoryMutation(c, mutationOptions);
         if (!saved) {
           this.restoreDataSnapshot(dataSnapshot);
           return true;
         }
         this.renderSamples();
-        Utils.toast("样机池档案已销毁，关联任务已处理。");
+        Utils.toast(localAdmin ? "样机池档案已销毁，关联任务已处理。" : "样机池档案已销毁，关联关系已由服务器处理。");
         return false;
       },
       this.sampleCategoryDestroyImpactHtml(impact)
@@ -974,6 +1044,20 @@ app.registerModule("samples.pool", {
   },
 
   sampleCategoryDestroyImpactHtml(impact) {
+    if (impact?.serverScope?.serverManagedLinkage) {
+      const scope = impact.serverScope;
+      const statuses = Object.entries(scope.taskStatusCounts || {})
+        .map(([status, count]) => `${Utils.esc(status)} ${Number(count || 0)} 个`)
+        .join("；") || "无关联任务";
+      return `<div class="destroy-impact">
+        <div class="destroy-impact-title">危险影响确认</div>
+        <ul>
+          <li><b>将删除样机池：</b><span>${Utils.esc(impact.categoryName)}，共 ${Number(scope.sampleCount ?? impact.sampleCount ?? 0)} 台样机。</span></li>
+          <li><b>脱敏关联范围：</b><span>${Number(scope.projectCount || 0)} 个项目、${Number(scope.stageCount || 0)} 个阶段、${Number(scope.taskCount || 0)} 个任务；${statuses}。</span></li>
+          <li><b>服务器处理：</b><span>关联项目名称和任务内容不会向当前 IP 展示；确认后由服务器在同一事务内重建关联状态。</span></li>
+        </ul>
+      </div>`;
+    }
     const taskLine = item => `
       <li>
         <b>${Utils.esc(item.project.name)} / ${Utils.esc(item.stage.name)} / ${Utils.esc(item.task.testItem || "-")}</b>
@@ -1094,6 +1178,20 @@ app.registerModule("samples.pool", {
 
   singleSampleDestroyImpactHtml(impact) {
     const name = impact.sample ? this.sampleDisplayCode(impact.sample) : "样机";
+    if (impact?.serverScope?.serverManagedLinkage) {
+      const scope = impact.serverScope;
+      const statuses = Object.entries(scope.taskStatusCounts || {})
+        .map(([status, count]) => `${Utils.esc(status)} ${Number(count || 0)} 个`)
+        .join("；") || "无关联任务";
+      return `<div class="destroy-impact">
+        <div class="destroy-impact-title">危险影响确认</div>
+        <ul>
+          <li><b>将销毁样机：</b><span>${Utils.esc(name)}。</span></li>
+          <li><b>脱敏关联范围：</b><span>${Number(scope.projectCount || 0)} 个项目、${Number(scope.stageCount || 0)} 个阶段、${Number(scope.taskCount || 0)} 个任务；${statuses}。</span></li>
+          <li><b>服务器处理：</b><span>关联项目名称和任务内容不会向当前 IP 展示；确认后由服务器在同一事务内重建关联状态。</span></li>
+        </ul>
+      </div>`;
+    }
     const archiveCount = impact.sample && this.sampleHasArchiveData(impact.sample) ? 1 : 0;
     const runningCount = (impact.runningOrBlocked || []).length;
     const pendingCount = (impact.pending || []).length;
@@ -1178,12 +1276,15 @@ app.registerModule("samples.pool", {
   },
 
   async destroySample(sampleId) {
-    if (!await this.ensureSampleDestroyImpactScope({ sampleId })) return;
+    const destroyScope = await this.ensureSampleDestroyImpactScope({ sampleId });
+    if (!destroyScope) return;
     const found = this.findSample(sampleId);
     if (!found) return;
     const check = this.canDestroySample(found.sample);
     if (!check.ok) { alert(check.reason); return; }
     const impact = this.collectSingleSampleDestroyImpact(found.sample);
+    const localAdmin = typeof this.isLocalAdminAccess !== "function" || this.isLocalAdminAccess();
+    if (!localAdmin && destroyScope.serverManagedLinkage) impact.serverScope = destroyScope;
     this.confirmDeleteKeyword(
       "档案销毁",
       `档案销毁会物理删除 ${this.sampleDisplayCode(found.sample)} 的样机档案、照片/CT文件和样机事件数据。此操作不可恢复。`,
@@ -1194,45 +1295,47 @@ app.registerModule("samples.pool", {
           ...(impact.pending || [])
         ];
         const affectedSampleIds = new Set();
-        impactedItems.forEach(item => {
-          (item.task?.sampleIds || []).forEach(id => {
-            const sid = String(id || "");
-            if (sid && sid !== sampleId) affectedSampleIds.add(sid);
+        if (localAdmin) {
+          impactedItems.forEach(item => {
+            (item.task?.sampleIds || []).forEach(id => {
+              const sid = String(id || "");
+              if (sid && sid !== sampleId) affectedSampleIds.add(sid);
+            });
           });
-        });
-        // 处理任务影响
-        this.applySingleSampleDestroyImpact(found.sample, impact);
-        // 写入样机销毁日志（在物理删除前）
-        this.changeSampleStatus(sampleId, "已退库", {
-          user: "管理员",
-          source: "样机档案销毁",
-          reason: "样机档案被销毁，物理删除前记录最终状态",
-          forceLog: true
-        });
-        const taskMutations = impactedItems
-          .map(item => this.taskMutationPayloadFor(item.project, item.stage, item.task))
-          .filter(item => item?.taskId);
-        const affectedSamples = [...affectedSampleIds]
-          .map(id => this.findSample(id)?.sample)
-          .filter(Boolean);
+          // 本机管理员保留原有的完整本地联动预览与提交路径。
+          this.applySingleSampleDestroyImpact(found.sample, impact);
+          this.changeSampleStatus(sampleId, "已退库", {
+            user: "管理员",
+            source: "样机档案销毁",
+            reason: "样机档案被销毁，物理删除前记录最终状态",
+            forceLog: true
+          });
+        }
+        const taskMutations = localAdmin
+          ? impactedItems.map(item => this.taskMutationPayloadFor(item.project, item.stage, item.task)).filter(item => item?.taskId)
+          : [];
+        const affectedSamples = localAdmin
+          ? [...affectedSampleIds].map(id => this.findSample(id)?.sample).filter(Boolean)
+          : [];
         const eventSampleIds = new Set([sampleId, ...affectedSampleIds]);
-        const sampleEvents = this.sampleEventRecords().filter(log => eventSampleIds.has(String(log?.sampleId || "")));
+        const sampleEvents = localAdmin
+          ? this.sampleEventRecords().filter(log => eventSampleIds.has(String(log?.sampleId || "")))
+          : [];
         // 物理删除
         found.category.samples = (found.category.samples || []).filter(s => s.id !== sampleId);
-        const saved = await this.commitSampleMutation(found.sample, {
+        const mutationOptions = {
           action: "destroy_sample",
           remark: "样机档案销毁",
           user: "管理员",
           deleteSample: true,
-          taskMutations,
-          samples: affectedSamples,
-          sampleEvents
-        });
+        };
+        if (localAdmin) Object.assign(mutationOptions, { taskMutations, samples: affectedSamples, sampleEvents });
+        const saved = await this.commitSampleMutation(found.sample, mutationOptions);
         if (!saved) {
           this.restoreDataSnapshot(dataSnapshot);
           return true;
         }
-        Utils.toast("样机档案已销毁，关联任务已处理。");
+        Utils.toast(localAdmin ? "样机档案已销毁，关联任务已处理。" : "样机档案已销毁，关联关系已由服务器处理。");
         return false;
       },
       this.singleSampleDestroyImpactHtml(impact)
@@ -1261,7 +1364,15 @@ app.registerModule("samples.pool", {
     document.getElementById("deleteKeywordInput")?.focus();
   },
 
-  openCategory(id) { this.selectSampleCategoryState(id); this.render(); },
+  openCategory(id) {
+    const category = this.findSampleCategoryRecord?.(id);
+    if (category && this.resourceCanOpen && !this.resourceCanOpen(category)) {
+      this.showResourceAccessDenied?.("pool", id);
+      return;
+    }
+    this.selectSampleCategoryState(id);
+    this.render();
+  },
 
   // ---- 新建样机（简化：不强制项目/阶段/SKU）----,
 

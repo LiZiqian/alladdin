@@ -4,10 +4,13 @@
 
 :root {
   --bg: #f5f6fa;
+  --content-bg: #e5e7eb;
   --card: #fff;
   --text: #1f2937;
   --muted: #6b7280;
   --border: #e5e7eb;
+  --card-border: #94a3b8;
+  --card-border-soft: #cbd5e1;
   --primary: #2563eb;
   --primary2: #2563eb;
   --primary-bg: #eff6ff;

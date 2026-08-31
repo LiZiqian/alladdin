@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from server_modules import chamber_package, import_commit, import_defaults, import_diff, migration_scope, mutation_summary as mutation_summary_module, record_writers
+from server_modules import access_policy_transfer, chamber_package, import_commit, import_defaults, import_diff, migration_scope, mutation_summary as mutation_summary_module, record_writers
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,79 @@ class ImportBundleCommitContext:
     load_sample_photos: Callable
     url_for_asset: Callable[[str, str], str]
     thumbnail_asset_id: Callable[[str], str]
+    backfill_sample_asset_context: Callable[..., None]
+
+
+def complete_accepted_identity_maps(
+    incoming: dict,
+    current_projects: dict[str, dict],
+    project_id_map: dict[str, str],
+    stage_id_map: dict[str, str],
+    task_id_map: dict[str, str],
+    *,
+    skipped_project_ids: set[str] | None = None,
+    skipped_stage_ids: set[str] | None = None,
+    skipped_task_ids: set[str] | None = None,
+) -> None:
+    """Complete same-ID mappings for resources actually present after merge.
+
+    Import diffing emits ``new_task`` without necessarily emitting an explicit
+    project/stage merge decision when Host B already contains the same project
+    and stage. Portable photo ownership is remapped fail-closed, so accepted
+    ancestors need identity mappings before photo metadata is processed.
+    Explicitly skipped name-conflict subtrees remain unmapped and restricted.
+    """
+    skipped_projects = {str(value) for value in (skipped_project_ids or set())}
+    skipped_stages = {str(value) for value in (skipped_stage_ids or set())}
+    skipped_tasks = {str(value) for value in (skipped_task_ids or set())}
+
+    for incoming_project in incoming.get("projects") or []:
+        if not isinstance(incoming_project, dict):
+            continue
+        source_project_id = str(incoming_project.get("id") or "")
+        if not source_project_id or source_project_id in skipped_projects:
+            continue
+        target_project_id = str(project_id_map.get(source_project_id) or "")
+        if not target_project_id and source_project_id in current_projects:
+            target_project_id = source_project_id
+            project_id_map[source_project_id] = source_project_id
+        target_project = current_projects.get(target_project_id)
+        if not isinstance(target_project, dict):
+            continue
+        target_stages = {
+            str(stage.get("id") or ""): stage
+            for stage in target_project.get("stages") or []
+            if isinstance(stage, dict) and str(stage.get("id") or "")
+        }
+        for incoming_stage in incoming_project.get("stages") or []:
+            if not isinstance(incoming_stage, dict):
+                continue
+            source_stage_id = str(incoming_stage.get("id") or "")
+            if not source_stage_id or source_stage_id in skipped_stages:
+                continue
+            target_stage_id = str(stage_id_map.get(source_stage_id) or "")
+            if not target_stage_id and source_stage_id in target_stages:
+                target_stage_id = source_stage_id
+                stage_id_map[source_stage_id] = source_stage_id
+            target_stage = target_stages.get(target_stage_id)
+            if not isinstance(target_stage, dict):
+                continue
+            target_task_ids = {
+                str(task.get("id") or "")
+                for task in target_stage.get("tasks") or []
+                if isinstance(task, dict) and str(task.get("id") or "")
+            }
+            for incoming_task in incoming_stage.get("tasks") or []:
+                if not isinstance(incoming_task, dict):
+                    continue
+                source_task_id = str(incoming_task.get("id") or "")
+                if (
+                    source_task_id
+                    and source_task_id not in skipped_tasks
+                    and source_task_id not in task_id_map
+                    and source_task_id in target_task_ids
+                ):
+                    task_id_map[source_task_id] = source_task_id
 
 def commit_merged_import_state(
     ctx: ImportBundleCommitContext,
@@ -41,6 +114,7 @@ def commit_merged_import_state(
     client_ip: str,
     remark: str,
     user: str,
+    access_policy_commit: Callable[[object], dict] | None = None,
 ) -> tuple[bool, dict]:
     """Persist an already-merged import state without composing full current state again."""
     detect_sample_occupancy_conflicts = ctx.detect_sample_occupancy_conflicts
@@ -76,7 +150,15 @@ def commit_merged_import_state(
         merged_data["version"] = APP_VERSION
         sync_project_library(conn, merged_data, allow_empty=True)
         sync_sample_library(conn, merged_data, allow_empty=True)
+        # Import can introduce legacy unclassified task photos after the
+        # one-time startup migration marker already exists. Re-run inference
+        # inside this same transaction so old packages cannot turn result
+        # attachments into public pool photos on Host B.
+        reclassify_assets = getattr(ctx, "backfill_sample_asset_context", None)
+        if callable(reclassify_assets):
+            reclassify_assets(conn, force=True)
         record_writers.prune_orphan_operational_logs(conn)
+        access_policy_result = access_policy_commit(conn) if access_policy_commit else None
         stored_data = split_state_for_storage(merged_data)
         conn.execute(
             "UPDATE app_state SET data_json = ?, revision = ?, updated_at = ? WHERE id = 1",
@@ -93,7 +175,10 @@ def commit_merged_import_state(
         record_writers.clear_audit_log_when_platform_empty(conn)
         conn.commit()
 
-    return True, {"revision": new_revision, "updated_at": updated_at}
+    response = {"revision": new_revision, "updated_at": updated_at}
+    if access_policy_result is not None:
+        response["accessPolicy"] = access_policy_result
+    return True, response
 
 
 def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
@@ -118,6 +203,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     _content_hash = import_commit.content_hash
     _sample_index_by_id = import_commit.sample_index_by_id
     _merge_import_sample_subrecords = import_commit.merge_import_sample_subrecords
+    _remap_import_photo_contexts = import_commit.remap_import_photo_contexts
     _apply_id_maps = import_commit.apply_id_maps
     _merge_import_sample_events = import_commit.merge_import_sample_events
     _validate_import_commit_state = import_commit.validate_import_commit_state
@@ -177,6 +263,14 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
             "error_code": "EMPTY_IMPORT_SELECTION",
             "status": 400,
         }
+    access_policy_mode = str(payload.get("accessPolicyMode") or "merge").strip()
+    if access_policy_mode not in access_policy_transfer.SUPPORTED_IMPORT_MODES:
+        return {
+            "ok": False,
+            "error": f"权限策略导入模式不受支持: {access_policy_mode or '(空)'}",
+            "error_code": "ACCESS_POLICY_MODE_INVALID",
+            "status": 400,
+        }
 
     _cleanup_expired_previews()
     entry = _IMPORT_PREVIEWS.get(preview_id)
@@ -208,6 +302,40 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                     "status": 409}
 
     tmp_dir = Path(entry["_tmp_dir"])
+    manifest: dict = {}
+    manifest_path = tmp_dir / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            loaded_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_manifest, dict):
+                manifest = loaded_manifest
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+    checksums = None
+    checksums_path = tmp_dir / chamber_package.CHECKSUMS_PATH
+    if checksums_path.is_file():
+        try:
+            loaded_checksums = json.loads(checksums_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_checksums, dict):
+                checksums = loaded_checksums
+        except (OSError, json.JSONDecodeError):
+            checksums = None
+    try:
+        if checksums is not None and chamber_package.is_chamberdata_manifest(manifest):
+            chamber_package.verify_checksums(tmp_dir, checksums)
+        access_policy = access_policy_transfer.load_access_policy_from_package(
+            tmp_dir,
+            manifest,
+            checksums,
+            max_bytes=32 * 1024 * 1024,
+        )
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error": f"权限策略校验失败：{exc}",
+            "error_code": "ACCESS_POLICY_INVALID",
+            "status": 400,
+        }
     asset_index = {"assets": []}
     asset_index_path = tmp_dir / chamber_package.ASSET_INDEX_PATH
     if asset_index_path.is_file():
@@ -222,15 +350,6 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     if not migration_scope.selection_is_empty(selection):
         current_data, _, _ = get_state(compact=True)
         incoming_payload = migration_scope.filter_state_by_selection(incoming_payload, selection)
-        manifest = {}
-        manifest_path = tmp_dir / "manifest.json"
-        if manifest_path.is_file():
-            try:
-                loaded_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if isinstance(loaded_manifest, dict):
-                    manifest = loaded_manifest
-            except (OSError, json.JSONDecodeError):
-                manifest = {}
         selected_result = import_diff.diff_import_bundle(current_data, incoming_payload, manifest, tmp_dir, asset_index=asset_index)
 
         # 子集重算会改变顺序编号；按冲突实体身份复用原 preview 的 conflictId，
@@ -339,6 +458,12 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
 
     incoming = copy.deepcopy(incoming_payload)
     source_manifest = (result.get("source") or {})
+    source_deployment_id = str(
+        source_manifest.get("sourceDeploymentId")
+        or source_manifest.get("deploymentId")
+        or manifest.get("sourceDeploymentId")
+        or ""
+    )
     asset_lookup = chamber_package.sample_photo_asset_lookup(asset_index)
 
     def import_asset_source(incoming_sample_id: str, photo: dict, role: str, fallback_relative_path: str) -> tuple[Path | None, str]:
@@ -380,6 +505,8 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     sample_id_map: dict[str, str] = {}   # incomingSampleID → targetSampleID
     sample_category_id_map: dict[str, str] = {}
     skipped_sample_ids: set[str] = set()
+    skipped_project_ids: set[str] = set()
+    skipped_stage_ids: set[str] = set()
     skipped_task_ids: set[str] = set()
     fully_imported_project_ids: set[str] = set()
     fully_imported_stage_ids: set[str] = set()
@@ -563,6 +690,28 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                     _merge_project_sub_data(curr_proj, inc_proj)
                     stats["projectsMerged"] += 1
                     project_id_map[ipid] = target_id
+                    target_stages = {
+                        str(stage.get("id") or ""): stage
+                        for stage in curr_proj.get("stages") or []
+                        if isinstance(stage, dict) and str(stage.get("id") or "")
+                    }
+                    for incoming_stage in inc_proj.get("stages") or []:
+                        if not isinstance(incoming_stage, dict):
+                            continue
+                        incoming_stage_id = str(incoming_stage.get("id") or "")
+                        target_stage = target_stages.get(incoming_stage_id)
+                        if not incoming_stage_id or not target_stage:
+                            continue
+                        stage_id_map[incoming_stage_id] = incoming_stage_id
+                        target_task_ids = {
+                            str(task.get("id") or "")
+                            for task in target_stage.get("tasks") or []
+                            if isinstance(task, dict) and str(task.get("id") or "")
+                        }
+                        for incoming_task in incoming_stage.get("tasks") or []:
+                            incoming_task_id = str((incoming_task or {}).get("id") or "") if isinstance(incoming_task, dict) else ""
+                            if incoming_task_id and incoming_task_id in target_task_ids:
+                                task_id_map[incoming_task_id] = incoming_task_id
                     touched_structure_project_ids.add(target_id)
             elif action == "rename_import":
                 new_name = d.get("newName", "").strip()
@@ -579,6 +728,8 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                     fully_imported_stage_ids.update(stage_ids)
                     touched_structure_project_ids.add(ipid)
             elif action == "skip":
+                if ipid:
+                    skipped_project_ids.add(str(ipid))
                 stats["skipped"] += 1
 
         # ── stage_name_conflict ──
@@ -598,6 +749,8 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                                         st.setdefault("tasks", []).append(copy.deepcopy(inc_task))
                                         stats["tasksAdded"] += 1
                                         existing_task_ids.add(tid)
+                                    if tid and tid in existing_task_ids:
+                                        task_id_map[tid] = tid
                                 stats["stagesMerged"] += 1
                                 stage_id_map[inc_sid] = target_id
                                 touched_structure_project_ids.add(proj_id)
@@ -623,6 +776,14 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                                 stage_id_map[inc_sid] = inc_sid
                             break
             elif action == "skip":
+                if inc_sid:
+                    skipped_stage_ids.add(str(inc_sid))
+                    stage_id_map.pop(str(inc_sid), None)
+                    if inc_stage:
+                        for inc_task in inc_stage.get("tasks") or []:
+                            if isinstance(inc_task, dict) and inc_task.get("id"):
+                                skipped_task_ids.add(str(inc_task.get("id")))
+                                task_id_map.pop(str(inc_task.get("id")), None)
                 stats["skipped"] += 1
 
         # ── task_name_conflict ──
@@ -665,6 +826,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
             elif action == "skip":
                 if inc_tid:
                     skipped_task_ids.add(str(inc_tid))
+                    task_id_map.pop(str(inc_tid), None)
                 stats["skipped"] += 1
 
         # ── task_occupancy_conflict ──
@@ -892,6 +1054,30 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     current_data["sampleLibrary"]["categories"] = list(curr_categories.values())
     current_data["projects"] = list(curr_projects.values())
 
+    complete_accepted_identity_maps(
+        incoming,
+        curr_projects,
+        project_id_map,
+        stage_id_map,
+        task_id_map,
+        skipped_project_ids=skipped_project_ids,
+        skipped_stage_ids=skipped_stage_ids,
+        skipped_task_ids=skipped_task_ids,
+    )
+    _remap_import_photo_contexts(incoming, project_id_map, stage_id_map, task_id_map)
+    # Newly imported samples may already have been copied into current_data
+    # before all conflict ID maps were known. Synchronize only those new
+    # samples; existing Host B assets are deliberately left untouched.
+    incoming_photo_samples = _sample_index_by_id(incoming)
+    current_photo_samples = _sample_index_by_id(current_data)
+    for incoming_sample_id, target_sample_id in sample_id_map.items():
+        if target_sample_id in existing_sample_ids_before_import:
+            continue
+        source_sample = incoming_photo_samples.get(incoming_sample_id)
+        target_sample = current_photo_samples.get(target_sample_id)
+        if source_sample is not None and target_sample is not None:
+            target_sample["photos"] = copy.deepcopy(source_sample.get("photos") or [])
+
     hydrate_import_target_photos(current_data, incoming, sample_id_map, existing_sample_ids_before_import)
     incoming_samples_by_id = _sample_index_by_id(incoming)
     current_samples_before_photo_merge = _sample_index_by_id(current_data)
@@ -1074,7 +1260,78 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
             "status": 400,
         }
 
-    import_remark = f"导入数据包 (deployment={source_manifest.get('sourceDeploymentId','?')})"
+    # Only resources that were actually accepted by the business merge may
+    # receive ACL rules.  In particular, a skipped name/field conflict must not
+    # accidentally overwrite the target Host's existing access policy.
+    skipped_policy_project_ids: set[str] = set()
+    skipped_policy_category_ids: set[str] = set()
+    for conflict in result.get("conflicts") or []:
+        incoming_id = str(conflict.get("incomingId") or "")
+        decision = decision_map.get(str(conflict.get("conflictId") or ""), {})
+        if str(decision.get("action") or "") != "skip" or not incoming_id:
+            continue
+        if conflict.get("entity") == "project":
+            skipped_policy_project_ids.add(incoming_id)
+        elif conflict.get("entity") == "sampleCategory":
+            skipped_policy_category_ids.add(incoming_id)
+
+    selected_policy_project_ids = {
+        str(project.get("id") or "")
+        for project in (incoming.get("projects") or [])
+        if isinstance(project, dict) and str(project.get("id") or "")
+    } - skipped_policy_project_ids
+    selected_policy_category_ids = {
+        str(category.get("id") or "")
+        for category in ((incoming.get("sampleLibrary") or {}).get("categories") or [])
+        if isinstance(category, dict) and str(category.get("id") or "")
+    } - skipped_policy_category_ids
+    if selection_supplied:
+        normalized_policy_selection = migration_scope.normalize_selection(selection)
+        # ACL scope follows explicit top-level selection only.  Samples carried
+        # along for referential integrity do not implicitly select their whole
+        # pool policy, and selecting a stage/task does not broaden to project
+        # administration rights.
+        selected_policy_project_ids.intersection_update(normalized_policy_selection["projects"])
+        selected_policy_category_ids.intersection_update(normalized_policy_selection["sampleCategories"])
+    target_project_ids = {
+        str(project.get("id") or "")
+        for project in (current_data.get("projects") or [])
+        if isinstance(project, dict) and str(project.get("id") or "")
+    }
+    target_category_ids = {
+        str(category.get("id") or "")
+        for category in ((current_data.get("sampleLibrary") or {}).get("categories") or [])
+        if isinstance(category, dict) and str(category.get("id") or "")
+    }
+    for source_id in selected_policy_project_ids:
+        if source_id not in project_id_map and source_id in target_project_ids:
+            project_id_map[source_id] = source_id
+    for source_id in selected_policy_category_ids:
+        if source_id not in sample_category_id_map and source_id in target_category_ids:
+            sample_category_id_map[source_id] = source_id
+    policy_project_id_map = {
+        source_id: project_id_map[source_id]
+        for source_id in selected_policy_project_ids
+        if source_id in project_id_map
+    }
+    policy_category_id_map = {
+        source_id: sample_category_id_map[source_id]
+        for source_id in selected_policy_category_ids
+        if source_id in sample_category_id_map
+    }
+
+    import_remark = f"导入数据包 (deployment={source_deployment_id or '?'})"
+    access_policy_commit = lambda conn: access_policy_transfer.apply_access_policy(
+        conn,
+        access_policy,
+        mode=access_policy_mode,
+        project_id_map=policy_project_id_map,
+        category_id_map=policy_category_id_map,
+        selected_project_ids=selected_policy_project_ids,
+        selected_category_ids=selected_policy_category_ids,
+        now_iso=ctx.now_iso(),
+        created_by_ip="127.0.0.1",
+    )
     try:
         ok, resp = commit_merged_import_state(
             ctx,
@@ -1083,6 +1340,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
             "import-bundle",
             import_remark,
             "数据导入",
+            access_policy_commit=access_policy_commit,
         )
     except Exception:
         rollback_created_asset_paths()
@@ -1114,6 +1372,15 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
         "newRevision": revision,
         "updated_at": resp.get("updated_at", ""),
         "mutationSummary": mutation_summary,
+        "accessPolicy": resp.get("accessPolicy") or {
+            "available": False,
+            "mode": access_policy_mode,
+            "added": 0,
+            "deduplicated": 0,
+            "replaced": 0,
+            "skipped": 0,
+            "conflicts": [],
+        },
     }
 
 

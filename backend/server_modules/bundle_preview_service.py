@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from server_modules import chamber_package, import_defaults, import_diff, import_preview_cache, migration_scope, status_normalization, zip_security
+from server_modules import access_control, access_policy_transfer, chamber_package, import_defaults, import_diff, import_preview_cache, migration_scope, status_normalization, zip_security
 
 
 @dataclass(frozen=True)
@@ -190,13 +190,19 @@ def prepare_export_bundle_parts(
     package_kind: str = "full",
     scope: str | None = None,
     extra_payloads: dict[str, object] | None = None,
+    source_state: dict | None = None,
+    already_scoped: bool = False,
 ) -> tuple[dict, dict, dict[str, str], dict, str]:
     """Build ChamberData v2 export payloads shared by byte/file exports."""
-    data, revision, _ = ctx.get_state()
+    runtime_data, revision, _ = ctx.get_state()
+    data = source_state if source_state is not None else runtime_data
     export_data = import_diff.strip_view_state(data)
-    if not migration_scope.selection_is_empty(selection):
+    if not already_scoped and not migration_scope.selection_is_empty(selection):
         export_data = migration_scope.filter_state_by_selection(export_data, selection)
-    deployment_id = ctx.load_deployment_id()
+    # Normal server startup always creates a deployment id.  Keep direct test
+    # and recovery callers self-consistent if they build a package before that
+    # bootstrap step instead of emitting an invalid empty policy identifier.
+    deployment_id = ctx.load_deployment_id() or "deployment-unavailable"
     exported_at = ctx.now_iso()
     export_id = f"exp_{exported_at.replace('-','').replace(':','').replace('T','_')[:15]}_{uuid.uuid4().hex[:6]}"
     resolved_scope = scope or _scope_label(selection)
@@ -226,7 +232,29 @@ def prepare_export_bundle_parts(
     )
     export_roundtrip = import_defaults.normalize_import_state(export_roundtrip, source_format=chamber_package.FORMAT_V2)
     import_defaults.validate_import_state_structure(export_roundtrip)
-    payloads = chamber_package.package_payloads(package, pretty=True, extra_payloads=extra_payloads)
+    resolved_extra_payloads = dict(extra_payloads or {})
+    if package_kind != "sample-archive":
+        selected_access_projects = None
+        selected_access_categories = None
+        if not migration_scope.selection_is_empty(selection):
+            normalized_selection = migration_scope.normalize_selection(selection)
+            # ACLs are independent top-level resources.  Project-carried
+            # samples must not silently export an entire pool ACL, and a
+            # selected task/stage must not broaden to the whole project ACL.
+            selected_access_projects = normalized_selection["projects"]
+            selected_access_categories = normalized_selection["sampleCategories"]
+        with ctx.connect_db() as conn:
+            access_policy = access_policy_transfer.build_export_access_policy(
+                conn,
+                export_data,
+                deployment_id,
+                project_ids=selected_access_projects,
+                category_ids=selected_access_categories,
+            )
+        # Callers cannot override the runtime-derived Host policy with a
+        # client-supplied companion payload.
+        resolved_extra_payloads[access_policy_transfer.ACCESS_POLICY_PATH] = access_policy
+    payloads = chamber_package.package_payloads(package, pretty=True, extra_payloads=resolved_extra_payloads)
     checksums = {path: text_sha256(text) for path, text in payloads.items()}
     payloads["checksums.json"] = ctx.json_dumps(checksums, pretty=True)
 
@@ -283,6 +311,32 @@ def build_export_bundle_file(ctx: BundlePreviewContext, *, selection: dict | Non
     ctx.ensure_dirs()
     export_data, package, payloads, _checksums, filename = prepare_export_bundle_parts(ctx, selection=selection)
     tmp = tempfile.NamedTemporaryFile(prefix="tcv7_export_", suffix=".zip", dir=ctx.export_dir, delete=False)
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            write_export_bundle_zip(ctx, zf, export_data, package, payloads)
+        return tmp_path, filename
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def build_remote_export_bundle_file(ctx: BundlePreviewContext, *, selection: dict, client_ip: str) -> tuple[Path, str]:
+    """Generate a caller-aware project/pool-only bundle for a remote admin."""
+    ctx.ensure_dirs()
+    data, _revision, _ = ctx.get_state()
+    export_source = import_diff.strip_view_state(data)
+    with ctx.connect_db() as conn:
+        export_source = access_control.build_remote_export_state(conn, export_source, selection, client_ip)
+    export_data, package, payloads, _checksums, filename = prepare_export_bundle_parts(
+        ctx,
+        selection=selection,
+        source_state=export_source,
+        already_scoped=True,
+        scope=_scope_label(selection),
+    )
+    tmp = tempfile.NamedTemporaryFile(prefix="tcv7_remote_export_", suffix=".zip", dir=ctx.export_dir, delete=False)
     tmp_path = Path(tmp.name)
     tmp.close()
     try:
@@ -467,8 +521,9 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
             raise ValueError("导入包 manifest.json 格式不正确")
 
         asset_index = None
+        access_policy = None
+        checksums = None
         if chamber_package.is_chamberdata_manifest(manifest):
-            checksums = None
             checksums_path = tmp_path / chamber_package.CHECKSUMS_PATH
             # Early ChamberData v2 packages did not always include checksums.json.
             # Keep them importable, but verify every declared digest when present.
@@ -490,8 +545,28 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
             asset_index = chamber_package.read_asset_index(_read_package_json)
             chamber_package.validate_domain_documents(manifest, domains, asset_index)
             incoming_state = chamber_package.state_from_domain_documents(manifest, domains)
+            included_project_ids = {
+                str(project.get("id") or "")
+                for project in (incoming_state.get("projects") or [])
+                if isinstance(project, dict) and str(project.get("id") or "")
+            }
+            included_category_ids = {
+                str(category.get("id") or "")
+                for category in ((incoming_state.get("sampleLibrary") or {}).get("categories") or [])
+                if isinstance(category, dict) and str(category.get("id") or "")
+            }
+            access_policy = access_policy_transfer.load_access_policy_from_package(
+                tmp_path,
+                manifest,
+                checksums,
+                max_bytes=ctx.import_preview_max_state_bytes,
+                included_project_ids=included_project_ids,
+                included_category_ids=included_category_ids,
+            )
             state_bytes = sum((tmp_path / rel).stat().st_size for rel in chamber_package.DOMAIN_PATHS.values())
             state_bytes += (tmp_path / chamber_package.ASSET_INDEX_PATH).stat().st_size
+            if access_policy is not None:
+                state_bytes += (tmp_path / access_policy_transfer.ACCESS_POLICY_PATH).stat().st_size
             if checksums_path.is_file():
                 state_bytes += checksums_path.stat().st_size
         else:
@@ -509,6 +584,9 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
         import_defaults.validate_import_state_structure(incoming_state)
 
         current_data, current_revision, _ = ctx.get_state(compact=True)
+        access_policy_mode = str(fields.get("accessPolicyMode") or "merge").strip()
+        if access_policy_mode not in access_policy_transfer.SUPPORTED_IMPORT_MODES:
+            raise ValueError(f"权限策略导入模式不受支持: {access_policy_mode}")
         package_kind = str(manifest.get("packageKind") or "full")
         target_category_id = str(fields.get("targetCategoryId") or "")
         if package_kind == "sample-archive":
@@ -527,6 +605,12 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
         result["selectionTree"] = migration_scope.build_selection_tree(incoming_state)
         result["packageKind"] = package_kind
         result["scope"] = str(manifest.get("scope") or "")
+        with ctx.connect_db() as conn:
+            result["accessPolicy"] = access_policy_transfer.preview_access_policy(
+                conn,
+                access_policy,
+                selected_mode=access_policy_mode,
+            )
         if package_kind == "sample-archive":
             result["targetCategory"] = _target_archive_category(current_data, target_category_id)
         preview_id_value = preview_id()

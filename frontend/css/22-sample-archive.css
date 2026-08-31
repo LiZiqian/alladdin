@@ -14,7 +14,7 @@
   background: #fff;
 }
 .sample-summary-card {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--card-border);
   background: #fff;
   border-radius: 10px;
   padding: 10px 14px;
@@ -87,7 +87,7 @@
 }
 
 .sample-reassembly-panel {
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--card-border);
   border-radius: 10px;
   background: #fff;
   padding: 12px 14px;
@@ -188,7 +188,7 @@
   gap: 12px;
 }
 .sample-history-item {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--card-border);
   border-radius: 12px;
   background: #fff;
   padding: 14px;

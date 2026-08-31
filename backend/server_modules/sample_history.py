@@ -247,6 +247,13 @@ def list_sample_history_page(conn: sqlite3.Connection, sample_id: str, query: di
 
     photos_by_id = {str(photo.get("id") or ""): photo for photo in load_sample_photos(conn, sample_id)}
     history_rows = [sample_history_row_for(sample_id, item, photos_by_id) for item in rows_by_key.values()]
+    project_filter = task_queries.first_query_value(query, "projectId", "").strip()
+    if project_filter:
+        history_rows = [
+            item for item in history_rows
+            if str((item.get("task") or {}).get("projectId") or "") == project_filter
+            or any(str(log.get("projectId") or "") == project_filter for log in item.get("logs") or [] if isinstance(log, dict))
+        ]
     history_rows.sort(key=lambda item: str(item.get("sortTime") or ""), reverse=True)
     total = len(history_rows)
     total_pages = max(1, (total + page_size - 1) // page_size)

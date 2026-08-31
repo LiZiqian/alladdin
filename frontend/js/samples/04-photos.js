@@ -5,8 +5,28 @@
 
 app.registerModule("samples.photos", {
 
+  samplePhotoBinaryUrl(value, projectId = "") {
+    const raw = String(value || "").trim();
+    const accessProjectId = this.sampleAccessProjectId?.(projectId) || "";
+    if (!raw || !accessProjectId || /^(?:data|blob):/i.test(raw)) return raw;
+    const runtimeOrigin = typeof location !== "undefined" && location?.origin
+      ? String(location.origin)
+      : "http://localhost";
+    try {
+      const url = new URL(raw, runtimeOrigin);
+      if (!/^\/api\/samples\/[^/]+\/photos\/[^/]+/.test(url.pathname)) return raw;
+      if (/^https?:/i.test(raw) && url.origin !== runtimeOrigin) return raw;
+      url.searchParams.set("projectId", accessProjectId);
+      if (/^https?:/i.test(raw)) return url.toString();
+      return `${url.pathname}${url.search}${url.hash}`;
+    } catch (_error) {
+      return raw;
+    }
+  },
+
   photoThumbUrl(photo) {
-    return photo?.thumbUrl || photo?.thumbnailUrl || photo?.url || photo?.dataUrl || "";
+    const raw = photo?.thumbUrl || photo?.thumbnailUrl || photo?.url || photo?.dataUrl || "";
+    return this.samplePhotoBinaryUrl(raw);
   },
 
   async createPhotoThumbnail(file, { maxSize = 360, quality = 0.72 } = {}) {
@@ -58,8 +78,11 @@ app.registerModule("samples.photos", {
   },
 
   samplePhotosHtml(sample) {
-    const photos = Array.isArray(sample?.photos) ? sample.photos : [];
-    if (sample?.photosLoaded !== true && Number(sample?.photoCount || 0) > 0) {
+    const projectId = this.sampleAccessProjectId?.() || "";
+    const scopeLoaded = sample?.photosLoaded === true
+      && String(sample?.photosAccessProjectId || "") === projectId;
+    const photos = scopeLoaded && Array.isArray(sample?.photos) ? sample.photos : [];
+    if (!scopeLoaded && Number(sample?.photoCount || 0) > 0) {
       return `<div class="sample-photo-grid">
         <div class="sample-photo-card sample-photo-add" data-app-action="sample-photo-upload" data-id="${Utils.esc(sample.id)}">
           <div class="add-card-plus" style="font-size:28px;margin-bottom:6px">+</div>
@@ -93,12 +116,21 @@ app.registerModule("samples.photos", {
 
   async previewSamplePhoto(sampleId, photoId) {
     let sample = this.findSample(sampleId)?.sample;
-    if (sample && sample.photosLoaded !== true) {
-      sample = await this.ensureSampleDetailsLoaded(sampleId, { photos: true, events: false, renderPanels: true });
+    const projectId = this.sampleAccessProjectId?.() || "";
+    if (sample && (
+      sample.photosLoaded !== true
+      || String(sample.photosAccessProjectId || "") !== projectId
+    )) {
+      sample = await this.ensureSampleDetailsLoaded(sampleId, {
+        photos: true,
+        events: false,
+        renderPanels: true,
+        projectId,
+      });
     }
     const photo = (sample?.photos || []).find(x => x.id === photoId);
     if (!photo) return;
-    const src = photo.url || photo.dataUrl || "";
+    const src = this.samplePhotoBinaryUrl(photo.url || photo.dataUrl || "", projectId);
     if (!src) return;
     const existing = document.querySelector(".sample-photo-preview-mask");
     if (existing) existing.remove();

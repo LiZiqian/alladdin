@@ -19,74 +19,125 @@ app.registerModule("projects", {
     content.replaceChildren(card);
   },
 
-  projectMetaRow(label, value) {
-    const row = document.createElement("div");
-    row.className = "path";
-    row.style.cssText = "display:flex;gap:12px";
-    const labelEl = document.createElement("span");
-    labelEl.style.cssText = "color:#64748b;min-width:48px";
-    labelEl.textContent = label;
-    const valueEl = document.createElement("span");
-    valueEl.textContent = value || "-";
-    row.append(labelEl, valueEl);
-    return row;
-  },
-
   projectCard(project) {
+    const canOpen = this.resourceCanOpen ? this.resourceCanOpen(project) : project.canOpen !== false;
+    const canManage = this.resourceCanManage ? this.resourceCanManage(project) : project.canManage !== false;
+    const localAdmin = this.isLocalAdminAccess ? this.isLocalAdminAccess() : true;
     const card = document.createElement("div");
-    card.className = "card";
-    card.style.cssText = "position:relative;padding-bottom:28px";
+    card.className = `card project-entry-card access-resource-card${canOpen ? "" : " access-resource-locked"}`;
+    if (!canOpen) {
+      card.dataset.appAction = "access-denied";
+      card.dataset.resourceType = "project";
+      card.dataset.id = project.id || "";
+      card.title = "当前 IP 未获授权，点击查看说明";
+    }
     if (this.isProjectSelected(project.id)) {
       card.style.borderColor = "var(--primary)";
       card.style.borderWidth = "2px";
     }
 
     const head = document.createElement("div");
-    head.style.cssText = "display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:10px";
+    head.className = "project-card-heading";
+
+    const identity = document.createElement("div");
+    identity.className = "project-card-identity";
 
     const title = document.createElement("h3");
-    title.style.cssText = "margin:0;flex:1;min-width:0";
-    title.append(document.createTextNode(`项目：${project.name || ""}`));
+    title.className = "project-card-title";
+    title.textContent = project.name || "未命名项目";
 
-    const editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.className = "sample-card-edit-btn";
-    editButton.style.cssText = "vertical-align:baseline;margin-left:4px";
-    editButton.dataset.appAction = "project-edit";
-    editButton.dataset.id = project.id || "";
-    editButton.dataset.stopPropagation = "1";
-    editButton.title = "编辑项目";
-    editButton.textContent = "✎";
-    title.append(editButton);
+    const meta = document.createElement("div");
+    meta.className = "project-card-meta";
+    if (canOpen) {
+      const code = document.createElement("span");
+      code.textContent = `编号：${project.code || "-"}`;
+      const owner = document.createElement("span");
+      owner.textContent = `负责人：${project.owner || "-"}`;
+      meta.append(code, owner);
+    } else {
+      meta.className += " project-card-meta-locked";
+      meta.textContent = "详细信息需授权";
+    }
+    identity.append(title, meta);
+
+    const editControls = document.createElement("span");
+    editControls.className = "project-card-edit-controls";
+    if (canManage) {
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "sample-card-edit-btn";
+      editButton.dataset.appAction = "project-edit";
+      editButton.dataset.id = project.id || "";
+      editButton.dataset.stopPropagation = "1";
+      editButton.title = "编辑项目";
+      editButton.ariaLabel = "编辑项目";
+      editButton.textContent = "✎";
+      editControls.append(editButton);
+    }
+    head.append(identity, editControls);
+
+    const enterRow = document.createElement("div");
+    enterRow.className = "project-card-enter-row";
 
     const enterButton = document.createElement("button");
     enterButton.type = "button";
-    enterButton.className = "btn btn-sm";
-    enterButton.style.cssText = "display:inline-flex;align-items:center;gap:3px;line-height:1;flex-shrink:0;white-space:nowrap";
-    enterButton.dataset.appAction = "project-select";
+    enterButton.className = "btn project-card-enter-btn";
+    enterButton.dataset.appAction = canOpen ? "project-select" : "access-denied";
+    enterButton.dataset.resourceType = "project";
     enterButton.dataset.id = project.id || "";
-    enterButton.append(document.createTextNode("进入项目"));
+    enterButton.append(document.createTextNode(canOpen ? "进入项目" : "未授权"));
     const arrow = document.createElement("b");
-    arrow.textContent = "▶";
+    arrow.textContent = canOpen ? "▶" : "🔒";
     enterButton.append(arrow);
-    head.append(title, enterButton);
+    enterRow.append(enterButton);
 
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.className = "sample-card-destroy-btn";
-    deleteButton.dataset.appAction = "project-delete";
-    deleteButton.dataset.id = project.id || "";
-    deleteButton.dataset.stopPropagation = "1";
-    deleteButton.title = "删除项目";
-    deleteButton.textContent = "🗑";
+    const footer = document.createElement("div");
+    footer.className = "project-card-footer";
 
-    card.append(
-      head,
-      this.projectMetaRow("编号", project.code || "-"),
-      this.projectMetaRow("负责人", project.owner || "-"),
-      this.projectMetaRow("阶段数", String(project.stageCount ?? (project.stages || []).length)),
-      deleteButton
-    );
+    const roleBadge = document.createElement("span");
+    roleBadge.className = `access-role-badge role-${project.accessRole || (localAdmin ? "local_admin" : "none")}`;
+    roleBadge.textContent = this.accessRoleLabel ? this.accessRoleLabel(project.accessRole || (localAdmin ? "local_admin" : "none")) : (canOpen ? "可访问" : "未授权");
+
+    const controls = document.createElement("span");
+    controls.className = "access-card-controls project-card-footer-controls";
+    if (canManage) {
+      const aclButton = document.createElement("button");
+      aclButton.type = "button";
+      aclButton.className = "access-card-acl-btn";
+      aclButton.dataset.appAction = "access-rules-open";
+      aclButton.dataset.resourceType = "project";
+      aclButton.dataset.id = project.id || "";
+      aclButton.dataset.stopPropagation = "1";
+      aclButton.title = "管理项目 IP 访问名单";
+      aclButton.ariaLabel = "管理项目 IP 访问名单";
+      aclButton.textContent = "🛡️";
+      controls.append(aclButton);
+
+      const exportButton = document.createElement("button");
+      exportButton.type = "button";
+      exportButton.className = "access-card-export-btn";
+      exportButton.dataset.appAction = "project-export-scope";
+      exportButton.dataset.id = project.id || "";
+      exportButton.dataset.stopPropagation = "1";
+      exportButton.title = "导出此项目范围数据包";
+      exportButton.ariaLabel = "导出此项目范围数据包";
+      exportButton.textContent = "⇩";
+      controls.append(exportButton);
+    }
+    if (localAdmin) {
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "sample-card-destroy-btn";
+      deleteButton.dataset.appAction = "project-delete";
+      deleteButton.dataset.id = project.id || "";
+      deleteButton.dataset.stopPropagation = "1";
+      deleteButton.title = "删除项目";
+      deleteButton.ariaLabel = "删除项目";
+      deleteButton.textContent = "🗑";
+      controls.append(deleteButton);
+    }
+    footer.append(roleBadge, controls);
+    card.append(head, enterRow, footer);
     return card;
   },
 
@@ -111,7 +162,7 @@ app.registerModule("projects", {
     const grid = document.createElement("div");
     grid.className = "grid project-grid";
     projects.forEach(project => grid.append(this.projectCard(project)));
-    grid.append(this.projectAddCard());
+    if (this.isLocalAdminAccess ? this.isLocalAdminAccess() : true) grid.append(this.projectAddCard());
     content.replaceChildren(grid);
   },
 
@@ -369,6 +420,11 @@ app.registerModule("projects", {
   },
 
   async selectProject(id) {
+    const requested = this.findProjectRecord(id);
+    if (requested && this.resourceCanOpen && !this.resourceCanOpen(requested)) {
+      this.showResourceAccessDenied?.("project", id);
+      return;
+    }
     const selectionSequence = ++this._projectSelectionSequence;
     this.selectProjectWorkspaceState(id, { selectedStageId: null });
     const current = this.findProjectRecord(id);

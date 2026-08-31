@@ -8,6 +8,20 @@
    ======================================== */
 
 /* ---- Task Flow ---- */
+.project-config-card + .workspace-section.section-green {
+  margin-top: 34px;
+  border: 1px solid #64748b;
+}
+.project-config-card + .workspace-section.section-green::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -23px;
+  height: 10px;
+  border-radius: 3px;
+  background: #475569;
+}
 .task-flow-summary {
   display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 7px; margin: 8px 0 0;
@@ -15,25 +29,25 @@
   border-bottom: 2px solid var(--gray);
 }
 .task-flow-stat {
-  background: rgba(255, 255, 255, .72); border: 1px solid var(--border);
+  background: #f8fafc; border: 1px solid #94a3b8;
   border-radius: 9px; padding: 7px 9px;
   min-height: 54px;
 }
 .task-flow-stat b { font-size: 20px; line-height: 1.1; color: #1f2937; font-weight: 800 }
 .task-flow-stat span { display: block; font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.2; font-weight: 600 }
-.task-flow-stat.stat-total { background: var(--primary-bg); border-color: var(--primary-border) }
+.task-flow-stat.stat-total { background: #dbeafe; border-color: #93c5fd }
 .task-flow-stat.stat-total b,
 .task-flow-stat.stat-total span { color: var(--primary) }
-.task-flow-stat.stat-pending { background: var(--status-task-pending-bg); border-color: var(--status-task-pending-border) }
+.task-flow-stat.stat-pending { background: #f3e8ff; border-color: #d8b4fe }
 .task-flow-stat.stat-pending b,
 .task-flow-stat.stat-pending span { color: var(--status-task-pending-text) }
-.task-flow-stat.stat-running { background: var(--status-task-running-bg); border-color: var(--status-task-running-border) }
+.task-flow-stat.stat-running { background: #d1fae5; border-color: #86efac }
 .task-flow-stat.stat-running b,
 .task-flow-stat.stat-running span { color: var(--status-task-running-text) }
-.task-flow-stat.stat-blocked { background: var(--status-task-blocked-bg); border-color: var(--status-task-blocked-soft-border) }
+.task-flow-stat.stat-blocked { background: #fef3c7; border-color: #fcd34d }
 .task-flow-stat.stat-blocked b,
 .task-flow-stat.stat-blocked span { color: var(--status-task-blocked-text) }
-.task-flow-stat.stat-bad { background: var(--status-task-aborted-soft-bg); border-color: var(--status-task-aborted-soft-border) }
+.task-flow-stat.stat-bad { background: #fee2e2; border-color: #fca5a5 }
 .task-flow-stat.stat-bad b,
 .task-flow-stat.stat-bad span { color: var(--status-task-aborted-soft-text) }
 .task-flow-stat.stat-done { background: var(--status-task-done-bg); border-color: var(--status-task-done-border) }
@@ -64,8 +78,8 @@
   white-space: nowrap;
   flex: 0 0 auto;
 }
-.task-filter-item select,
-.task-filter-item input {
+#taskFlowShell .task-filter-item select,
+#taskFlowShell .task-filter-item input {
   height: 34px;
   min-width: 0;
   font-size: 12px;
@@ -73,6 +87,21 @@
   width: 100%;
   box-sizing: border-box;
   border-radius: 8px;
+  border: 1px solid #9ca3af;
+  background: #fff;
+  box-shadow: none;
+}
+#taskFlowShell .task-filter-item select:hover,
+#taskFlowShell .task-filter-item input:hover,
+#taskFlowShell .task-flow-pager select:hover {
+  border-color: #6b7280;
+}
+#taskFlowShell .task-filter-item select:focus,
+#taskFlowShell .task-filter-item input:focus,
+#taskFlowShell .task-flow-pager select:focus {
+  border-color: #6b7280;
+  outline: 1px solid #9ca3af;
+  outline-offset: 0;
 }
 .task-filter-item input::placeholder {
   font-size: 12px;
@@ -85,12 +114,17 @@
   width: 100%;
   padding-bottom: 0;
 }
-.task-filter-actions .btn {
+#taskFlowShell .task-filter-actions .btn {
   height: 34px;
   padding: 5px 12px;
   white-space: nowrap;
   width: 96px;
   color: var(--primary);
+  border: 1px solid #cbd5e1;
+  background: #fff;
+}
+#taskFlowShell .task-filter-actions .btn:hover {
+  border-color: #94a3b8;
 }
 @media (max-width: 1280px) {
   .task-filter-bar {
@@ -120,22 +154,42 @@
 .task-flow-pager-range {
   white-space: nowrap;
 }
-.task-flow-pager select {
+#taskFlowShell .task-flow-pager select {
   min-width: 116px;
+  border: 1px solid #9ca3af;
+  background-color: #fff;
+  box-shadow: none;
+}
+#taskFlowShell .task-flow-pager .btn {
+  border: 1px solid #9ca3af;
+  background: #fff;
+}
+#taskFlowShell .task-flow-pager .btn:disabled {
+  opacity: 1;
+  border-color: #9ca3af;
+  background: #e5e7eb;
+  color: #64748b;
 }
 @media (max-width: 760px) {
   .task-flow-pager .list-pager-controls {
     flex-wrap: wrap;
   }
 }
-.task-flow-table { overflow-x: auto; overflow-y: visible }
-.task-flow-table table { width: 100%; min-width: 1280px; table-layout: fixed }
-.task-flow-table th,
-.task-flow-table td { vertical-align: middle; border-right: 1px solid #eef2f7 }
-.task-flow-table th:last-child,
-.task-flow-table td:last-child { border-right: 0 }
-.task-flow-table th {
-  border-right-color: #e2e8f0;
+#taskFlowShell .task-flow-table {
+  overflow-x: auto;
+  overflow-y: visible;
+  border-color: #64748b;
+}
+#taskFlowShell .task-flow-table table { width: 100%; min-width: 1280px; table-layout: fixed }
+#taskFlowShell .task-flow-table th,
+#taskFlowShell .task-flow-table td {
+  vertical-align: middle;
+  border: 1.5px solid #64748b;
+}
+#taskFlowShell .task-flow-table th:last-child,
+#taskFlowShell .task-flow-table td:last-child { border-right: 1.5px solid #64748b }
+#taskFlowShell .task-flow-table th {
+  background: #d1d5db;
   font-size: 13px;
   font-weight: 600;
 }
@@ -309,7 +363,11 @@
 .badge.status-running { background: var(--status-task-running-bg); color: var(--status-task-running-text) }
 .badge.status-blocked { background: var(--status-task-blocked-bg); color: var(--status-task-blocked-text) }
 .badge.status-done { background: var(--status-task-done-bg); color: var(--status-task-done-text) }
-.badge.status-bad { background: var(--status-task-aborted-soft-bg); color: var(--status-task-aborted-soft-text) }
+#taskFlowShell .badge.status-bad {
+  background: var(--status-task-aborted-soft-bg);
+  color: var(--status-task-aborted-soft-text);
+  border: 1px solid var(--status-task-aborted-border);
+}
 .task-flow-table td:nth-child(9) .badge {
   font-size: 12px;
   font-weight: 600;
@@ -342,7 +400,16 @@
   align-items: center;
   flex-wrap: nowrap;
 }
-.task-op-cell-new .btn { white-space: nowrap }
+#taskFlowShell .task-op-cell-new .btn { white-space: nowrap }
+#taskFlowShell .task-op-actions .btn.btn-outline,
+#taskFlowShell .task-op-actions .task-more-trigger {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+}
+#taskFlowShell .task-op-actions .btn.btn-outline:hover,
+#taskFlowShell .task-op-actions .task-more-trigger:hover {
+  border-color: #94a3b8;
+}
 /* 配置/更多下拉菜单容器 */
 .task-op-menu {
   position: relative;

@@ -188,7 +188,8 @@ def sync_sample_library(ctx: SampleLibraryContext, conn: sqlite3.Connection, dat
 def load_sample_photos(conn: sqlite3.Connection, sample_id: str) -> list[dict]:
     rows = conn.execute(
         """
-        SELECT id, original_name, file_name, mime_type, size, relative_path, created_at
+        SELECT id, original_name, file_name, mime_type, size, relative_path, created_at,
+               project_id, stage_id, task_id
         FROM sample_assets
         WHERE sample_id = ? AND kind = 'photo' AND deleted_at IS NULL
         ORDER BY created_at, id
@@ -205,11 +206,14 @@ def load_sample_photos(conn: sqlite3.Connection, sample_id: str) -> list[dict]:
             "url": sample_assets.url_for_asset(sample_id, row["id"]),
             "relativePath": row["relative_path"],
             "uploadedAt": row["created_at"],
+            "projectId": str(row["project_id"] or ""),
+            "stageId": str(row["stage_id"] or ""),
+            "taskId": str(row["task_id"] or ""),
         }
         thumb_id = sample_assets.thumbnail_asset_id(row["id"])
         thumb = conn.execute(
             """
-            SELECT id, mime_type, size, relative_path
+            SELECT id, mime_type, size, relative_path, project_id, stage_id, task_id
             FROM sample_assets
             WHERE sample_id = ? AND id = ? AND kind = 'photo_thumb' AND deleted_at IS NULL
             """,

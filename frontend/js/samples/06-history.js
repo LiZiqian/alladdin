@@ -24,20 +24,29 @@ app.registerModule("samples.history", {
     if (hint) hint.textContent = hints[tab] || "";
     if ((tab === "photos" || tab === "history") && this._activeSampleDetailId) {
       const sample = this.findSample(this._activeSampleDetailId)?.sample;
-      if (tab === "history" && sample && sample.historyLoaded !== true) {
+      const projectId = this.sampleAccessProjectId?.() || "";
+      if (tab === "history" && sample && (
+        sample.historyLoaded !== true
+        || String(sample.historyAccessProjectId || "") !== projectId
+      )) {
         this.ensureSampleHistoryLoaded(this._activeSampleDetailId, {
           page: 1,
           pageSize: 20,
-          renderPanels: true
+          renderPanels: true,
+          projectId,
         }).catch(e => {
           console.error("加载样机测试履历失败：", e);
           Utils.toast("样机测试履历加载失败：" + (e.message || e));
         });
-      } else if (sample && tab === "photos" && sample.photosLoaded !== true) {
+      } else if (sample && tab === "photos" && (
+        sample.photosLoaded !== true
+        || String(sample.photosAccessProjectId || "") !== projectId
+      )) {
         this.ensureSampleDetailsLoaded(this._activeSampleDetailId, {
           photos: true,
           events: false,
-          renderPanels: true
+          renderPanels: true,
+          projectId,
         }).catch(e => {
           console.error("加载样机详情数据失败：", e);
           Utils.toast("样机详情数据加载失败：" + (e.message || e));
@@ -49,7 +58,12 @@ app.registerModule("samples.history", {
   sampleTaskResultPhotos(task, sampleId) {
     if (!task) return [];
     const sample = this.findSample(sampleId)?.sample || {};
-    const photoById = new Map((sample.photos || []).filter(p => p?.id).map(p => [p.id, p]));
+    const projectId = this.sampleAccessProjectId?.() || "";
+    const samplePhotos = sample.photosLoaded === true
+      && String(sample.photosAccessProjectId || "") === projectId
+      ? (sample.photos || [])
+      : [];
+    const photoById = new Map(samplePhotos.filter(p => p?.id).map(p => [p.id, p]));
     const photos = [];
     (task.resultUploads || []).forEach(upload => {
       (upload.samples || [])
@@ -96,11 +110,27 @@ app.registerModule("samples.history", {
   },
 
   sampleEventLogsForSample(sampleId) {
+    const projectId = this.sampleAccessProjectId?.() || "";
+    const key = this.sampleAccessScopeKey?.(sampleId, projectId) || "";
+    const scoped = key ? this._sampleDetailAccessCache?.[key] : null;
+    if (scoped?.eventsLoaded === true) return Array.isArray(scoped.events) ? scoped.events : [];
+    if (projectId) return [];
     return this.sampleEventRecords().filter(log => String(log?.sampleId || "") === String(sampleId));
   },
 
+  sampleHistoryCacheForCurrentScope(sampleId) {
+    const projectId = this.sampleAccessProjectId?.() || "";
+    const key = this.sampleHistoryCacheKey?.(sampleId, projectId) || String(sampleId || "");
+    const scoped = this._sampleHistoryCache?.[key];
+    if (scoped) return scoped;
+    const legacy = this._sampleHistoryCache?.[String(sampleId || "")];
+    if (!legacy) return null;
+    const legacyProjectId = String(legacy.projectId || "");
+    return legacyProjectId === projectId ? legacy : null;
+  },
+
   sampleTestHistoryHtml(sampleId) {
-    const cache = this._sampleHistoryCache?.[String(sampleId || "")];
+    const cache = this.sampleHistoryCacheForCurrentScope(sampleId);
     if (!cache || cache.loading) {
       return this.sampleArchivePlaceholder("正在加载测试履历", "测试履历按页从服务器读取。");
     }
@@ -165,7 +195,13 @@ app.registerModule("samples.history", {
 
   async loadSampleHistoryPage(sampleId, page) {
     try {
-      await this.ensureSampleHistoryLoaded(sampleId, { page, pageSize: 20, renderPanels: true, force: true });
+      await this.ensureSampleHistoryLoaded(sampleId, {
+        page,
+        pageSize: 20,
+        renderPanels: true,
+        force: true,
+        projectId: this.sampleAccessProjectId?.() || "",
+      });
     } catch (e) {
       Utils.toast("样机测试履历加载失败：" + (e.message || e));
     }

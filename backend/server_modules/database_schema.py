@@ -51,6 +51,81 @@ def ensure_static_schema(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS project_ip_access (
+            project_id TEXT NOT NULL,
+            ip_address TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('viewer', 'contributor', 'project_admin')),
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+            device_label TEXT,
+            user_note TEXT,
+            created_by_ip TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT,
+            PRIMARY KEY(project_id, ip_address),
+            FOREIGN KEY(project_id) REFERENCES project_records(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_project_ip_access_ip ON project_ip_access(ip_address, enabled, project_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sample_pool_ip_access (
+            category_id TEXT NOT NULL,
+            ip_address TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('pool_viewer', 'pool_maintainer', 'pool_admin')),
+            enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+            device_label TEXT,
+            user_note TEXT,
+            created_by_ip TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT,
+            PRIMARY KEY(category_id, ip_address),
+            FOREIGN KEY(category_id) REFERENCES sample_categories(id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_pool_ip_access_ip ON sample_pool_ip_access(ip_address, enabled, category_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS security_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            time TEXT NOT NULL,
+            client_ip TEXT NOT NULL,
+            action TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id TEXT,
+            allowed INTEGER NOT NULL CHECK(allowed IN (0, 1)),
+            actor_role TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{}'
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_security_audit_time ON security_audit_log(time, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_security_audit_resource ON security_audit_log(resource_type, resource_id, time)")
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_audit_log_security_write
+        AFTER INSERT ON audit_log
+        BEGIN
+            INSERT INTO security_audit_log
+            (time, client_ip, action, resource_type, resource_id, allowed, actor_role, detail_json)
+            VALUES (
+                NEW.time,
+                COALESCE(NEW.client_ip, ''),
+                COALESCE(NEW.action, 'business_write'),
+                'business_write',
+                '',
+                1,
+                '',
+                '{"source":"audit_log","atomic":true}'
+            );
+        END
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS sample_categories (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -119,11 +194,18 @@ def ensure_static_schema(conn: sqlite3.Connection) -> None:
             size INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             created_by TEXT,
+            project_id TEXT,
+            stage_id TEXT,
+            task_id TEXT,
             deleted_at TEXT
         )
         """
     )
+    ensure_table_column(conn, "sample_assets", "project_id", "TEXT")
+    ensure_table_column(conn, "sample_assets", "stage_id", "TEXT")
+    ensure_table_column(conn, "sample_assets", "task_id", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_assets_sample ON sample_assets(sample_id, kind, deleted_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_assets_context ON sample_assets(sample_id, project_id, task_id, kind, deleted_at)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS sample_events (

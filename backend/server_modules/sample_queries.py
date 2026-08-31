@@ -440,37 +440,53 @@ def list_samples_page(conn: sqlite3.Connection, category_id: str, query: dict[st
     where = ["category_id = ?", "deleted_at IS NULL"]
     args: list[object] = [category_id]
     keyword = first_query_value(query, "keyword", "").strip().lower()
+    safe_pool_search = first_query_value(query, "_safePoolSearch", "") == "1"
     history_cte = ""
     history_args: list[object] = []
     if keyword:
         like = f"%{keyword}%"
-        direct_match = conn.execute(
-            """
-            SELECT 1
-            FROM sample_records
-            WHERE category_id = ? AND deleted_at IS NULL
-              AND (
-                    LOWER(sample_no) LIKE ? OR LOWER(sn) LIKE ? OR LOWER(imei) LIKE ?
-                 OR LOWER(board_sn) LIKE ? OR LOWER(owner) LIKE ? OR LOWER(borrower) LIKE ?
-                 OR LOWER(location) LIKE ? OR LOWER(data_json) LIKE ?
-              )
-            LIMIT 1
-            """,
-            [category_id, *([like] * 8)],
-        ).fetchone()
-        if direct_match:
+        if safe_pool_search:
+            # A pool role may search only fields already visible in the pool
+            # page.  Searching data_json or task/event history would leak
+            # other projects through the filtered count even after response
+            # redaction.
             history_cte = "WITH history_matches(sample_id) AS (SELECT NULL AS sample_id WHERE 0)"
+            history_clause = ""
+            searchable_fields = (
+                "LOWER(sample_no) LIKE ? OR LOWER(sn) LIKE ? OR LOWER(imei) LIKE ? "
+                "OR LOWER(board_sn) LIKE ? OR LOWER(owner) LIKE ? OR LOWER(borrower) LIKE ? "
+                "OR LOWER(location) LIKE ?"
+            )
+            where.append(f"({searchable_fields})")
+            args.extend([like] * 7)
         else:
-            history_cte, history_args = sample_history_search_cte(keyword)
-        history_clause = "" if direct_match else " OR history_matches.sample_id IS NOT NULL"
-        where.append(
-            f"""
-            (LOWER(sample_no) LIKE ? OR LOWER(sn) LIKE ? OR LOWER(imei) LIKE ?
-             OR LOWER(board_sn) LIKE ? OR LOWER(owner) LIKE ? OR LOWER(borrower) LIKE ?
-             OR LOWER(location) LIKE ? OR LOWER(data_json) LIKE ?{history_clause})
-            """
-        )
-        args.extend([like] * 8)
+            direct_match = conn.execute(
+                """
+                SELECT 1
+                FROM sample_records
+                WHERE category_id = ? AND deleted_at IS NULL
+                  AND (
+                        LOWER(sample_no) LIKE ? OR LOWER(sn) LIKE ? OR LOWER(imei) LIKE ?
+                     OR LOWER(board_sn) LIKE ? OR LOWER(owner) LIKE ? OR LOWER(borrower) LIKE ?
+                     OR LOWER(location) LIKE ? OR LOWER(data_json) LIKE ?
+                  )
+                LIMIT 1
+                """,
+                [category_id, *([like] * 8)],
+            ).fetchone()
+            if direct_match:
+                history_cte = "WITH history_matches(sample_id) AS (SELECT NULL AS sample_id WHERE 0)"
+            else:
+                history_cte, history_args = sample_history_search_cte(keyword)
+            history_clause = "" if direct_match else " OR history_matches.sample_id IS NOT NULL"
+            where.append(
+                f"""
+                (LOWER(sample_no) LIKE ? OR LOWER(sn) LIKE ? OR LOWER(imei) LIKE ?
+                 OR LOWER(board_sn) LIKE ? OR LOWER(owner) LIKE ? OR LOWER(borrower) LIKE ?
+                 OR LOWER(location) LIKE ? OR LOWER(data_json) LIKE ?{history_clause})
+                """
+            )
+            args.extend([like] * 8)
     owner = first_query_value(query, "owner", "").strip().lower()
     if owner:
         where.append("LOWER(owner) LIKE ?")

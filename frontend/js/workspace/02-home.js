@@ -71,16 +71,10 @@ app.registerModule("workspace.home", {
         <div class="stage-summary-title">
           <div class="stage-summary-name-row">
             <span>${Utils.esc(x.stage.name)}</span>
-            ${sortMode ? '' : `<button type="button" class="btn btn-sm btn-purple stage-config-btn" data-app-action="stage-strategy-open" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">配置测试用例集</button>`}
-          </div>
-          <div class="stage-summary-actions">
-            ${sortMode
-              ? '<span class="stage-sort-hint">拖动排序</span>'
-              : `<button type="button" class="sample-card-destroy-btn" style="position:static" data-app-action="stage-delete" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}" title="删除此阶段">🗑</button>
-                <button type="button" style="background:none;border:none;font-size:18px;font-weight:900;opacity:0.75;color:#4b5563;cursor:pointer;padding:2px;line-height:1;margin-left:2px;transition:opacity .15s" title="复制为一个新阶段" aria-label="复制为一个新阶段" data-app-action="stage-copy" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">🗐</button>`}
+            ${sortMode ? '' : `<button type="button" class="btn btn-sm btn-purple stage-config-btn" data-app-action="stage-strategy-open" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}" title="配置测试用例集">配置</button>`}
           </div>
         </div>
-        <div class="path">方案(SKU)：${(x.stage.skuNames || []).map(n => Utils.esc(n)).join(" / ") || "-"}</div>
+        <div class="path stage-summary-sku">方案(SKU)：${(x.stage.skuNames || []).map(n => Utils.esc(n)).join(" / ") || "-"}</div>
         <div class="progress-bar-wrap">
           <div class="progress-bar-fill" style="width:${pct}%;background:${x.passRate > 80 ? 'var(--pass)' : x.passRate > 50 ? 'var(--warn)' : 'var(--primary)'}"></div>
         </div>
@@ -101,6 +95,12 @@ app.registerModule("workspace.home", {
             <span>任务<em>${x.runningTasks} 项</em></span>
             <span>占用样机<em>${x.runningSampleCount} 台</em></span>
           </div>
+        </div>
+        <div class="stage-summary-actions stage-summary-footer-actions">
+          ${sortMode
+            ? '<span class="stage-sort-hint">拖动排序</span>'
+            : `<button type="button" class="sample-card-destroy-btn stage-summary-delete-btn" data-app-action="stage-delete" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}" title="删除此阶段" aria-label="删除此阶段">🗑</button>
+              <button type="button" class="stage-copy-btn" title="复制为一个新阶段" aria-label="复制为一个新阶段" data-app-action="stage-copy" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">🗐</button>`}
         </div>
       </div>`;
     }).join("");
@@ -144,6 +144,11 @@ app.registerModule("workspace.home", {
     }
   },
 
+  projectConfigHelpHtml(text) {
+    const help = String(text || "").trim();
+    return `<button type="button" class="project-config-help" tabindex="0" aria-label="说明：${Utils.esc(help)}" data-tooltip="${Utils.esc(help)}" data-stop-propagation="1">?</button>`;
+  },
+
   projectWorkspacePageNodes(project, stage, { stageCards, addStageCard, sampleOwnerCounts, sampleBorrowerCounts, sortMode }) {
     const nodes = [];
     const configCard = document.createElement("div");
@@ -175,7 +180,7 @@ app.registerModule("workspace.home", {
 
   projectStageConfigSectionNode(stageCards, addStageCard, sortMode) {
     const section = document.createElement("div");
-    section.className = `project-config-section ${this.isCollapsed("stage") ? "is-collapsed" : ""}`.trim();
+    section.className = `project-config-section project-stage-section ${this.isCollapsed("stage") ? "is-collapsed" : ""}`.trim();
 
     const head = document.createElement("div");
     head.className = "stage-summary-section-head";
@@ -183,6 +188,7 @@ app.registerModule("workspace.home", {
     const title = document.createElement("div");
     title.className = "stage-summary-section-title";
     title.textContent = "项目阶段与方案配置";
+    this.appendWorkspaceHtml(title, this.projectConfigHelpHtml("为每个阶段维护方案（SKU）和测试用例集；配置完成后，可在下方任务管理工作台中下发测试任务。"));
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = `btn btn-sm ${sortMode ? "stage-sort-done" : "btn-outline"} stage-sort-toggle stage-sort-toggle-right`;
@@ -190,11 +196,6 @@ app.registerModule("workspace.home", {
     toggle.textContent = sortMode ? "完成排序" : "手动拖动排序";
     head.append(title, toggle);
     section.append(head);
-
-    const desc = document.createElement("div");
-    desc.className = "stage-summary-section-desc";
-    desc.textContent = "点击 <配置测试用例集> 可为该阶段配置测试用例池，并在 <任务管理> 中下发用例任务。";
-    section.append(desc);
 
     const body = document.createElement("div");
     body.className = "project-config-body";
@@ -317,13 +318,16 @@ app.registerModule("workspace.home", {
       <div class="project-config-section project-members-section ${collapsed ? 'is-collapsed' : ''}">
         <div class="stage-summary-section-head">
           ${this.sectionToggleTriangle('members')}
-          <div class="stage-summary-section-title">人员配置</div>
+          <div class="stage-summary-section-title">
+            人员配置
+            ${this.projectConfigHelpHtml("测试人员用于任务下发与操作留痕；开发人员用于样机领用记录；样机挂账人可从全部已配置人员中选择。")}
+            <span class="project-config-section-count">${activeMembers.length} 人</span>
+          </div>
           <div class="project-members-head-actions">
             <button class="btn btn-sm btn-outline" data-app-action="project-members-template">下载导入模板</button>
             <button class="btn btn-sm" data-app-action="project-members-import">批量导入人员名单</button>
           </div>
         </div>
-        <div class="stage-summary-section-desc">测试人员用于任务下发和操作记录；开发人员用于样机取走；挂账人可从全部人员中选择。共 ${activeMembers.length} 人</div>
         <div class="project-members-body">
           <div class="project-member-summary-grid">${summaryCards}</div>
           ${detailPanel}
@@ -380,9 +384,12 @@ app.registerModule("workspace.home", {
       <div class="project-config-section project-locations-section ${collapsed ? 'is-collapsed' : ''}">
         <div class="stage-summary-section-head">
           ${this.sectionToggleTriangle('locations')}
-          <div class="stage-summary-section-title">位置配置</div>
+          <div class="stage-summary-section-title">
+            位置配置
+            ${this.projectConfigHelpHtml("维护项目可用的样机存放位置，后续可在样机档案中直接选择并记录实际存放地点。")}
+            <span class="project-config-section-count">${locations.length} 个位置</span>
+          </div>
         </div>
-        <div class="stage-summary-section-desc">配置项目相关位置信息，用于记录样机实时存放地点，后续可在样机档案中选填。</div>
         <div class="project-locations-body">
           <div class="project-locations-grid">
             ${cards || ''}
@@ -395,6 +402,16 @@ app.registerModule("workspace.home", {
       </div>`;
   },
 
+  canConfigureProjectDefaultSampleCategory(category) {
+    if (!category) return false;
+    if (typeof this.isLocalAdminAccess !== "function") return true;
+    if (this.isLocalAdminAccess()) return true;
+    const role = typeof this.samplePoolAccessRole === "function"
+      ? this.samplePoolAccessRole(category)
+      : String(category.accessRole || "");
+    return role === "pool_admin";
+  },
+
   workspaceDefaultSampleCategoryHtml(project) {
     const collapsed = this.isCollapsed("sampleCategoryConfig");
     const categories = this.sampleCategoryRecords();
@@ -404,25 +421,26 @@ app.registerModule("workspace.home", {
       ...categories.map(category => {
         const id = String(category.id || "");
         const selected = id === selectedId ? "selected" : "";
+        const canConfigure = this.canConfigureProjectDefaultSampleCategory(category);
+        const disabled = canConfigure ? "" : "disabled";
         const count = Number(category.sampleCount ?? (category.samples || []).length) || 0;
         const suffix = count ? ` (${count})` : "";
-        return `<option value="${Utils.esc(id)}" ${selected}>${Utils.esc(category.name || id)}${suffix}</option>`;
+        const permissionSuffix = canConfigure ? "" : " · 需要池管理员权限";
+        return `<option value="${Utils.esc(id)}" ${selected} ${disabled}>${Utils.esc(category.name || id)}${suffix}${permissionSuffix}</option>`;
       })
     ].join("");
-    const configured = selectedId
-      ? `当前默认：${Utils.esc(this.projectDefaultSampleCategoryName(project) || selectedId)}`
-      : "当前未设置，任务配置和临时变更默认显示全部样机池。";
     return `
       <div class="project-config-section project-default-sample-section ${collapsed ? 'is-collapsed' : ''}">
         <div class="stage-summary-section-head">
           ${this.sectionToggleTriangle('sampleCategoryConfig')}
-          <div class="stage-summary-section-title">样机池配置</div>
+          <div class="stage-summary-section-title">
+            样机池配置
+            ${this.projectConfigHelpHtml("设置任务配置和临时变更时优先显示的默认样机池。远程项目管理员只能选择同时拥有池管理员权限的样机池。")}
+          </div>
         </div>
-        <div class="stage-summary-section-desc">设置本项目任务配置、临时变更等样机选择入口的默认候选池。</div>
         <div class="project-default-sample-body project-config-body">
           <label class="project-default-sample-label" for="projectDefaultSampleCategory">默认样机池</label>
           <select id="projectDefaultSampleCategory" class="project-default-sample-select" data-app-action="project-default-sample-category" data-app-events="change">${options}</select>
-          <span class="project-default-sample-current">${configured}</span>
         </div>
       </div>`;
   },
@@ -431,8 +449,14 @@ app.registerModule("workspace.home", {
     const p = this.currentProject();
     if (!p) return;
     const nextId = String(categoryId || "").trim();
-    if (nextId && !this.findSampleCategoryRecord(nextId)) {
+    const nextCategory = nextId ? this.findSampleCategoryRecord(nextId) : null;
+    if (nextId && !nextCategory) {
       alert("所选样机池不存在或已被删除。");
+      this.render();
+      return;
+    }
+    if (nextCategory && !this.canConfigureProjectDefaultSampleCategory(nextCategory)) {
+      alert("只有同时拥有该样机池池管理员权限，才能将它设为项目默认样机池。");
       this.render();
       return;
     }

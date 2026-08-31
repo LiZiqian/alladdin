@@ -136,6 +136,45 @@ def apply_id_maps(data: dict,
                 sample["currentTaskId"] = task_id_map[current_task_id]
 
 
+def remap_import_photo_contexts(
+    data: dict,
+    project_id_map: dict[str, str],
+    stage_id_map: dict[str, str],
+    task_id_map: dict[str, str],
+) -> None:
+    """Remap portable asset ownership, failing closed for skipped scopes."""
+    for category in (data.get("sampleLibrary") or {}).get("categories") or []:
+        if not isinstance(category, dict):
+            continue
+        for sample in category.get("samples") or []:
+            if not isinstance(sample, dict):
+                continue
+            for photo in sample.get("photos") or []:
+                if not isinstance(photo, dict):
+                    continue
+                project_id = str(photo.get("projectId") or "")
+                stage_id = str(photo.get("stageId") or "")
+                task_id = str(photo.get("taskId") or "")
+                if project_id == "__restricted__":
+                    photo.update({"projectId": "__restricted__", "stageId": "", "taskId": ""})
+                    continue
+                if not any((project_id, stage_id, task_id)):
+                    continue
+                if (
+                    not project_id
+                    or project_id not in project_id_map
+                    or (stage_id and stage_id not in stage_id_map)
+                    or (task_id and task_id not in task_id_map)
+                ):
+                    photo.update({"projectId": "__restricted__", "stageId": "", "taskId": ""})
+                    continue
+                photo.update({
+                    "projectId": project_id_map[project_id],
+                    "stageId": stage_id_map.get(stage_id, "") if stage_id else "",
+                    "taskId": task_id_map.get(task_id, "") if task_id else "",
+                })
+
+
 def validate_import_commit_state(data: dict, project_ids: set[str]) -> list[str]:
     """Validate imported project subtrees before writing them to storage."""
     target_project_ids = {str(project_id) for project_id in project_ids if project_id}

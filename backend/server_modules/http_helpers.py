@@ -7,12 +7,19 @@ from typing import Callable
 STATIC_ASSET_CACHE = "public, max-age=0, must-revalidate"
 
 
+def send_security_headers(handler) -> None:
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
+    handler.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+
+
 def send_json(handler, payload: dict, *, status: int = 200, json_dumps: Callable[[object], str]) -> None:
     data = json_dumps(payload).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
     handler.send_header("Cache-Control", "no-store")
+    send_security_headers(handler)
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -22,6 +29,7 @@ def send_bytes(handler, data: bytes, content_type: str, *, status: int = 200, ca
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(data)))
     handler.send_header("Cache-Control", cache)
+    send_security_headers(handler)
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -33,6 +41,7 @@ def send_file(handler, target: Path, content_type: str, *, cache: str = STATIC_A
         handler.send_response(304)
         handler.send_header("ETag", etag)
         handler.send_header("Cache-Control", cache)
+        send_security_headers(handler)
         handler.end_headers()
         return
     data = target.read_bytes()
@@ -41,6 +50,7 @@ def send_file(handler, target: Path, content_type: str, *, cache: str = STATIC_A
     handler.send_header("Content-Length", str(len(data)))
     handler.send_header("Cache-Control", cache)
     handler.send_header("ETag", etag)
+    send_security_headers(handler)
     handler.end_headers()
     handler.wfile.write(data)
 

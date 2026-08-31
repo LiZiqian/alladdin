@@ -266,3 +266,155 @@ def backfill_project_task_samples(ctx: DatabaseBackfillContext, conn: sqlite3.Co
             task,
             [str(x) for x in sample_ids],
         )
+
+
+def _photo_reference_ids(record: object) -> set[str]:
+    if not isinstance(record, dict):
+        return set()
+    result: set[str] = set()
+    for key in ("photos", "resultPhotos", "attachments"):
+        values = record.get(key)
+        if not isinstance(values, list):
+            continue
+        for photo in values:
+            if not isinstance(photo, dict):
+                continue
+            photo_id = str(photo.get("id") or "")
+            thumb_id = str(photo.get("thumbId") or photo.get("thumbnailId") or "")
+            if photo_id:
+                result.add(photo_id)
+                result.add(f"{photo_id}__thumb")
+            if thumb_id:
+                result.add(thumb_id)
+    return result
+
+
+def _task_photo_references(task: dict) -> set[tuple[str, str]]:
+    references: set[tuple[str, str]] = set()
+
+    def add_sample_record(record: object) -> None:
+        if not isinstance(record, dict):
+            return
+        sample_id = str(record.get("sampleId") or record.get("sid") or "")
+        if not sample_id:
+            return
+        for photo_id in _photo_reference_ids(record):
+            references.add((sample_id, photo_id))
+
+    for upload in task.get("resultUploads") or []:
+        if isinstance(upload, dict):
+            for record in upload.get("samples") or []:
+                add_sample_record(record)
+    result_draft = task.get("resultDraft")
+    if isinstance(result_draft, dict):
+        for record in result_draft.get("samples") or []:
+            add_sample_record(record)
+    for key in ("sampleFaultRecords", "removedSampleRecords"):
+        for record in task.get(key) or []:
+            add_sample_record(record)
+    return references
+
+
+def backfill_sample_asset_context(
+    ctx: DatabaseBackfillContext,
+    conn: sqlite3.Connection,
+    *,
+    force: bool = False,
+) -> None:
+    """Attach legacy task-result photos to their real project/task context.
+
+    Old releases stored exterior photos and result attachments in the same
+    table without context columns.  Only unambiguous references are promoted;
+    assets that are genuinely unreferenced remain compatible public photos.
+    """
+    migration_id = "20260830_sample_asset_project_context_v1"
+    if not force and conn.execute("SELECT 1 FROM schema_migrations WHERE id = ?", (migration_id,)).fetchone():
+        return
+    unresolved = conn.execute(
+        """
+        SELECT 1
+        FROM sample_assets AS a
+        JOIN sample_records AS s ON s.id = a.sample_id AND s.deleted_at IS NULL
+        WHERE a.kind IN ('photo', 'photo_thumb')
+          AND COALESCE(a.project_id, '') = ''
+          AND COALESCE(a.stage_id, '') = ''
+          AND COALESCE(a.task_id, '') = ''
+        LIMIT 1
+        """
+    ).fetchone()
+    if not unresolved:
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(id) VALUES(?)", (migration_id,))
+        return
+
+    candidates: dict[tuple[str, str], set[tuple[str, str, str]]] = {}
+
+    def add(sample_id: str, photo_id: str, scope: tuple[str, str, str]) -> None:
+        if sample_id and photo_id and any(scope):
+            candidates.setdefault((sample_id, photo_id), set()).add(scope)
+
+    def event_requires_restricted_context(event: dict) -> bool:
+        event_type = str(event.get("eventType") or event.get("type") or event.get("source") or "").lower()
+        if "externalhistory" in event_type or "external_history" in event_type or "外部履历" in event_type:
+            return True
+        business_keys = (
+            "projectName", "stageName", "taskName", "testItem", "result", "latestResult",
+            "problem", "problemDescription", "resultPhotos", "resultUploads",
+        )
+        return any(event.get(key) not in (None, "", [], {}) for key in business_keys)
+
+    task_rows = conn.execute(
+        "SELECT id, project_id, stage_id, data_json FROM project_tasks"
+    ).fetchall()
+    for row in task_rows:
+        task = ctx.json_obj(row["data_json"], {}) or {}
+        scope = (str(row["project_id"] or ""), str(row["stage_id"] or ""), str(row["id"] or ""))
+        for sample_id, photo_id in _task_photo_references(task):
+            add(sample_id, photo_id, scope)
+
+    event_rows = conn.execute(
+        "SELECT sample_id, project_id, stage_id, task_id, data_json FROM sample_events"
+    ).fetchall()
+    for row in event_rows:
+        event = ctx.json_obj(row["data_json"], {}) or {}
+        sample_id = str(row["sample_id"] or event.get("sampleId") or "")
+        scope = (
+            str(row["project_id"] or event.get("projectId") or ""),
+            str(row["stage_id"] or event.get("stageId") or ""),
+            str(row["task_id"] or event.get("taskId") or ""),
+        )
+        for photo_id in _photo_reference_ids(event):
+            if any(scope):
+                add(sample_id, photo_id, scope)
+            elif event_requires_restricted_context(event):
+                # Sample-archive externalHistory and legacy result events may
+                # have no resolvable project/task IDs. They are still business
+                # attachments and must never fall back to public pool photos.
+                add(sample_id, photo_id, ("__restricted__", "", ""))
+
+    for (sample_id, photo_id), scopes in candidates.items():
+        if len(scopes) == 1:
+            project_id, stage_id, task_id = next(iter(scopes))
+        else:
+            # A task-referenced asset is never public merely because legacy
+            # data makes its exact owning task ambiguous.
+            project_id, stage_id, task_id = "__restricted__", "", ""
+        root_photo_id = photo_id[:-7] if photo_id.endswith("__thumb") else photo_id
+        conn.execute(
+            """
+            UPDATE sample_assets
+            SET project_id = ?, stage_id = ?, task_id = ?
+            WHERE sample_id = ? AND id IN (?, ?)
+              AND COALESCE(project_id, '') = ''
+              AND COALESCE(stage_id, '') = ''
+              AND COALESCE(task_id, '') = ''
+            """,
+            (
+                project_id or None,
+                stage_id or None,
+                task_id or None,
+                sample_id,
+                root_photo_id,
+                f"{root_photo_id}__thumb",
+            ),
+        )
+    conn.execute("INSERT OR IGNORE INTO schema_migrations(id) VALUES(?)", (migration_id,))

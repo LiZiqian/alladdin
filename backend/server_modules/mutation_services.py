@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import copy
+import ipaddress
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from typing import Callable
 
-from server_modules import mutation_summary, record_writers, sample_assets, sample_constraints, sample_queries, status_normalization, task_mutation_rules
+from server_modules import mutation_summary, record_writers, sample_assets, sample_constraints, sample_queries, status_normalization, task_mutation_rules, task_queries
 
 
 @dataclass(frozen=True)
@@ -12,6 +15,49 @@ class MutationServiceContext:
     write_db_connection: Callable
     now_iso: Callable[[], str]
     unlink_asset_relative_paths: Callable
+    authorize_mutation: Callable
+
+
+def canonical_mutation_action(kind: str, payload: dict) -> str:
+    raw = str(payload.get("action") or "")
+    if kind == "task":
+        if str(payload.get("deleteMode") or "") == "delete":
+            return "delete_task"
+        aliases = {"task_start": "start_task"}
+        allowed = {
+            "create_task_config", "save_task_config", "assign_task_samples", "reassign_task_samples",
+            "set_task_plan", "temp_change_task", "save_task_result_draft", "update_issue_record",
+            "upload_task_result", "start_task", "restart_task", "block_task", "finish_task_result",
+            "archive_task_delete", "delete_task",
+        }
+        normalized = aliases.get(raw, raw)
+        return normalized if normalized in allowed else "task_mutation"
+    if kind == "task_batch":
+        return "create_tasks_batch"
+    if kind == "sample":
+        if payload.get("deleteSample"):
+            return "destroy_sample"
+        return raw if raw in {"sample_detail_update", "migrate_sample"} else "sample_mutation"
+    if kind == "project":
+        if payload.get("deleteProject"):
+            return "delete_project"
+        return raw if raw in {"project_mutation", "update_project", "create_project"} else "project_mutation"
+    if kind == "stage":
+        if payload.get("deleteStage"):
+            return "delete_stage"
+        return raw if raw in {"stage_mutation", "update_stage", "create_stage"} else "stage_mutation"
+    if kind == "sample_category":
+        if payload.get("deleteCategory"):
+            return "destroy_sample_category"
+        if payload.get("createSamples"):
+            return raw if raw in {"create_sample", "import_samples"} else "import_samples"
+        return "sample_category_mutation"
+    return "mutation"
+
+
+def _authorization_failure(ctx: MutationServiceContext, kind: str, conn: sqlite3.Connection, payload: dict, client_ip: str) -> dict | None:
+    allowed, decision = ctx.authorize_mutation(kind, conn, payload, client_ip)
+    return None if allowed else decision
 
 
 def to_int(value: object, default: int = 0) -> int:
@@ -127,6 +173,162 @@ def _sample_destroy_scope_failure(
                 "sampleIds": sorted(dangling_ids),
             }
     return None
+
+
+def _is_loopback_client(client_ip: object) -> bool:
+    raw = str(client_ip or "").strip().split("%", 1)[0]
+    try:
+        parsed = ipaddress.ip_address(raw)
+    except ValueError:
+        return False
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped:
+        parsed = parsed.ipv4_mapped
+    return str(parsed) in {"127.0.0.1", "::1"}
+
+
+def _server_destroy_task_mutations(
+    conn: sqlite3.Connection,
+    *,
+    sample_ids: set[str],
+    destroyed_at: str,
+    source: str,
+) -> tuple[list[dict], set[str]]:
+    """Rebuild remote destroy side effects from current SQLite records.
+
+    The browser payload is used only as a stale-impact confirmation.  This
+    prevents a pool administrator from smuggling arbitrary task plan/result
+    edits through a legitimate destroy request.
+    """
+    if not sample_ids:
+        return [], set()
+    placeholders = ",".join("?" for _ in sample_ids)
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT t.*
+        FROM project_task_samples AS pts
+        JOIN project_tasks AS t ON t.id = pts.task_id
+        WHERE pts.sample_id IN ({placeholders})
+          AND t.deleted_at IS NULL
+          AND t.flow_status NOT IN ('正常完成', '异常终止')
+        ORDER BY t.id
+        """,
+        tuple(sorted(sample_ids)),
+    ).fetchall()
+    logs_by_task = task_queries.load_task_logs_for(conn, [str(row["id"] or "") for row in rows])
+    mutations: list[dict] = []
+    released_sample_ids: set[str] = set()
+    day = str(destroyed_at or "").split("T", 1)[0]
+    for row in rows:
+        task = task_queries.task_from_db_row(row)
+        task_id = str(task.get("id") or "")
+        project_id = str(task.get("projectId") or "")
+        stage_id = str(task.get("stageId") or "")
+        flow_status = str(row["flow_status"] or task_queries.task_flow_status(task))
+        original_sample_ids = [str(value or "") for value in task.get("sampleIds") or [] if str(value or "")]
+        matched_ids = [value for value in original_sample_ids if value in sample_ids]
+        other_ids = [value for value in original_sample_ids if value not in sample_ids]
+        reason = "关联样机档案被销毁，任务无法继续。" if flow_status in {"进行中", "阻塞中"} else "关联样机档案被销毁，已从待下发任务中移除。"
+
+        task["logs"] = copy.deepcopy(logs_by_task.get(task_id, []))
+        task["updatedAt"] = destroyed_at
+        records = copy.deepcopy(task.get("removedSampleRecords") or [])
+        recorded_ids = {str(item.get("sampleId") or "") for item in records if isinstance(item, dict)}
+        snapshots = task.get("sampleSnapshots") if isinstance(task.get("sampleSnapshots"), dict) else {}
+        for destroyed_id in matched_ids:
+            if destroyed_id in recorded_ids:
+                continue
+            record = {
+                "sampleId": destroyed_id,
+                "removedAt": destroyed_at,
+                "destroyedAt": destroyed_at,
+                "reason": reason,
+            }
+            if isinstance(snapshots.get(destroyed_id), dict):
+                record["snapshot"] = copy.deepcopy(snapshots[destroyed_id])
+            records.append(record)
+        if records:
+            task["removedSampleRecords"] = records
+
+        if flow_status in {"进行中", "阻塞中"}:
+            released_sample_ids.update(other_ids)
+            task["sampleIds"] = []
+            task["status"] = "异常终止"
+            task["completed"] = True
+            task["completionType"] = "异常终止"
+            task["completedAt"] = destroyed_at
+            task["endDate"] = day
+            task["resultDate"] = day
+            task["latestResult"] = "不通过"
+            task["issue"] = reason
+            to_status = "异常终止"
+        else:
+            task["sampleIds"] = other_ids
+            to_status = flow_status or "待下发"
+
+        task["logs"].append({
+            "id": f"tasklog_destroy_{uuid.uuid4().hex}",
+            "time": destroyed_at,
+            "action": source,
+            "user": "管理员",
+            "reason": reason,
+            "fromStatus": flow_status,
+            "toStatus": to_status,
+            "detail": f"受影响样机：{'、'.join(matched_ids) or '-'}",
+        })
+        mutations.append({
+            "projectId": project_id,
+            "stageId": stage_id,
+            "taskId": task_id,
+            "task": task,
+            "createIfMissing": False,
+        })
+    return mutations, released_sample_ids
+
+
+def _server_destroy_release_samples(conn: sqlite3.Connection, sample_ids: set[str]) -> list[dict]:
+    """Derive sibling sample workflow fields after terminated tasks are saved."""
+    if not sample_ids:
+        return []
+    placeholders = ",".join("?" for _ in sample_ids)
+    rows = conn.execute(
+        f"""
+        SELECT pts.sample_id, t.id AS task_id, t.project_id, t.stage_id,
+               t.test_item, t.flow_status
+        FROM project_task_samples AS pts
+        JOIN project_tasks AS t ON t.id = pts.task_id
+        WHERE pts.sample_id IN ({placeholders})
+          AND t.deleted_at IS NULL
+          AND t.flow_status NOT IN ('正常完成', '异常终止')
+        ORDER BY CASE t.flow_status WHEN '进行中' THEN 0 ELSE 1 END, t.updated_at DESC, t.id
+        """,
+        tuple(sorted(sample_ids)),
+    ).fetchall()
+    usage_by_sample: dict[str, sqlite3.Row] = {}
+    for row in rows:
+        usage_by_sample.setdefault(str(row["sample_id"] or ""), row)
+
+    payloads: list[dict] = []
+    for sample_id in sorted(sample_ids):
+        usage = usage_by_sample.get(sample_id)
+        if usage:
+            payloads.append({
+                "id": sample_id,
+                "status": "测试中" if str(usage["flow_status"] or "") == "进行中" else "在位等待",
+                "currentProjectId": str(usage["project_id"] or ""),
+                "currentStageId": str(usage["stage_id"] or ""),
+                "currentTaskId": str(usage["task_id"] or ""),
+                "currentTestItem": str(usage["test_item"] or ""),
+            })
+        else:
+            payloads.append({
+                "id": sample_id,
+                "status": "闲置",
+                "currentProjectId": "",
+                "currentStageId": "",
+                "currentTaskId": "",
+                "currentTestItem": "",
+            })
+    return _operational_sample_write_payloads(conn, payloads)
 
 
 def _project_delete_sample_scope_failure(
@@ -802,18 +1004,25 @@ TASK_SAMPLE_MUTABLE_FIELDS = (
     "problemRecords",
     "initialResults",
     "initialResult",
-    "location",
-    "owner",
-    "borrower",
-    "borrowDate",
     "currentProjectId",
     "currentStageId",
     "currentTaskId",
     "currentTestItem",
 )
+TASK_SAMPLE_LOCAL_ROUTE_FIELDS = ("location", "owner", "borrower", "borrowDate")
 
 
-def _operational_sample_write_payloads(conn: sqlite3.Connection, sample_payloads: list[dict]) -> list[dict]:
+def _operational_sample_write_payloads(
+    conn: sqlite3.Connection,
+    sample_payloads: list[dict],
+    *,
+    allow_route_fields: bool = True,
+    task_action: str = "",
+    task_payload: dict | None = None,
+    project_id: str = "",
+    stage_id: str = "",
+    task_id: str = "",
+) -> list[dict]:
     """Merge workflow-controlled fields into current sample records.
 
     Task, project and stage requests originate from pages that may hold stale
@@ -838,13 +1047,93 @@ def _operational_sample_write_payloads(conn: sqlite3.Connection, sample_payloads
     for incoming in sample_payloads:
         sample_id = str(incoming.get("id") or "")
         current = current_by_id[sample_id]
-        for field in TASK_SAMPLE_MUTABLE_FIELDS:
+        mutable_fields = TASK_SAMPLE_MUTABLE_FIELDS + (TASK_SAMPLE_LOCAL_ROUTE_FIELDS if allow_route_fields else ())
+        for field in mutable_fields:
             if field in incoming:
                 current[field] = incoming[field]
+        if not allow_route_fields and task_action:
+            # Remote task execution never trusts client-authored occupancy
+            # fields.  Derive them from the authorized action and the task's
+            # append-only result record instead.
+            if task_action in {"start_task", "restart_task", "block_task"}:
+                current.update({
+                    "status": "测试中" if task_action in {"start_task", "restart_task"} else "在位等待",
+                    "currentProjectId": project_id,
+                    "currentStageId": stage_id,
+                    "currentTaskId": task_id,
+                    "currentTestItem": str((task_payload or {}).get("testItem") or ""),
+                })
+            elif task_action in {"finish_task_result", "upload_task_result"}:
+                result_sample = None
+                for upload in reversed(((task_payload or {}).get("resultUploads") or [])):
+                    if not isinstance(upload, dict):
+                        continue
+                    result_sample = next((
+                        item for item in (upload.get("samples") or [])
+                        if isinstance(item, dict)
+                        and str(item.get("sampleId") or item.get("sid") or "") == sample_id
+                    ), None)
+                    if result_sample:
+                        break
+                destination = status_normalization.normalize_sample_usage_status(
+                    (result_sample or {}).get("destination") or "闲置"
+                )
+                if destination not in {"闲置", "已退库", "取走分析"}:
+                    destination = "闲置"
+                current.update({
+                    "status": destination,
+                    "currentProjectId": "",
+                    "currentStageId": "",
+                    "currentTaskId": "",
+                    "currentTestItem": "",
+                })
+            else:
+                # Draft/issue actions may append records, but cannot alter the
+                # server's current sample workflow state.
+                for field in ("status", "currentProjectId", "currentStageId", "currentTaskId", "currentTestItem"):
+                    current[field] = current_by_id[sample_id].get(field)
         current["id"] = sample_id
         current["categoryId"] = str(current.get("categoryId") or "")
         merged_payloads.append(current)
     return merged_payloads
+
+
+POOL_SAMPLE_MASTER_EDITABLE_FIELDS = (
+    "sampleNo", "sn", "imei", "boardSn", "isReassembled", "model", "config", "schemeNo",
+    "sourceStageName", "sourceSkuName", "status", "location", "owner", "borrower", "borrowDate",
+    "notes", "updatedAt",
+)
+
+
+def _pool_sample_master_write_payload(
+    conn: sqlite3.Connection,
+    incoming: dict,
+    *,
+    allow_category_change: bool,
+) -> dict:
+    sample_id = str(incoming.get("id") or "")
+    row = conn.execute("SELECT * FROM sample_records WHERE id = ? AND deleted_at IS NULL", (sample_id,)).fetchone()
+    if not row:
+        raise KeyError("样机不存在")
+    current = sample_queries.sample_from_db_row(row)
+    for field in POOL_SAMPLE_MASTER_EDITABLE_FIELDS:
+        if field in incoming:
+            current[field] = copy.deepcopy(incoming[field])
+    if allow_category_change and "categoryId" in incoming:
+        current["categoryId"] = str(incoming.get("categoryId") or "")
+    else:
+        current["categoryId"] = str(row["category_id"] or "")
+    current["id"] = sample_id
+    return current
+
+
+def _pool_new_sample_write_payload(incoming: dict, category_id: str) -> dict:
+    sample_id = str(incoming.get("id") or "")
+    result = {"id": sample_id, "categoryId": str(category_id or "")}
+    for field in (*POOL_SAMPLE_MASTER_EDITABLE_FIELDS, "createdAt"):
+        if field in incoming:
+            result[field] = copy.deepcopy(incoming[field])
+    return result
 
 
 def _bump_revision_and_audit(
@@ -939,6 +1228,9 @@ def commit_task_mutation(ctx: MutationServiceContext, payload: dict, client_ip: 
     affected = {}
 
     with ctx.write_db_connection() as conn:
+        authorization_failure = _authorization_failure(ctx, "task", conn, payload, client_ip)
+        if authorization_failure:
+            return False, authorization_failure
         current_revision = _current_revision(conn)
         revision_failure = _task_revision_failure(payload, current_revision)
         if revision_failure:
@@ -1045,7 +1337,16 @@ def commit_task_mutation(ctx: MutationServiceContext, payload: dict, client_ip: 
         if sample_failure:
             return False, {**sample_failure, "server_revision": current_revision}
 
-        sample_write_payloads = _operational_sample_write_payloads(conn, sample_payloads)
+        sample_write_payloads = _operational_sample_write_payloads(
+            conn,
+            sample_payloads,
+            allow_route_fields=_is_loopback_client(client_ip),
+            task_action=action,
+            task_payload=task,
+            project_id=project_id,
+            stage_id=stage_id,
+            task_id=task_id,
+        )
         for sample in sample_write_payloads:
             record_writers.update_sample_record(conn, sample)
         record_writers.upsert_sample_events(conn, sample_events)
@@ -1115,8 +1416,11 @@ def commit_task_batch_mutation(ctx: MutationServiceContext, payload: dict, clien
         normalized_tasks.append(status_normalization.normalize_task_payload(task))
 
     with ctx.write_db_connection() as conn:
+        authorization_failure = _authorization_failure(ctx, "task_batch", conn, payload, client_ip)
+        if authorization_failure:
+            return False, authorization_failure
         current_revision = _current_revision(conn)
-        action = str(payload.get("action") or "task_batch_mutation")
+        action = canonical_mutation_action("task_batch", payload)
         stage_row = conn.execute(
             """
             SELECT id
@@ -1256,11 +1560,25 @@ def commit_sample_mutation(ctx: MutationServiceContext, payload: dict, client_ip
     if isinstance(sample, dict):
         sample = {**sample, "id": sample_id}
     delete_sample = bool(payload.get("deleteSample"))
+    remote_client = not _is_loopback_client(client_ip)
+    remote_destroy = delete_sample and not _is_loopback_client(client_ip)
     affected = {}
     asset_paths_to_delete: list[str] = []
 
     with ctx.write_db_connection() as conn:
+        authorization_failure = _authorization_failure(ctx, "sample", conn, payload, client_ip)
+        if authorization_failure:
+            return False, authorization_failure
+        if remote_client and isinstance(sample, dict) and not delete_sample:
+            sample = _pool_sample_master_write_payload(
+                conn,
+                sample,
+                allow_category_change=str(payload.get("action") or "") == "migrate_sample",
+            )
         current_revision = _current_revision(conn)
+        task_mutations = payload.get("taskMutations") or []
+        sample_payloads = payload.get("samples") or []
+        sample_events = payload.get("sampleEvents") or []
         event_failure = _sample_event_conflict_failure(conn, payload.get("sampleEvents"))
         if event_failure:
             return False, {**event_failure, "server_revision": current_revision}
@@ -1292,21 +1610,31 @@ def commit_sample_mutation(ctx: MutationServiceContext, payload: dict, client_ip
                     "error": "待销毁的样机档案不存在。",
                     "sampleId": sample_id,
                 }
-            scope_failure = _sample_destroy_scope_failure(
-                conn,
-                sample_ids={sample_id},
-                task_mutations=payload.get("taskMutations"),
-            )
-            if scope_failure:
-                scope_failure["server_revision"] = current_revision
-                return False, scope_failure
+            if not remote_destroy:
+                scope_failure = _sample_destroy_scope_failure(
+                    conn,
+                    sample_ids={sample_id},
+                    task_mutations=payload.get("taskMutations"),
+                )
+                if scope_failure:
+                    scope_failure["server_revision"] = current_revision
+                    return False, scope_failure
             _persist_destroyed_sample_snapshots(
                 conn,
                 sample_ids={sample_id},
                 destroyed_at=ctx.now_iso(),
             )
+            if remote_destroy:
+                task_mutations, released_sample_ids = _server_destroy_task_mutations(
+                    conn,
+                    sample_ids={sample_id},
+                    destroyed_at=ctx.now_iso(),
+                    source="样机档案销毁",
+                )
+                sample_payloads = []
+                sample_events = []
 
-        for item in payload.get("taskMutations") or []:
+        for item in task_mutations:
             if not isinstance(item, dict):
                 continue
             task = item.get("task")
@@ -1317,23 +1645,30 @@ def commit_sample_mutation(ctx: MutationServiceContext, payload: dict, client_ip
             task_id = str(item.get("taskId") or task.get("id") or "")
             if not project_id or not stage_id or not task_id:
                 continue
-            record_writers.update_stage_record(conn, item.get("stage") or {}, project_id, stage_id)
+            if not delete_sample:
+                record_writers.update_stage_record(conn, item.get("stage") or {}, project_id, stage_id)
             record_writers.upsert_task_record(
                 conn,
                 task,
                 project_id,
                 stage_id,
-                create_if_missing=bool(item.get("createIfMissing")),
+                create_if_missing=False if delete_sample else bool(item.get("createIfMissing")),
             )
 
-        for sample in payload.get("samples") or []:
-            if isinstance(sample, dict) and str(sample.get("id") or "") != sample_id:
-                record_writers.update_sample_record(conn, sample)
+        if remote_destroy:
+            sample_payloads = _server_destroy_release_samples(conn, released_sample_ids)
+        else:
+            sample_payloads = _operational_sample_write_payloads(
+                conn,
+                [item for item in sample_payloads if isinstance(item, dict) and str(item.get("id") or "") != sample_id],
+            )
+        for nested_sample in sample_payloads:
+            record_writers.update_sample_record(conn, nested_sample)
 
         if isinstance(sample, dict) and not delete_sample:
             record_writers.update_sample_record(conn, sample)
 
-        record_writers.upsert_sample_events(conn, payload.get("sampleEvents") or [])
+        record_writers.upsert_sample_events(conn, sample_events)
 
         if delete_sample:
             asset_paths_to_delete = sample_assets.sample_asset_relative_paths(conn, [sample_id])
@@ -1342,7 +1677,7 @@ def commit_sample_mutation(ctx: MutationServiceContext, payload: dict, client_ip
             conn.execute("DELETE FROM project_task_samples WHERE sample_id = ?", (sample_id,))
             conn.execute("DELETE FROM sample_records WHERE id = ?", (sample_id,))
 
-        action = str(payload.get("action") or ("destroy_sample" if delete_sample else "sample_mutation"))
+        action = canonical_mutation_action("sample", payload)
         new_revision, updated_at = _bump_revision_and_audit(
             ctx,
             conn,
@@ -1355,19 +1690,19 @@ def commit_sample_mutation(ctx: MutationServiceContext, payload: dict, client_ip
         affected_task_ids = []
         affected_project_ids = []
         affected_stage_ids = []
-        for item in payload.get("taskMutations") or []:
+        for item in task_mutations:
             if not isinstance(item, dict):
                 continue
             affected_task_ids.append(item.get("taskId") or (item.get("task") or {}).get("id"))
             affected_project_ids.append(item.get("projectId") or (item.get("task") or {}).get("projectId"))
             affected_stage_ids.append(item.get("stageId") or (item.get("task") or {}).get("stageId"))
         affected_sample_ids = [sample_id, *[
-            sample.get("id")
-            for sample in payload.get("samples") or []
-            if isinstance(sample, dict)
+            nested_sample.get("id")
+            for nested_sample in sample_payloads
+            if isinstance(nested_sample, dict)
         ], *[
             event.get("sampleId")
-            for event in payload.get("sampleEvents") or []
+            for event in sample_events
             if isinstance(event, dict)
         ]]
         affected = mutation_summary.build_mutation_affected_summary(
@@ -1394,6 +1729,9 @@ def commit_project_mutation(ctx: MutationServiceContext, payload: dict, client_i
     affected = {}
 
     with ctx.write_db_connection() as conn:
+        authorization_failure = _authorization_failure(ctx, "project", conn, payload, client_ip)
+        if authorization_failure:
+            return False, authorization_failure
         current_revision = _current_revision(conn)
         event_failure = _sample_event_conflict_failure(conn, payload.get("sampleEvents"))
         if event_failure:
@@ -1440,6 +1778,10 @@ def commit_project_mutation(ctx: MutationServiceContext, payload: dict, client_i
 
         if delete_project:
             record_writers.delete_project_record(conn, project_id)
+            # Project records use soft deletion, so the foreign-key cascade is
+            # not triggered.  Remove the ACL in the same transaction to avoid
+            # silently resurrecting old access if an ID is restored/reused.
+            conn.execute("DELETE FROM project_ip_access WHERE project_id = ?", (project_id,))
         else:
             if not isinstance(project, dict):
                 return False, {"status": 400, "error": "project 必须是 JSON 对象"}
@@ -1455,7 +1797,7 @@ def commit_project_mutation(ctx: MutationServiceContext, payload: dict, client_i
             ctx,
             conn,
             current_revision=current_revision,
-            action=str(payload.get("action") or ("delete_project" if delete_project else "project_mutation")),
+            action=canonical_mutation_action("project", payload),
             remark=str(payload.get("remark") or ("删除项目" if delete_project else "项目增量变更")),
             user=str(payload.get("user") or ""),
             client_ip=client_ip,
@@ -1484,6 +1826,9 @@ def commit_stage_mutation(ctx: MutationServiceContext, payload: dict, client_ip:
     affected = {}
 
     with ctx.write_db_connection() as conn:
+        authorization_failure = _authorization_failure(ctx, "stage", conn, payload, client_ip)
+        if authorization_failure:
+            return False, authorization_failure
         current_revision = _current_revision(conn)
         scope_failure = _stage_mutation_scope_failure(
             conn,
@@ -1547,7 +1892,7 @@ def commit_stage_mutation(ctx: MutationServiceContext, payload: dict, client_ip:
             ctx,
             conn,
             current_revision=current_revision,
-            action=str(payload.get("action") or ("delete_stage" if delete_stage else "stage_mutation")),
+            action=canonical_mutation_action("stage", payload),
             remark=str(payload.get("remark") or ("删除阶段" if delete_stage else "阶段增量变更")),
             user=str(payload.get("user") or ""),
             client_ip=client_ip,
@@ -1580,12 +1925,26 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
     if not category_id:
         return False, {"status": 400, "error": "缺少 categoryId"}
     delete_category = bool(payload.get("deleteCategory"))
+    remote_client = not _is_loopback_client(client_ip)
+    remote_destroy = delete_category and not _is_loopback_client(client_ip)
     affected = {}
     asset_paths_to_delete: list[str] = []
     default_project_ids: list[str] = []
 
     with ctx.write_db_connection() as conn:
+        authorization_failure = _authorization_failure(ctx, "sample_category", conn, payload, client_ip)
+        if authorization_failure:
+            return False, authorization_failure
         current_revision = _current_revision(conn)
+        task_mutations = payload.get("taskMutations") or []
+        sample_payloads = payload.get("samples") or []
+        sample_events = payload.get("sampleEvents") or []
+        if remote_client and payload.get("createSamples"):
+            sample_payloads = [
+                _pool_new_sample_write_payload(item, category_id)
+                for item in sample_payloads
+                if isinstance(item, dict)
+            ]
         event_failure = _sample_event_conflict_failure(conn, payload.get("sampleEvents"))
         if event_failure:
             return False, {**event_failure, "server_revision": current_revision}
@@ -1608,19 +1967,29 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
                 (category_id,),
             ).fetchall()
             category_sample_ids = {str(row["id"] or "") for row in sample_rows if str(row["id"] or "")}
-            scope_failure = _sample_destroy_scope_failure(
-                conn,
-                sample_ids=category_sample_ids,
-                task_mutations=payload.get("taskMutations"),
-            )
-            if scope_failure:
-                scope_failure["server_revision"] = current_revision
-                return False, scope_failure
+            if not remote_destroy:
+                scope_failure = _sample_destroy_scope_failure(
+                    conn,
+                    sample_ids=category_sample_ids,
+                    task_mutations=payload.get("taskMutations"),
+                )
+                if scope_failure:
+                    scope_failure["server_revision"] = current_revision
+                    return False, scope_failure
             _persist_destroyed_sample_snapshots(
                 conn,
                 sample_ids=category_sample_ids,
                 destroyed_at=ctx.now_iso(),
             )
+            if remote_destroy:
+                task_mutations, released_sample_ids = _server_destroy_task_mutations(
+                    conn,
+                    sample_ids=category_sample_ids,
+                    destroyed_at=ctx.now_iso(),
+                    source="样机池档案销毁",
+                )
+                sample_payloads = []
+                sample_events = []
 
         payload_sample_ids = {
             str(sample.get("id") or "")
@@ -1709,18 +2078,19 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
                 }
 
         if not delete_category:
-            category = payload.get("category")
-            if not isinstance(category, dict):
-                return False, {"status": 400, "error": "category 必须是 JSON 对象"}
-            category["id"] = category_id
-            record_writers.update_sample_category_record(
-                conn,
-                category,
-                create_if_missing=bool(payload.get("createIfMissing")),
-                sort_order=to_int(payload.get("sortOrder")) if payload.get("sortOrder") is not None else None,
-            )
+            if not (remote_client and payload.get("createSamples")):
+                category = payload.get("category")
+                if not isinstance(category, dict):
+                    return False, {"status": 400, "error": "category 必须是 JSON 对象"}
+                category["id"] = category_id
+                record_writers.update_sample_category_record(
+                    conn,
+                    category,
+                    create_if_missing=bool(payload.get("createIfMissing")),
+                    sort_order=to_int(payload.get("sortOrder")) if payload.get("sortOrder") is not None else None,
+                )
 
-        for item in payload.get("taskMutations") or []:
+        for item in task_mutations:
             if not isinstance(item, dict):
                 continue
             task = item.get("task")
@@ -1731,23 +2101,31 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
             task_id = str(item.get("taskId") or task.get("id") or "")
             if not project_id or not stage_id or not task_id:
                 continue
-            record_writers.update_stage_record(conn, item.get("stage") or {}, project_id, stage_id)
+            if not delete_category:
+                record_writers.update_stage_record(conn, item.get("stage") or {}, project_id, stage_id)
             record_writers.upsert_task_record(
                 conn,
                 task,
                 project_id,
                 stage_id,
-                create_if_missing=bool(item.get("createIfMissing")),
+                create_if_missing=False if delete_category else bool(item.get("createIfMissing")),
             )
 
-        for sample in payload.get("samples") or []:
-            if isinstance(sample, dict):
+        if remote_destroy:
+            sample_payloads = _server_destroy_release_samples(conn, released_sample_ids)
+        elif delete_category:
+            sample_payloads = _operational_sample_write_payloads(
+                conn,
+                [item for item in sample_payloads if isinstance(item, dict) and str(item.get("id") or "") not in category_sample_ids],
+            )
+        for nested_sample in sample_payloads:
+            if isinstance(nested_sample, dict):
                 record_writers.update_sample_record(
                     conn,
-                    sample,
-                    create_if_missing=bool(payload.get("createSamples") or payload.get("createIfMissing")),
+                    nested_sample,
+                    create_if_missing=False if delete_category else bool(payload.get("createSamples") or payload.get("createIfMissing")),
                 )
-        record_writers.upsert_sample_events(conn, payload.get("sampleEvents") or [])
+        record_writers.upsert_sample_events(conn, sample_events)
 
         if delete_category:
             default_project_ids = record_writers.clear_project_default_sample_category(conn, category_id)
@@ -1757,7 +2135,7 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
             ctx,
             conn,
             current_revision=current_revision,
-            action=str(payload.get("action") or ("destroy_sample_category" if delete_category else "sample_category_mutation")),
+            action=canonical_mutation_action("sample_category", payload),
             remark=str(payload.get("remark") or ("样机池档案销毁" if delete_category else "样机池增量变更")),
             user=str(payload.get("user") or ""),
             client_ip=client_ip,
@@ -1765,7 +2143,7 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
         affected_task_ids = []
         affected_project_ids = []
         affected_stage_ids = []
-        for item in payload.get("taskMutations") or []:
+        for item in task_mutations:
             if not isinstance(item, dict):
                 continue
             affected_task_ids.append(item.get("taskId") or (item.get("task") or {}).get("id"))
@@ -1779,9 +2157,9 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
             task_ids=affected_task_ids,
             sample_category_ids=[category_id],
             sample_ids=[
-                sample.get("id")
-                for sample in payload.get("samples") or []
-                if isinstance(sample, dict)
+                nested_sample.get("id")
+                for nested_sample in sample_payloads
+                if isinstance(nested_sample, dict)
             ],
         )
         conn.commit()
