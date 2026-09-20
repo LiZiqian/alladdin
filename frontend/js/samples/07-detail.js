@@ -17,8 +17,8 @@ app.registerModule("samples.detail", {
     this.showModal("样机详情 · " + this.sampleDisplayCode(s), `
       <div class="sample-summary-bar">
         <div class="sample-summary-card"><span class="sample-summary-label">档案编号</span><b class="sample-summary-value">${Utils.esc(this.sampleDisplayCode(s))}</b></div>
-        <div class="sample-summary-card"><span class="sample-summary-label">质量</span><b class="sample-summary-value" style="color:${this.sampleHasProblem(s) ? '#dc2626' : '#16a34a'}">${this.sampleHasProblem(s) ? '有故障' : '无故障'}</b></div>
-        <div class="sample-summary-card"><span class="sample-summary-label">重组样机</span><b class="sample-summary-value" style="color:${this.sampleIsReassembled(s) ? '#dc2626' : '#16a34a'}">${this.sampleIsReassembled(s) ? '是' : '否'}</b></div>
+        <div class="sample-summary-card"><span class="sample-summary-label">质量</span><b class="sample-summary-value" style="color:var(--status-sample-quality-${this.sampleHasProblem(s) ? 'fault' : 'ok'}-text)">${this.sampleHasProblem(s) ? '有故障' : '无故障'}</b></div>
+        <div class="sample-summary-card"><span class="sample-summary-label">重组样机</span><b class="sample-summary-value" style="color:var(--status-sample-reassembly-${this.sampleIsReassembled(s) ? 'reassembled' : 'normal'}-text)">${this.sampleIsReassembled(s) ? '是' : '否'}</b></div>
         <div class="sample-summary-card"><span class="sample-summary-label">当前状态</span><b class="sample-summary-value sample-summary-status s-${Utils.esc(summaryStatusClass)}">${Utils.esc(summaryStatus)}</b></div>
         <div class="sample-summary-card"><span class="sample-summary-label">当前任务</span><b class="sample-summary-value">${Utils.esc(s.currentTestItem || "—")}</b></div>
       </div>

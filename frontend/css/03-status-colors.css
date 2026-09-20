@@ -1,121 +1,122 @@
 /* ========================================
    状态色表 — 任务、结果、样机、任务样机池的统一状态色
-   备注按全项目 var(--status-*) 实际引用更新；只改颜色值即可影响对应位置。
+   统计卡与标签共用浅底、深字、深色边框；正常完成统一深绿底白字。
    ======================================== */
 
 :root {
   /* 任务状态：待下发 */
-  --status-task-pending-bg: var(--purple-bg);              /* 待下发：任务工作台顶部统计卡、任务表 status-pending badge 的背景色 */
-  --status-task-pending-text: var(--purple);               /* 待下发：任务工作台顶部统计卡数字/标题、任务表 status-pending badge 的文字色 */
-  --status-task-pending-border: var(--purple-border);      /* 待下发：任务工作台顶部统计卡、任务表 status-pending badge 的边框色 */
+  --status-task-pending-bg: var(--purple-bg);
+  --status-task-pending-text: var(--purple-text);
+  --status-task-pending-border: var(--purple-border);
 
   /* 任务状态：进行中 */
-  --status-task-running-bg: #dcfce7;                       /* 进行中：通用 .s-进行中 pill、任务工作台统计卡、任务表 status-running badge 的背景色 */
-  --status-task-running-text: #15803d;                     /* 进行中：通用 pill、样机档案摘要文字、任务统计卡、任务表 badge、任务日志 pass 强调文字色 */
-  --status-task-running-border: #bbf7d0;                   /* 进行中：任务工作台顶部统计卡边框色 */
+  --status-task-running-bg: var(--pass-bg);
+  --status-task-running-text: var(--pass-text);
+  --status-task-running-border: var(--pass-border);
 
   /* 任务状态：阻塞中 */
-  --status-task-blocked-bg: #fef3c7;                       /* 阻塞中：通用 .s-阻塞中 pill、任务工作台统计卡、任务表 status-blocked badge 的背景色 */
-  --status-task-blocked-text: #92400e;                     /* 阻塞中：通用 pill、任务工作台统计卡、任务表 status-blocked badge 的文字色 */
-  --status-task-blocked-border: #f59e0b;                   /* 阻塞中：通用 .s-阻塞中 pill 的边框色 */
-  --status-task-blocked-soft-border: #fde68a;              /* 阻塞中：任务工作台顶部统计卡边框色 */
+  --status-task-blocked-bg: var(--warn-bg);
+  --status-task-blocked-text: var(--warn-text);
+  --status-task-blocked-border: var(--warn-border);
+  --status-task-blocked-soft-border: var(--warn-border);
 
   /* 任务状态：正常完成 */
-  --status-task-done-bg: #166534;                          /* 正常完成：任务工作台顶部统计卡、任务表 status-done badge 的深色背景 */
-  --status-task-done-text: #ffffff;                        /* 正常完成：任务工作台顶部统计卡、任务表 status-done badge 的深色底文字 */
-  --status-task-done-border: #14532d;                      /* 正常完成：任务工作台顶部统计卡边框色 */
-  --status-task-done-soft-bg: #d1d5db;                     /* 正常完成：通用 .s-正常完成 pill 的背景色 */
-  --status-task-done-soft-text: #111827;                   /* 正常完成：通用 .s-正常完成 pill 的文字色 */
-  --status-task-done-soft-border: #9ca3af;                 /* 正常完成：通用 .s-正常完成 pill 的边框色 */
+  --status-task-done-bg: var(--complete);
+  --status-task-done-text: var(--on-accent);
+  --status-task-done-border: var(--complete);
+  /* 兼容旧变量名，完成态统一保留实色。 */
+  --status-task-done-soft-bg: var(--status-task-done-bg);
+  --status-task-done-soft-text: var(--status-task-done-text);
+  --status-task-done-soft-border: var(--status-task-done-border);
 
   /* 任务状态：异常终止 */
-  --status-task-aborted-bg: #fecaca;                       /* 异常终止：通用 .s-异常终止 pill 的背景色 */
-  --status-task-aborted-text: #991b1b;                     /* 异常终止：通用 .s-异常终止 pill 的文字色 */
-  --status-task-aborted-border: #f87171;                   /* 异常终止：通用 .s-异常终止 pill 的边框色 */
-  --status-task-aborted-soft-bg: #fee2e2;                  /* 异常终止：任务工作台异常统计卡、任务表 status-bad badge 的背景色 */
-  --status-task-aborted-soft-text: #b91c1c;                /* 异常终止：任务异常统计卡、任务表 status-bad badge、任务日志 fail 强调文字色 */
-  --status-task-aborted-soft-border: #fecaca;              /* 异常终止：任务工作台异常统计卡边框色 */
+  --status-task-aborted-bg: var(--danger-bg);
+  --status-task-aborted-text: var(--danger-text);
+  --status-task-aborted-border: var(--danger-border);
+  --status-task-aborted-soft-bg: var(--danger-bg);
+  --status-task-aborted-soft-text: var(--danger-text);
+  --status-task-aborted-soft-border: var(--danger-border);
 
   /* 测试结果 / progress 结果：通过、不通过 */
-  --status-result-pass-bg: #dcfce7;                        /* 通过/无故障：通用 .s-通过、.s-无故障 pill 背景色 */
-  --status-result-pass-text: #166534;                      /* 通过/无故障：通用 .s-通过、.s-无故障 pill 文字色 */
-  --status-result-pass-strong-text: #16a34a;               /* 通过/无故障/正常完成：样机档案顶部摘要的纯文字强调色 */
-  --status-result-pass-soft-bg: #ecfdf5;                   /* 通过：任务工作台测试结果比例标签背景色 */
-  --status-result-pass-soft-text: #047857;                 /* 通过：任务工作台测试结果比例标签文字色 */
-  --status-result-pass-soft-border: #a7f3d0;               /* 通过：任务工作台测试结果比例标签边框色 */
-  --status-result-fail-bg: #fee2e2;                        /* 不通过/有故障：通用 .s-不通过、.s-有故障 pill 背景色 */
-  --status-result-fail-text: #991b1b;                      /* 不通过/有故障：通用 .s-不通过、.s-有故障 pill 文字色 */
-  --status-result-fail-strong-text: #dc2626;               /* 不通过/有故障/异常终止：样机档案顶部摘要的纯文字强调色 */
-  --status-result-fail-soft-bg: #fef2f2;                   /* 不通过：任务工作台测试结果比例标签背景色 */
-  --status-result-fail-soft-text: #b91c1c;                 /* 不通过：任务工作台测试结果比例标签文字色 */
-  --status-result-fail-soft-border: #fecaca;               /* 不通过：任务工作台测试结果比例标签边框色 */
+  --status-result-pass-bg: var(--pass-bg);
+  --status-result-pass-text: var(--pass-text);
+  --status-result-pass-strong-text: var(--pass);
+  --status-result-pass-soft-bg: var(--pass-bg);
+  --status-result-pass-soft-text: var(--pass-text);
+  --status-result-pass-soft-border: var(--pass-border);
+  --status-result-fail-bg: var(--danger-bg);
+  --status-result-fail-text: var(--danger-text);
+  --status-result-fail-strong-text: var(--danger);
+  --status-result-fail-soft-bg: var(--danger-bg);
+  --status-result-fail-soft-text: var(--danger-text);
+  --status-result-fail-soft-border: var(--danger-border);
 
   /* 样机使用状态：闲置 */
-  --status-sample-idle-bg: #dcfce7;                        /* 闲置/可用：通用 .s-闲置 pill、结果录入样机状态、任务样机列表无故障 badge、任务样机池提示背景 */
-  --status-sample-idle-text: #166534;                      /* 闲置/可用：通用 pill、样机档案摘要、结果录入样机状态、任务样机列表无故障 badge 文字色 */
-  --status-sample-idle-bar: #166534;                       /* 闲置：样机卡片左侧色条、样机池顶部状态分布圆点 */
+  --status-sample-idle-bg: var(--pass-bg);
+  --status-sample-idle-text: var(--pass-text);
+  --status-sample-idle-bar: var(--pass-text);
 
   /* 样机使用状态：测试中 */
-  --status-sample-testing-bg: #fef3c7;                     /* 测试中：通用 .s-测试中 pill 背景色 */
-  --status-sample-testing-text: #92400e;                   /* 测试中：通用 .s-测试中 pill、样机档案摘要文字色 */
-  --status-sample-testing-bar: #f59e0b;                    /* 测试中：样机卡片 status-busy/status-testing 左侧色条、样机池状态分布圆点 */
+  --status-sample-testing-bg: var(--warn-bg);
+  --status-sample-testing-text: var(--warn-text);
+  --status-sample-testing-bar: var(--warn);
 
   /* 样机使用状态：在位等待 */
-  --status-sample-waiting-bg: var(--purple-bg);            /* 在位等待：通用 .s-在位等待 pill 背景色 */
-  --status-sample-waiting-text: var(--purple);             /* 在位等待：通用 .s-在位等待 pill、样机档案摘要文字色 */
-  --status-sample-waiting-chip-bg: #ede9fe;                /* 当前未被其它 CSS 引用；预留给在位等待统计 chip 背景 */
-  --status-sample-waiting-chip-text: #6b21a8;              /* 当前未被其它 CSS 引用；预留给在位等待统计 chip 文字 */
-  --status-sample-waiting-bar: #8b5cf6;                    /* 在位等待：样机卡片左侧色条、样机池状态分布圆点 */
+  --status-sample-waiting-bg: var(--purple-bg);
+  --status-sample-waiting-text: var(--purple-text);
+  --status-sample-waiting-chip-bg: var(--purple-bg);
+  --status-sample-waiting-chip-text: var(--purple-text);
+  --status-sample-waiting-bar: var(--purple);
 
   /* 样机使用状态：已退库 */
-  --status-sample-retired-bg: #f1f5f9;                     /* 已退库：样机状态 pill 背景 */
-  --status-sample-retired-text: #475569;                   /* 已退库：样机状态 pill 文字 */
-  --status-sample-retired-bar: #94a3b8;                    /* 已退库：样机池状态分布圆点、样机卡片左侧色条 */
+  --status-sample-retired-bg: var(--surface-hover);
+  --status-sample-retired-text: var(--muted);
+  --status-sample-retired-bar: var(--gray);
 
   /* 样机使用状态：取走分析 */
-  --status-sample-analysis-bg: #fef2f2;                    /* 取走分析：样机状态 pill 背景 */
-  --status-sample-analysis-text: #b91c1c;                  /* 取走分析：样机状态 pill 文字 */
-  --status-sample-analysis-bar: #b91c1c;                   /* 取走分析：样机池状态分布圆点、样机卡片左侧色条 */
+  --status-sample-analysis-bg: var(--danger-bg);
+  --status-sample-analysis-text: var(--danger-text);
+  --status-sample-analysis-bar: var(--danger-text);
 
   /* 样机使用状态：未知 / 兜底 */
-  --status-sample-unknown-bg: #e5e7eb;                     /* 当前未被其它 CSS 引用；未知状态背景预留 */
-  --status-sample-unknown-text: #374151;                   /* 当前未被其它 CSS 引用；未知状态文字预留 */
-  --status-sample-unknown-bar: #94a3b8;                    /* 未知状态：样机卡片左侧兜底色条、状态分布圆点默认色 */
+  --status-sample-unknown-bg: var(--surface-hover);
+  --status-sample-unknown-text: var(--text);
+  --status-sample-unknown-bar: var(--gray);
 
   /* 样机质量：无故障、有故障 */
-  --status-sample-quality-ok-bg: #ecfdf5;                  /* 无故障：样机池顶部质量统计 chip、样机卡片质量 badge 背景色 */
-  --status-sample-quality-ok-text: #166534;                /* 无故障：样机池顶部质量统计 chip、样机卡片质量 badge 文字色 */
-  --status-sample-quality-fault-bg: #fee2e2;               /* 有故障：样机池质量统计 chip、样机卡片质量 badge、任务样机列表故障 badge 背景色 */
-  --status-sample-quality-fault-text: #991b1b;             /* 有故障：样机池质量统计 chip、样机卡片质量 badge、任务样机列表故障 badge 文字色 */
-  --status-sample-quality-fault-strong-text: #b91c1c;      /* 有故障：样机卡片“问题”一行的红色强调文字 */
-  --status-sample-quality-fault-bar: var(--danger);        /* 有故障：样机卡片 status-bad 左侧色条 */
+  --status-sample-quality-ok-bg: var(--pass-bg);
+  --status-sample-quality-ok-text: var(--pass-text);
+  --status-sample-quality-fault-bg: var(--danger-bg);
+  --status-sample-quality-fault-text: var(--danger-text);
+  --status-sample-quality-fault-strong-text: var(--danger-text);
+  --status-sample-quality-fault-bar: var(--danger);
 
   /* 样机重组：非重组、重组 */
-  --status-sample-reassembly-normal-bg: #dcfce7;           /* 非重组：样机卡片重组状态 badge 背景色 */
-  --status-sample-reassembly-normal-text: #166534;         /* 非重组：样机卡片重组状态 badge 文字色 */
-  --status-sample-reassembly-reassembled-bg: #fef3c7;      /* 重组：样机池顶部重组统计 chip、样机卡片重组状态 badge 背景色 */
-  --status-sample-reassembly-reassembled-text: #92400e;    /* 重组：样机池顶部重组统计 chip、样机卡片重组状态 badge 文字色 */
+  --status-sample-reassembly-normal-bg: var(--pass-bg);
+  --status-sample-reassembly-normal-text: var(--pass-text);
+  --status-sample-reassembly-reassembled-bg: var(--warn-bg);
+  --status-sample-reassembly-reassembled-text: var(--warn-text);
 
-  /* 显示兜底：退出测试、待确认、已退库、取走分析 */
-  --status-display-neutral-bg: #e5e7eb;                   /* 已退库/取走分析/退出测试/待确认：通用 .s-* 中性 pill 背景色 */
-  --status-display-neutral-text: #374151;                 /* 已退库/取走分析/退出测试/待确认：通用 pill、样机档案摘要中性文字色 */
+  /* 显示兜底：退出测试、待确认 */
+  --status-display-neutral-bg: var(--surface-hover);
+  --status-display-neutral-text: var(--text);
 
   /* 结果录入中已移除样机 */
-  --status-sample-removed-bg: #fff7ed;                     /* 结果录入：已移除样机行、removed badge 的背景色 */
-  --status-sample-removed-text: #9a3412;                   /* 结果录入/任务样机列表：已移除说明与 removed badge 的文字色 */
-  --status-sample-removed-border: #fed7aa;                 /* 结果录入已移除样机行边框、任务样机列表已移除说明虚线色 */
-  --status-sample-removed-warn-bg: #fffbeb;                /* 任务工作台结果比例：已移除且失败/异常的小提示背景色 */
-  --status-sample-removed-warn-text: #b45309;              /* 任务工作台结果比例：已移除且失败/异常的小提示文字色 */
-  --status-sample-removed-warn-border: #fde68a;            /* 任务工作台结果比例：已移除且失败/异常的小提示边框色 */
+  --status-sample-removed-bg: var(--warn-bg);
+  --status-sample-removed-text: var(--warn-text);
+  --status-sample-removed-border: var(--warn-border);
+  --status-sample-removed-warn-bg: var(--warn-bg);
+  --status-sample-removed-warn-text: var(--warn-text);
+  --status-sample-removed-warn-border: var(--warn-border);
 
   /* 样机问题 / 任务样机池提示 */
-  --status-sample-problem-text: #b45309;                   /* 任务样机列表：问题摘要文字、问题数量文字 */
-  --status-sample-problem-empty-text: #cbd5e1;             /* 任务样机列表：无问题占位文字 */
-  --status-sample-empty-text: #94a3b8;                     /* 任务样机列表：空状态提示文字 */
-  --status-sample-add-bg: rgba(240, 253, 244, .72);        /* 任务样机池：新增样机入口按钮背景 */
-  --status-sample-add-text: #166534;                       /* 任务样机池：新增入口按钮文字、顶部绿色提示胶囊文字 */
-  --status-sample-add-border: #86efac;                     /* 任务样机池：新增样机入口按钮虚线边框 */
-  --status-sample-add-hover-bg: #f0fdf4;                   /* 任务样机池：新增样机入口按钮 hover 背景 */
-  --status-sample-add-hover-border: #22c55e;               /* 任务样机池：新增样机入口按钮 hover 边框 */
-  --status-sample-add-hint-border: #bbf7d0;                /* 任务样机池：顶部绿色提示胶囊边框 */
+  --status-sample-problem-text: var(--warn-text);
+  --status-sample-problem-empty-text: var(--muted);
+  --status-sample-empty-text: var(--muted);
+  --status-sample-add-bg: var(--pass-bg);
+  --status-sample-add-text: var(--pass-text);
+  --status-sample-add-border: var(--pass-border);
+  --status-sample-add-hover-bg: var(--pass-bg);
+  --status-sample-add-hover-border: var(--pass);
+  --status-sample-add-hint-border: var(--pass-border);
 }

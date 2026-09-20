@@ -1,25 +1,58 @@
 /* ========================================
-   CSS 全局基础设计变量 — 页面背景、卡片色、主品牌蓝、危险红、字体、圆角、阴影这些
+   全平台色板：中性层级 + 蓝 / 紫 / 绿 / 黄 / 红语义色。
+   深色用于操作与选中态，浅色用于统计与状态；浅底配深色边框和 text。
+   正常完成固定深绿底白字。组件与业务状态只引用变量。
    ======================================== */
 
 :root {
-  --bg: #f5f6fa;
+  /* 中性灰层级：页面底色、卡片内底色、悬停底色、表头与统一边界。 */
+  --bg: #d9dadb;
   --card: #fff;
-  --text: #1f2937;
-  --muted: #6b7280;
-  --border: #e5e7eb;
+  --surface: #f0f1f2;
+  --surface-hover: #e4e6e8;
+  --table-head-bg: #e0e2e4;
+  --heading: #182334;
+  --text: #263142;
+  --muted: #505d6c;
+  --border: #b3b4b5;
+  --gray: #707982;
+  --on-accent: #fff;
+
+  /* 蓝：导航、普通操作、选中与信息提示。 */
   --primary: #2563eb;
-  --primary2: #2563eb;
-  --primary-bg: #eff6ff;
-  --primary-border: #dbeafe;
-  --danger: #dc2626;
-  --pass: #16a34a;
-  --warn: #f59e0b;
-  --purple: #b02be4;
-  --purple-bg: #f5e8ff;
-  --purple-border: #e8c7ff;
-  --purple-text: var(--purple);
-  --gray: #6b7280;
+  --primary2: var(--primary);
+  --primary-hover: #1d4ed8;
+  --primary-text: #1d4ed8;
+  --primary-bg: #e9f0ff;
+  --primary-border: var(--primary);
+
+  /* 紫：待下发、在位等待。 */
+  --purple: #7c3aed;
+  --purple-text: #6d28d9;
+  --purple-bg: #eee1ff;
+  --purple-border: var(--purple);
+
+  /* 绿：进行中、通过、可用；完成使用更深的绿色。 */
+  --pass: #087d47;
+  --pass-text: #09633a;
+  --pass-bg: #def8e8;
+  --pass-border: var(--pass);
+  --complete: #174d32;
+
+  /* 黄：阻塞、重组、移除等需要留意的状态。 */
+  --warn: #b85c00;
+  --warn-text: #854300;
+  --warn-bg: #fff0c2;
+  --warn-border: var(--warn);
+
+  /* 红：故障、失败、异常与危险操作。 */
+  --danger: #ce273e;
+  --danger-text: #a91e32;
+  --danger-bg: #ffe8eb;
+  --danger-border: var(--danger);
+
+  --focus-ring: rgba(37, 99, 235, .24);
+  --danger-ring: rgba(206, 39, 62, .20);
   --shadow: 0 8px 24px rgba(15, 23, 42, .06);
   --radius: 12px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;

@@ -66,10 +66,23 @@ app.registerModule("app.render", {
     const shell = document.createElement("section");
     shell.className = "home-shell";
 
-    const title = document.createElement("h1");
+    const brand = document.createElement("header");
+    brand.className = "home-brand";
+    const logoHeading = document.createElement("h1");
+    logoHeading.className = "home-logo-heading";
+    const logo = document.createElement("img");
+    logo.className = "home-logo";
+    logo.src = "/css/assets/aladdin-logo.png";
+    logo.alt = "阿拉丁 ALADDIN";
+    logo.width = 2172;
+    logo.height = 724;
+    logoHeading.append(logo);
+
+    const title = document.createElement("p");
     title.className = "home-title";
     title.append(document.createTextNode("终端硬件测试数字治理平台 "));
     title.append(this.textEl("span", "V7"));
+    brand.append(logoHeading, title);
 
     const grid = document.createElement("div");
     grid.className = "home-entry-grid";
@@ -79,7 +92,7 @@ app.registerModule("app.render", {
       this.homeEntryCard({ module: "devices", icon: "🔬", name: "测试设备仓库", meta: "敬请期待...", style: "opacity:0.7" })
     );
 
-    shell.append(title, grid, this.textEl("p", "从执行走向治理", "home-slogan"), this.homeCacheToolNode());
+    shell.append(brand, grid, this.textEl("p", "从执行走向治理", "home-slogan"), this.homeCacheToolNode());
     content.replaceChildren(shell);
   },
   renderDevices() {

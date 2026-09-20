@@ -396,7 +396,9 @@ app.registerModule("workspace.taskTable", {
       const execHtml = i.ownerName
         ? `<div class="task-executor-cell"><span class="task-executor-name">${Utils.esc(i.ownerName)}</span>${i.ownerId ? `<span class="task-executor-id">${Utils.esc(i.ownerId)}</span>` : ""}</div>`
         : `<span class="muted">-</span>`;
-      const sampleHtml = `<div class="task-sample-cell"><span class="task-sample-count"><span class="task-sample-count-num">${sampleCount}</span> 台</span>${sampleCount && taskId ? `<button class="btn btn-sm btn-outline" data-app-action="task-show-samples" data-project-id="${Utils.esc(project.id)}" data-stage-id="${Utils.esc(stage.id)}" data-task-id="${Utils.esc(taskId)}">查看</button>` : ""}</div>`;
+      const sampleHtml = `<div class="task-sample-cell">${sampleCount && taskId
+        ? `<button type="button" class="task-sample-link" aria-label="查看 ${sampleCount} 台样机" title="查看此任务的 ${sampleCount} 台样机" data-app-action="task-show-samples" data-project-id="${Utils.esc(project.id)}" data-stage-id="${Utils.esc(stage.id)}" data-task-id="${Utils.esc(taskId)}"><span><span class="task-sample-count-num">${sampleCount}</span> 台</span><span class="task-sample-link-hint" aria-hidden="true">查看样机</span></button>`
+        : `<span class="task-sample-count">${sampleCount} 台</span>`}</div>`;
       return `
               <tr>
                 <td class="task-seq-cell">${sequence}</td>

@@ -31,37 +31,37 @@
 
 /* ---- Case Dropdown ---- */
 .case-dropdown {
-  position: fixed; display: none; z-index: 220; background: #fff;
-  border: 1px solid #cbd5e1; border-radius: 12px;
+  position: fixed; display: none; z-index: 220; background: var(--card);
+  border: 1px solid var(--border); border-radius: 12px;
   box-shadow: 0 18px 45px rgba(15, 23, 42, .20);
   overflow: hidden; max-height: 320px; width: 320px; max-width: calc(100vw - 24px);
 }
 .case-dropdown.show { display: block }
 .case-dropdown-head {
   padding: 8px; border-bottom: 1px solid var(--border);
-  background: #f8fafc; position: sticky; top: 0; z-index: 1;
+  background: var(--surface); position: sticky; top: 0; z-index: 1;
 }
 .case-dropdown-head input { height: 32px; font-size: 12px; padding: 6px 8px }
 .case-dropdown-options { max-height: 260px; overflow: auto }
 .case-option {
-  padding: 8px 10px; border-bottom: 1px solid #f1f5f9;
-  cursor: pointer; font-size: 12px; line-height: 1.35; background: #fff;
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  cursor: pointer; font-size: 12px; line-height: 1.35; background: var(--card);
 }
-.case-option:hover { background: #eff6ff }
+.case-option:hover { background: var(--primary-bg) }
 .case-option .case-cat { font-weight: 800; color: var(--primary); margin-bottom: 2px }
-.case-option .case-item { color: #111827 }
-.case-option.item-mode .case-main { font-size: 13px; font-weight: 700; color: #111827; line-height: 1.35 }
-.case-option.item-mode .case-sub { font-size: 11px; color: #64748b; margin-top: 3px }
-.case-filter-note { font-size: 11px; color: #475569; padding: 6px 8px 0; line-height: 1.45 }
+.case-option .case-item { color: var(--heading) }
+.case-option.item-mode .case-main { font-size: 13px; font-weight: 700; color: var(--heading); line-height: 1.35 }
+.case-option.item-mode .case-sub { font-size: 11px; color: var(--muted); margin-top: 3px }
+.case-filter-note { font-size: 11px; color: var(--muted); padding: 6px 8px 0; line-height: 1.45 }
 .case-filter-note b { color: var(--primary) }
 .case-section-title {
-  font-size: 11px; color: #64748b; background: #f8fafc;
-  padding: 6px 10px; border-bottom: 1px solid #e5e7eb; font-weight: 700;
+  font-size: 11px; color: var(--muted); background: var(--surface);
+  padding: 6px 10px; border-bottom: 1px solid var(--border); font-weight: 700;
 }
 .case-empty { padding: 16px; color: var(--muted); font-size: 12px; text-align: center }
 .case-master-badge {
-  font-size: 12px; color: #166534; background: #dcfce7;
-  border: 1px solid #bbf7d0; border-radius: 999px; padding: 4px 8px;
+  font-size: 12px; color: var(--pass-text); background: var(--pass-bg);
+  border: 1px solid var(--pass-border); border-radius: 999px; padding: 4px 8px;
 }
 .case-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
 
@@ -84,7 +84,7 @@
 .strategy-search-field span {
   font-size: 12px;
   font-weight: 800;
-  color: #475569;
+  color: var(--muted);
 }
 .strategy-search-field input {
   height: 34px;
@@ -94,7 +94,7 @@
   height: 34px;
   display: inline-flex;
   align-items: center;
-  color: #475569;
+  color: var(--muted);
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
@@ -124,7 +124,7 @@
 .split-frozen {
   min-width: 0;
   overflow: hidden;
-  background: #fff;
+  background: var(--card);
   z-index: 2;
 }
 .split-scroll {
@@ -140,7 +140,7 @@
   position: sticky;
   top: 0;
   z-index: 5;
-  background: #f3f6fa;
+  background: var(--table-head-bg);
   box-shadow: 0 2px 4px rgba(0,0,0,.06);
   text-align: center;
 }
@@ -161,7 +161,7 @@
 .strategy-frozen-table th:last-child,
 .strategy-frozen-table td:last-child {
   border-right: 1px solid var(--border);
-  box-shadow: 2px 0 0 rgba(226, 232, 240, .95);
+  box-shadow: 2px 0 0 var(--border);
 }
 .strategy-scroll-table th:last-child,
 .strategy-scroll-table td:last-child {
@@ -171,7 +171,7 @@
   text-align: center;
   vertical-align: middle;
 }
-.strategy-table input.invalid { border-color: #dc2626; background: #fef2f2 }
+.strategy-table input.invalid { border-color: var(--danger); background: var(--danger-bg) }
 .strategy-table input[type="checkbox"] { transform: scale(1.5); transform-origin: center; margin: 0 4px }
 
 /* ---- BOM 上料清单说明 ---- */
@@ -203,7 +203,7 @@
   position: sticky;
   top: 0;
   z-index: 5;
-  background: #f3f6fa;
+  background: var(--table-head-bg);
   text-align: center;
 }
 .bom-config-table .col-row-no {
@@ -222,13 +222,13 @@
   text-align: center;
 }
 .bom-frozen-table thead th {
-  background: var(--primary);
-  color: #fff !important;
+  background: var(--table-head-bg);
+  color: var(--text) !important;
 }
 .bom-frozen-table th:last-child,
 .bom-frozen-table td:last-child {
   border-right: 1px solid var(--border);
-  box-shadow: 2px 0 0 rgba(226, 232, 240, .95);
+  box-shadow: 2px 0 0 var(--border);
 }
 .bom-scroll-table th:last-child,
 .bom-scroll-table td:last-child {
@@ -265,7 +265,7 @@
 }
 
 .stage-row-delete-btn:hover {
-  color: #b91c1c;
+  color: var(--danger-text);
 }
 
 /* ---- Strategy Config Table Columns ---- */

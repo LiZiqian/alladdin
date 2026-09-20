@@ -13,7 +13,7 @@ button, input, select, textarea { font-family: inherit }
 
 /* ---- Sidebar ---- */
 .sidebar {
-  width: 206px; background: #fff; border-right: 1px solid var(--border);
+  width: 206px; background: var(--card); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; overflow-y: auto;
   transition: width .18s ease; position: relative; flex-shrink: 0;
 }
@@ -29,15 +29,15 @@ button, input, select, textarea { font-family: inherit }
 }
 .nav-item {
   padding: 10px 10px; margin: 4px 0; border-radius: 10px; cursor: pointer;
-  color: #475569; font-size: 14px; display: flex; gap: 9px;
+  color: var(--muted); font-size: 14px; display: flex; gap: 9px;
   justify-content: flex-start; align-items: center; white-space: nowrap; overflow: hidden;
 }
 .nav-icon { font-size: 17px; line-height: 1; min-width: 22px; text-align: center }
 .nav-label { overflow: hidden; text-overflow: ellipsis }
-.nav-item:hover { background: #f1f5f9; color: #111827 }
+.nav-item:hover { background: var(--surface); color: var(--heading) }
 .nav-item.active {
   background: linear-gradient(135deg, var(--primary), var(--primary2));
-  color: #fff; font-weight: 700;
+  color: var(--on-accent); font-weight: 700;
 }
 .nav-item.has-sub { cursor: pointer }
 .nav-item-main {
@@ -62,7 +62,7 @@ button, input, select, textarea { font-family: inherit }
 .nav-toggle::after {
   content: "";
   width: 0; height: 0;
-  border-left: 5px solid #94a3b8;
+  border-left: 5px solid var(--gray);
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
   transition: transform .15s;
@@ -76,17 +76,17 @@ button, input, select, textarea { font-family: inherit }
 .nav-sub.open { display: block }
 .nav-sub-item {
   padding: 6px 10px 6px 32px; margin: 1px 0; border-radius: 8px;
-  cursor: pointer; color: #64748b; font-size: 13px;
+  cursor: pointer; color: var(--muted); font-size: 13px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.nav-sub-item:hover { background: #f1f5f9; color: #0f172a }
+.nav-sub-item:hover { background: var(--surface); color: var(--heading) }
 .nav-sub-item.active {
-  background: #eff6ff; color: var(--primary); font-weight: 700;
+  background: var(--primary-bg); color: var(--primary); font-weight: 700;
 }
 .sidebar-toggle {
   position: absolute; right: 8px; top: 14px; width: 28px; height: 28px;
-  border-radius: 9px; border: 1px solid var(--border); background: #fff;
-  color: #334155; cursor: pointer; font-size: 14px;
+  border-radius: 9px; border: 1px solid var(--border); background: var(--card);
+  color: var(--text); cursor: pointer; font-size: 14px;
   display: flex; align-items: center; justify-content: center; z-index: 2;
 }
 .sidebar-toggle:hover { border-color: var(--primary); color: var(--primary) }
@@ -114,7 +114,7 @@ button, input, select, textarea { font-family: inherit }
 /* ---- Main Layout ---- */
 .main { flex: 1; display: flex; flex-direction: column; min-width: 0 }
 .topbar {
-  height: 60px; background: #fff; border-bottom: 1px solid var(--border);
+  height: 60px; background: var(--card); border-bottom: 1px solid var(--border);
   display: flex; justify-content: space-between; align-items: center; padding: 0 26px;
 }
 .title { font-size: 20px; font-weight: 800 }
@@ -125,18 +125,18 @@ button, input, select, textarea { font-family: inherit }
   flex: 0 0 auto;
   padding: 16px 26px 20px;
   text-align: center;
-  border-top: 1px solid #e5e7eb;
-  background: #f8fafc;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
 }
 .page-footer-text {
   margin: 0;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 13px;
   font-weight: 600;
   line-height: 1.6;
 }
 .bottom {
-  height: 40px; background: #fff; border-top: 1px solid var(--border);
+  height: 40px; background: var(--card); border-top: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 18px; font-size: 12px; color: var(--muted);
 }
@@ -145,7 +145,7 @@ button, input, select, textarea { font-family: inherit }
 #nav { padding: 14px 8px 16px }
 .sidebar-header {
   padding: 18px 14px 12px;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--border);
 }
 .logo {
   padding: 0;
@@ -159,9 +159,9 @@ button, input, select, textarea { font-family: inherit }
   margin-top: 7px;
   padding: 2px 7px;
   border-radius: 999px;
-  background: #eff6ff;
+  background: var(--primary-bg);
   color: var(--primary);
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--primary-bg);
   font-size: 11px;
   font-weight: 700;
   line-height: 1.25;
@@ -169,13 +169,13 @@ button, input, select, textarea { font-family: inherit }
 .sidebar-footer {
   margin-top: auto;
   padding: 10px 12px 12px;
-  border-top: 1px solid #f1f5f9;
-  background: #fff;
+  border-top: 1px solid var(--border);
+  background: var(--card);
 }
 .save-state {
   font-size: 11px;
   line-height: 1.45;
-  color: #64748b;
+  color: var(--muted);
   white-space: normal;
   word-break: break-word;
 }
@@ -192,7 +192,7 @@ button, input, select, textarea { font-family: inherit }
   width: 30px;
   height: 30px;
   border-radius: 10px;
-  background: #eff6ff;
+  background: var(--primary-bg);
   color: var(--primary);
   font-size: 16px;
   font-weight: 900;
@@ -212,7 +212,7 @@ button, input, select, textarea { font-family: inherit }
 
 .header {
   min-height: 64px;
-  background: #fff;
+  background: var(--card);
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
@@ -231,7 +231,7 @@ button, input, select, textarea { font-family: inherit }
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #0f172a;
+  color: var(--heading);
   flex-wrap: wrap;
 }
 .breadcrumb-bar button {
@@ -248,10 +248,10 @@ button, input, select, textarea { font-family: inherit }
   text-decoration: underline;
 }
 .breadcrumb-bar span {
-  color: #111827;
+  color: var(--heading);
 }
 .breadcrumb-bar em {
-  color: #94a3b8;
+  color: var(--muted);
   font-style: normal;
   font-weight: 800;
 }

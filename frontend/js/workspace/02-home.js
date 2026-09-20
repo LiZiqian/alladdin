@@ -77,7 +77,7 @@ app.registerModule("workspace.home", {
             ${sortMode
               ? '<span class="stage-sort-hint">拖动排序</span>'
               : `<button type="button" class="sample-card-destroy-btn" style="position:static" data-app-action="stage-delete" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}" title="删除此阶段">🗑</button>
-                <button type="button" style="background:none;border:none;font-size:18px;font-weight:900;opacity:0.75;color:#4b5563;cursor:pointer;padding:2px;line-height:1;margin-left:2px;transition:opacity .15s" title="复制为一个新阶段" aria-label="复制为一个新阶段" data-app-action="stage-copy" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">🗐</button>`}
+                <button type="button" style="background:none;border:none;font-size:18px;font-weight:900;color:var(--muted);cursor:pointer;padding:2px;line-height:1;margin-left:2px" title="复制为一个新阶段" aria-label="复制为一个新阶段" data-app-action="stage-copy" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">🗐</button>`}
           </div>
         </div>
         <div class="path">方案(SKU)：${(x.stage.skuNames || []).map(n => Utils.esc(n)).join(" / ") || "-"}</div>

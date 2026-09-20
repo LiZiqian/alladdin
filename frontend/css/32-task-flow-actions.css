@@ -7,19 +7,19 @@
    启动/重启按钮 - 绿色系
    ======================================== */
 .task-flow-table .btn-start:not(:disabled) {
-  background: #2f9e44;
-  border-color: #2f9e44;
-  color: #fff;
+  background: var(--pass);
+  border-color: var(--pass);
+  color: var(--on-accent);
 }
 .task-flow-table .btn-start:not(:disabled):hover {
-  background: #237a35;
-  border-color: #237a35;
-  color: #fff;
+  background: var(--pass-text);
+  border-color: var(--pass-text);
+  color: var(--on-accent);
 }
 .task-flow-table .btn-start:disabled {
-  background: #d8f3dc;
-  border-color: #d8f3dc;
-  color: #5f8f66;
+  background: var(--surface-hover);
+  border-color: var(--border);
+  color: var(--muted);
   opacity: 1;
   cursor: not-allowed;
 }
@@ -39,8 +39,8 @@
   bottom: calc(100% + 8px);
   transform: translateX(-50%);
   white-space: nowrap;
-  background: #111827;
-  color: #fff;
+  background: var(--heading);
+  color: var(--on-accent);
   font-size: 12px;
   font-weight: 500;
   line-height: 1.4;

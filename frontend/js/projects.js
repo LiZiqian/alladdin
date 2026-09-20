@@ -24,7 +24,7 @@ app.registerModule("projects", {
     row.className = "path";
     row.style.cssText = "display:flex;gap:12px";
     const labelEl = document.createElement("span");
-    labelEl.style.cssText = "color:#64748b;min-width:48px";
+    labelEl.style.cssText = "color:var(--muted);min-width:48px";
     labelEl.textContent = label;
     const valueEl = document.createElement("span");
     valueEl.textContent = value || "-";

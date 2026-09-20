@@ -10,12 +10,12 @@
   gap: 10px;
   margin-bottom: 0;
   padding: 16px 20px 14px;
-  border-bottom: 1px solid #e5e7eb;
-  background: #fff;
+  border-bottom: 1px solid var(--border);
+  background: var(--card);
 }
 .sample-summary-card {
-  border: 1px solid #e5e7eb;
-  background: #fff;
+  border: 1px solid var(--border);
+  background: var(--card);
   border-radius: 10px;
   padding: 10px 14px;
   display: flex;
@@ -25,14 +25,14 @@
 }
 .sample-summary-label {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--muted);
   font-weight: 600;
   letter-spacing: .02em;
 }
 .sample-summary-value {
   font-size: 13px;
   font-weight: 700;
-  color: #0f172a;
+  color: var(--heading);
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -60,8 +60,10 @@
 .sample-summary-status.s-进行中 {
   color: var(--status-task-running-text);
 }
+.sample-summary-status.s-取走分析 {
+  color: var(--status-sample-analysis-text);
+}
 .sample-summary-status.s-已退库,
-.sample-summary-status.s-取走分析,
 .sample-summary-status.s-退出测试,
 .sample-summary-status.s-待确认 {
   color: var(--status-display-neutral-text);
@@ -87,9 +89,9 @@
 }
 
 .sample-reassembly-panel {
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--card);
   padding: 12px 14px;
   display: grid;
   gap: 10px;
@@ -100,12 +102,12 @@
   gap: 10px;
 }
 .sample-reassembly-head b {
-  color: #1d4ed8;
+  color: var(--primary-text);
   font-size: 15px;
   font-weight: 900;
 }
 .sample-reassembly-head span {
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 12px;
 }
 .sample-reassembly-group {
@@ -115,7 +117,7 @@
   align-items: start;
 }
 .sample-reassembly-group-title {
-  color: #64748b;
+  color: var(--muted);
   font-size: 13px;
   font-weight: 800;
   line-height: 30px;
@@ -127,9 +129,9 @@
   min-width: 0;
 }
 .sample-reassembly-link {
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1e3a8a;
+  border: 1px solid var(--primary-border);
+  background: var(--primary-bg);
+  color: var(--primary-text);
   border-radius: 8px;
   min-height: 30px;
   padding: 5px 9px;
@@ -141,18 +143,18 @@
   text-align: left;
 }
 .sample-reassembly-link:hover {
-  border-color: #60a5fa;
-  background: #dbeafe;
+  border-color: var(--primary-border);
+  background: var(--primary-bg);
 }
 .sample-reassembly-link b {
-  color: #0f172a;
+  color: var(--heading);
   font-size: 13px;
   font-weight: 900;
 }
 .sample-reassembly-link span,
 .sample-reassembly-empty,
 .sample-reassembly-none {
-  color: #64748b;
+  color: var(--muted);
   font-size: 12px;
 }
 .sample-reassembly-empty,
@@ -162,7 +164,7 @@
 
 .sample-archive-empty {
   min-height: 360px;
-  border: 1px dashed var(--primary-border);
+  border: 1px dashed var(--border);
   border-radius: 14px;
   background: var(--primary-bg);
   display: flex;
@@ -174,12 +176,12 @@
   padding: 24px;
 }
 .sample-archive-empty b {
-  color: #1f2937;
+  color: var(--text);
   font-size: 18px;
   font-weight: 900;
 }
 .sample-archive-empty span {
-  color: #64748b;
+  color: var(--muted);
   max-width: 520px;
   line-height: 1.6;
 }
@@ -188,9 +190,9 @@
   gap: 12px;
 }
 .sample-history-item {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--card);
   padding: 14px;
 }
 .sample-history-head {
@@ -220,7 +222,7 @@
   text-align: left;
 }
 .sample-history-summary:hover {
-  background: #f8fafc;
+  background: var(--surface);
   border-radius: 8px;
   padding: 6px 8px;
   margin: -6px -8px;
@@ -266,11 +268,11 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px 14px;
-  color: #64748b;
+  color: var(--muted);
   font-size: 13px;
 }
 .sample-history-grid b {
-  color: #111827;
+  color: var(--heading);
 }
 .sample-history-logs,
 .sample-archive-log-list {
@@ -281,9 +283,6 @@
 @media (max-width: 760px) {
   .home-entry-grid {
     grid-template-columns: 260px;
-  }
-  .home-title {
-    font-size: 32px;
   }
   .sample-id-row,
   .form-row-three {
@@ -303,7 +302,7 @@
   }
   .sample-archive-nav {
     border-right: 0;
-    border-bottom: 1px solid #e5e7eb;
+    border-bottom: 1px solid var(--border);
     flex-direction: row;
     overflow-x: auto;
   }
@@ -332,7 +331,7 @@
   flex: 1;
   min-height: 0;
   cursor: zoom-in;
-  background: #1e293b;
+  background: var(--heading);
   border-radius: 0 0 10px 10px;
 }
 .sample-photo-preview-body img {

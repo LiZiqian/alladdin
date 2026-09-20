@@ -6,21 +6,21 @@
 .sample-history-problems {
   margin-top: 8px;
   padding: 8px 10px;
-  border: 1px solid #fecaca;
+  border: 1px solid var(--danger-border);
   border-radius: 8px;
-  background: #fef2f2;
-  color: #b91c1c;
+  background: var(--danger-bg);
+  color: var(--danger-text);
   font-weight: 700;
 }
 .sample-history-photos {
   margin-top: 10px;
   padding: 10px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #f8fafc;
+  background: var(--surface);
 }
 .sample-history-photos-title {
-  color: #475569;
+  color: var(--muted);
   font-size: 12px;
   font-weight: 900;
   margin-bottom: 8px;
@@ -33,10 +33,10 @@
 .sample-history-photo {
   width: 96px;
   padding: 6px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
-  color: #64748b;
+  background: var(--card);
+  color: var(--muted);
   cursor: pointer;
   text-align: left;
 }
@@ -45,7 +45,7 @@
   height: 64px;
   border-radius: 8px;
   object-fit: cover;
-  background: #f1f5f9;
+  background: var(--surface);
   display: block;
 }
 .sample-history-photo span {
@@ -75,9 +75,9 @@
   gap: 12px;
 }
 .sample-photo-card {
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: #fff;
+  background: var(--card);
   padding: 9px;
   display: grid;
   gap: 8px;
@@ -92,7 +92,7 @@
 }
 .sample-photo-add:hover {
   border-color: var(--primary);
-  background: #f8fafc;
+  background: var(--surface);
   box-shadow: 0 4px 20px rgba(0,0,0,.08);
 }
 .sample-photo-thumb {
@@ -109,8 +109,8 @@
   aspect-ratio: 4 / 3;
   object-fit: cover;
   border-radius: 9px;
-  background: #f1f5f9;
-  border: 1px solid #eef2f7;
+  background: var(--surface);
+  border: 1px solid var(--border);
   display: block;
   transition: transform .16s ease, box-shadow .16s ease;
 }
@@ -138,7 +138,7 @@
   z-index: 2;
   opacity: 0;
   padding: 2px;
-  color: #fff;
+  color: var(--on-accent);
   mix-blend-mode: difference;
   transition: opacity .18s;
 }
@@ -147,7 +147,7 @@
 }
 .sample-photo-delete-btn:hover {
   opacity: 1;
-  filter: drop-shadow(0 0 2px rgba(239,68,68,.6));
+  filter: drop-shadow(0 0 2px var(--danger-ring));
 }
 
 /* photo name row + rename icon */
@@ -159,7 +159,7 @@
 }
 .sample-photo-name-row b {
   font-size: 13px;
-  color: #111827;
+  color: var(--heading);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -167,7 +167,7 @@
 .sample-photo-rename-icon {
   background: none;
   border: none;
-  color: #94a3b8;
+  color: var(--muted);
   cursor: pointer;
   font-size: 13px;
   padding: 2px 4px;
@@ -188,13 +188,13 @@
   border: 1.5px solid var(--primary);
   border-radius: 5px;
   outline: none;
-  background: #fff;
-  color: #111827;
+  background: var(--card);
+  color: var(--heading);
   box-sizing: border-box;
 }
 .sample-photo-name-input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .sample-photo-preview-mask {
   position: fixed;
@@ -210,7 +210,7 @@
   width: min(1180px, 96vw);
   max-height: 94vh;
   border-radius: 14px;
-  background: #fff;
+  background: var(--card);
   overflow: hidden;
   box-shadow: 0 28px 72px rgba(15, 23, 42, .36);
   display: grid;
@@ -219,7 +219,7 @@
 .sample-photo-preview-head {
   min-height: 54px;
   padding: 12px 16px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -230,7 +230,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #111827;
+  color: var(--heading);
   font-size: 15px;
 }
 .sample-photo-preview-body {
@@ -238,14 +238,14 @@
   overflow: auto;
   display: grid;
   place-items: center;
-  background: #1e293b;
+  background: var(--heading);
   padding: 18px;
 }
 .sample-photo-preview-body img {
   max-width: 100%;
   max-height: calc(94vh - 92px);
   object-fit: contain;
-  background: #fff;
+  background: var(--card);
   border-radius: 8px;
 }
 .sample-archive-summary {
@@ -255,21 +255,21 @@
   margin-bottom: 14px;
 }
 .sample-archive-summary > div {
-  border: 1px solid #dbeafe;
-  background: #eff6ff;
+  border: 1px solid var(--border);
+  background: var(--primary-bg);
   border-radius: 10px;
   padding: 10px 12px;
 }
 .sample-archive-summary span {
   display: block;
-  color: #64748b;
+  color: var(--muted);
   font-size: 12px;
   font-weight: 700;
 }
 .sample-archive-summary b {
   display: block;
   margin-top: 5px;
-  color: #0f172a;
+  color: var(--heading);
   font-size: 16px;
   font-weight: 900;
   overflow-wrap: anywhere;

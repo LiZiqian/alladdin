@@ -16,13 +16,13 @@
   border-radius: 8px;
   cursor: pointer;
   font-size: 13px;
-  color: #64748b;
+  color: var(--muted);
   transition: background 0.15s, color 0.15s;
 }
 
 .nav-tool-item:hover {
-  background: #f1f5f9;
-  color: #0f172a;
+  background: var(--surface);
+  color: var(--heading);
 }
 
 .nav-tool-icon {
@@ -59,7 +59,7 @@
   font-weight: 600;
   margin-bottom: 8px;
   padding-bottom: 4px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border);
 }
 
 .import-source-grid {
@@ -71,7 +71,7 @@
 
 .import-source-grid code {
   font-size: 11px;
-  background: #f5f5f5;
+  background: var(--surface);
   padding: 1px 6px;
   border-radius: 3px;
 }
@@ -94,15 +94,15 @@
   max-height: 220px;
   overflow: auto;
   padding: 10px 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--surface);
 }
 
 .import-selection-col > strong {
   display: block;
   margin-bottom: 8px;
-  color: #334155;
+  color: var(--text);
   font-size: 13px;
 }
 
@@ -111,7 +111,7 @@
   align-items: center;
   min-height: 24px;
   gap: 6px;
-  color: #1f2937;
+  color: var(--text);
   font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
@@ -133,17 +133,17 @@
 
 .import-tree-task {
   padding-left: 36px;
-  color: #475569;
+  color: var(--muted);
 }
 
 .import-blockers {
-  background: #fff0f0;
-  border: 1px solid #fcc;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
   border-radius: 6px;
   padding: 10px 14px;
   margin-bottom: 12px;
   font-size: 13px;
-  color: #c00;
+  color: var(--danger-text);
 }
 
 .sample-archive-batch-list {
@@ -158,30 +158,30 @@
   grid-template-columns: 28px 28px minmax(0, 1fr) max-content;
   align-items: center;
   gap: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 12px;
-  background: #f8fafc;
-  color: #334155;
+  background: var(--surface);
+  color: var(--text);
   font-size: 13px;
 }
 
 .sample-archive-batch-row-valid,
 .sample-archive-batch-row-imported {
-  border-color: #bbf7d0;
-  background: #f0fdf4;
+  border-color: var(--pass-border);
+  background: var(--pass-bg);
 }
 
 .sample-archive-batch-row-invalid,
 .sample-archive-batch-row-failed {
-  border-color: #fecaca;
-  background: #fff1f2;
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
 }
 
 .sample-archive-batch-row-checking,
 .sample-archive-batch-row-importing {
-  border-color: #bfdbfe;
-  background: #eff6ff;
+  border-color: var(--primary-border);
+  background: var(--primary-bg);
 }
 
 .sample-archive-batch-check {
@@ -204,27 +204,27 @@
   width: 26px;
   height: 26px;
   border-radius: 999px;
-  background: #e2e8f0;
-  color: #64748b;
+  background: var(--surface-hover);
+  color: var(--muted);
   font-weight: 900;
   line-height: 1;
 }
 
 .sample-archive-batch-row-valid .sample-archive-batch-status,
 .sample-archive-batch-row-imported .sample-archive-batch-status {
-  background: #dcfce7;
-  color: #16a34a;
+  background: var(--pass-bg);
+  color: var(--pass);
 }
 
 .sample-archive-batch-row-invalid .sample-archive-batch-status,
 .sample-archive-batch-row-failed .sample-archive-batch-status {
-  background: #fee2e2;
-  color: #dc2626;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .sample-archive-batch-row-checking .sample-archive-batch-status,
 .sample-archive-batch-row-importing .sample-archive-batch-status {
-  background: #dbeafe;
+  background: var(--primary-bg);
   color: var(--primary);
 }
 
@@ -242,29 +242,29 @@
 
 .sample-archive-batch-detail {
   margin-top: 3px;
-  color: #64748b;
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
 }
 
 .sample-archive-batch-row-valid .sample-archive-batch-detail,
 .sample-archive-batch-row-imported .sample-archive-batch-detail {
-  color: #15803d;
+  color: var(--pass-text);
 }
 
 .sample-archive-batch-row-invalid .sample-archive-batch-detail,
 .sample-archive-batch-row-failed .sample-archive-batch-detail {
-  color: #b91c1c;
+  color: var(--danger-text);
 }
 
 .sample-archive-batch-size {
   flex: 0 0 auto;
-  color: #94a3b8;
+  color: var(--muted);
   white-space: nowrap;
 }
 
 .import-no-conflicts {
-  color: #4caf50;
+  color: var(--pass);
   font-size: 13px;
   padding: 8px 0;
 }
@@ -272,7 +272,7 @@
 /* ── 冲突卡片 ── */
 
 .conflict-card {
-  border: 1px solid #e8e8e8;
+  border: 1px solid var(--border);
   border-radius: 8px;
   margin-bottom: 10px;
   overflow: hidden;
@@ -280,8 +280,8 @@
 }
 
 .conflict-card.conflict-processed {
-  border-color: #a5d6a7;
-  background: #f9fdf9;
+  border-color: var(--pass-border);
+  background: var(--pass-bg);
 }
 
 .conflict-card-header {
@@ -289,25 +289,25 @@
   align-items: center;
   gap: 10px;
   padding: 8px 14px;
-  background: #fafafa;
+  background: var(--surface);
   font-size: 13px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border);
 }
 
 .conflict-processed .conflict-card-header {
-  background: #f0faf0;
+  background: var(--pass-bg);
 }
 
 .conflict-index {
-  color: #999;
+  color: var(--muted);
   font-size: 11px;
   min-width: 30px;
 }
 
 .conflict-type-badge {
   font-size: 11px;
-  background: #fff3cd;
-  color: #856404;
+  background: var(--warn-bg);
+  color: var(--warn-text);
   padding: 1px 8px;
   border-radius: 10px;
   white-space: nowrap;
@@ -323,12 +323,12 @@
 
 .conflict-status {
   font-size: 12px;
-  color: #999;
+  color: var(--muted);
   white-space: nowrap;
 }
 
 .conflict-processed .conflict-status {
-  color: #4caf50;
+  color: var(--pass);
 }
 
 .conflict-card-body {
@@ -346,8 +346,8 @@
 }
 
 .conflict-col {
-  background: #f9f9f9;
-  border: 1px solid #eee;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 12px;
   font-size: 12px;
@@ -371,12 +371,12 @@
 .conflict-rename-row {
   padding: 6px 0 6px 20px;
   font-size: 12px;
-  color: #666;
+  color: var(--muted);
 }
 
 .conflict-rename-row input {
   padding: 2px 8px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 12px;
   margin: 2px 4px 2px 0;

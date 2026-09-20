@@ -5,23 +5,23 @@
 /* ---- Task Log ---- */
 .task-log-context {
   margin: 0 0 18px;
-  color: #475569;
+  color: var(--muted);
   font-size: 14px;
   font-weight: 900;
   line-height: 1.7;
 }
 .task-log-list {
   max-height: 420px; overflow: auto; border: 1px solid var(--border);
-  border-radius: 12px; background: #f8fafc; padding: 10px;
+  border-radius: 12px; background: var(--surface); padding: 10px;
 }
 .task-log-item {
-  border-left: 3px solid var(--primary); background: #fff;
+  border-left: 3px solid var(--primary); background: var(--card);
   border-radius: 8px; padding: 9px 10px; margin: 8px 0;
   font-size: 12px; line-height: 1.55;
 }
 .task-log-text {
   margin-top: 4px;
-  color: #1f2937;
+  color: var(--text);
   font-size: 12px;
   line-height: 1.55;
   overflow: visible;
@@ -30,7 +30,7 @@
   word-break: break-word;
 }
 .task-log-text b {
-  color: #111827;
+  color: var(--heading);
   font-weight: 900;
 }
 .task-log-text-multiline {
@@ -49,12 +49,12 @@
 }
 .task-log-detail-label {
   font-weight: 700;
-  color: #334155;
+  color: var(--text);
   flex: 0 0 auto;
   font-size: 12px;
 }
 .task-log-detail-value {
-  color: #1f2937;
+  color: var(--text);
   min-width: 0;
   word-break: break-word;
   font-size: 12px;
@@ -74,7 +74,7 @@
   color: var(--primary);
 }
 .sample-log-ref-missing {
-  color: #64748b;
+  color: var(--muted);
   font-weight: 800;
 }
 .history-seq {
@@ -86,7 +86,7 @@
   padding: 0 10px;
   border-radius: 999px;
   background: var(--primary);
-  color: #fff;
+  color: var(--on-accent);
   font-size: 13px;
   font-weight: 900;
   flex-shrink: 0;
@@ -100,7 +100,7 @@
   padding: 0 7px;
   margin-right: 8px;
   border-radius: 999px;
-  background: #dbeafe;
+  background: var(--primary-bg);
   color: var(--primary);
   font-size: 11px;
   font-weight: 600;
@@ -112,5 +112,5 @@
 
 .log-line {
   border-left: 3px solid var(--primary); padding: 8px 10px;
-  margin: 8px 0; background: #f8fafc; border-radius: 8px; font-size: 12px;
+  margin: 8px 0; background: var(--surface); border-radius: 8px; font-size: 12px;
 }
