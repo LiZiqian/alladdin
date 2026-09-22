@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 import copy
 import hashlib
 import json
 from collections import defaultdict
 from typing import Callable
+
+from server_modules import sample_constraints, sample_queries, task_reservations
 
 
 FINISHED_TASK_STATUSES = {"正常完成", "异常终止"}
@@ -16,6 +20,17 @@ def stable_json(data: object) -> str:
 
 def content_hash(data: object) -> str:
     return hashlib.sha256(stable_json(data).encode("utf-8")).hexdigest()[:16]
+
+
+def apply_import_field_choices(target: dict, incoming: dict, fields, choices: dict) -> None:
+    """Apply the exact side selected in preview, including an absent field."""
+    for field in fields:
+        if choices.get(field, "current") != "incoming":
+            continue
+        if field in incoming:
+            target[field] = copy.deepcopy(incoming[field])
+        else:
+            target.pop(field, None)
 
 
 def find_incoming_stage(incoming_projects_by_id: dict, stage_id: str) -> dict | None:
@@ -81,6 +96,7 @@ def remap_log_ids(log: dict,
     """重映射单条日志中的 ID 引用"""
     for field, id_map in [
         ("sampleId", sample_id_map),
+        ("sid", sample_id_map),
         ("projectId", project_id_map),
         ("stageId", stage_id_map),
         ("taskId", task_id_map),
@@ -96,21 +112,37 @@ def apply_id_maps(data: dict,
                   task_id_map: dict,
                   sample_id_map: dict) -> None:
     """统一重映射所有交叉引用 ID（传入的 data 原地修改）"""
+    def remap_records(value):
+        if isinstance(value, dict):
+            remap_log_ids(value, project_id_map, stage_id_map, task_id_map, sample_id_map)
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    remap_records(child)
+        elif isinstance(value, list):
+            for child in value:
+                remap_records(child)
+
     for project in data.get("projects") or []:
         for stage in project.get("stages") or []:
+            stage["projectId"] = project.get("id")
             for task in stage.get("tasks") or []:
+                task["projectId"] = project.get("id")
+                task["stageId"] = stage.get("id")
                 if task.get("sampleIds"):
-                    task["sampleIds"] = [sample_id_map.get(sample_id, sample_id) for sample_id in task["sampleIds"]]
-                for log in task.get("logs") or []:
-                    remap_log_ids(log, project_id_map, stage_id_map, task_id_map, sample_id_map)
-                for record in task.get("removedSampleRecords") or []:
-                    old_sample_id = record.get("sampleId")
-                    if old_sample_id and old_sample_id in sample_id_map:
-                        record["sampleId"] = sample_id_map[old_sample_id]
-                for record in task.get("sampleFaultRecords") or []:
-                    old_sample_id = record.get("sampleId")
-                    if old_sample_id and old_sample_id in sample_id_map:
-                        record["sampleId"] = sample_id_map[old_sample_id]
+                    task["sampleIds"] = list(dict.fromkeys(sample_id_map.get(sample_id, sample_id) for sample_id in task["sampleIds"]))
+                for key in ("logs", "removedSampleRecords", "sampleFaultRecords", "resultUploads", "resultDraft", "issueRecord"):
+                    remap_records(task.get(key))
+                snapshots = task.get("sampleSnapshots")
+                if isinstance(snapshots, dict):
+                    mapped = {}
+                    for sid, snapshot in snapshots.items():
+                        target_sid = sample_id_map.get(sid, sid)
+                        if isinstance(snapshot, dict):
+                            snapshot["id"] = target_sid
+                            if "sampleId" in snapshot:
+                                snapshot["sampleId"] = target_sid
+                        mapped.setdefault(target_sid, snapshot)
+                    task["sampleSnapshots"] = mapped
 
     for category in (data.get("sampleLibrary") or {}).get("categories") or []:
         for sample in category.get("samples") or []:
@@ -123,6 +155,74 @@ def apply_id_maps(data: dict,
             current_task_id = sample.get("currentTaskId")
             if current_task_id and current_task_id in task_id_map:
                 sample["currentTaskId"] = task_id_map[current_task_id]
+            for key in ("photos", "files", "logs", "problemRecords"):
+                remap_records(sample.get(key))
+
+
+def detect_import_identity_conflicts(data: dict, affected_ids: set[str] | None = None) -> list[dict]:
+    by_key = {}
+    conflicts = []
+    for category in (data.get("sampleLibrary") or {}).get("categories") or []:
+        for sample in category.get("samples") or []:
+            sid = str(sample.get("id") or "")
+            own_keys = set()
+            for item in sample_constraints.sample_identity_fields(sample):
+                key = sample_constraints.sample_identity_key(item["value"])
+                if not key:
+                    continue
+                if key in own_keys and (affected_ids is None or sid in affected_ids):
+                    conflicts.append({"sampleId": sid, "conflictingSampleId": sid, "identity": item["value"]})
+                own_keys.add(key)
+            if sample_queries.sample_is_reassembled(sample):
+                continue
+            for key in own_keys:
+                for previous in by_key.get(key, []):
+                    if affected_ids is None or sid in affected_ids or previous in affected_ids:
+                        conflicts.append({"sampleId": sid, "conflictingSampleId": previous, "identity": key})
+                by_key.setdefault(key, []).append(sid)
+            if len(conflicts) >= 20:
+                return conflicts[:20]
+    return conflicts
+
+
+def preserve_existing_import_events(conn, data: dict) -> int:
+    """Append colliding external events without overwriting local audit history."""
+    library = data.get("sampleLibrary") or {}
+    logs = library.get("logs") or []
+    if not library.get("eventsExternalized"):
+        return len(logs)
+    event_ids = sorted({str(log.get("id") or "") for log in logs if isinstance(log, dict)} - {""})
+    by_id = dict.fromkeys(event_ids)
+    for offset in range(0, len(event_ids), 400):
+        batch = event_ids[offset:offset + 400]
+        placeholders = ",".join("?" for _ in batch)
+        for row in conn.execute(f"SELECT id, data_json FROM sample_events WHERE id IN ({placeholders})", batch):
+            by_id[row["id"]] = json.loads(row["data_json"])
+    appended = []
+    for raw in logs:
+        if not isinstance(raw, dict):
+            continue
+        log = copy.deepcopy(raw)
+        original_id = str(log.get("id") or "")
+        derived_id = f"event_import_{content_hash(log)}"
+        candidate = original_id or derived_id
+        suffix = 0
+        while True:
+            log["id"] = candidate
+            if candidate not in by_id:
+                row = conn.execute("SELECT data_json FROM sample_events WHERE id = ?", (candidate,)).fetchone()
+                by_id[candidate] = json.loads(row["data_json"]) if row else None
+            existing = by_id[candidate]
+            if existing is None:
+                by_id[candidate] = log
+                appended.append(log)
+                break
+            if stable_json(existing) == stable_json(log):
+                break
+            candidate = derived_id if suffix == 0 else f"{derived_id}_{suffix}"
+            suffix += 1
+    library["logs"] = appended
+    return len(appended)
 
 
 def validate_import_commit_state(data: dict, project_ids: set[str]) -> list[str]:
@@ -180,6 +280,40 @@ def sample_index_by_id(data: dict) -> dict[str, dict]:
     return samples
 
 
+def rewrite_import_photo_references(data: dict, *, url_for_asset: Callable, thumbnail_asset_id: Callable) -> None:
+    """Resolve result/history photo references against the committed asset owners."""
+    photos = {}
+    for sid, sample in sample_index_by_id(data).items():
+        for photo in sample.get("photos") or []:
+            pid = str(photo.get("id") or "")
+            if not pid:
+                continue
+            thumb_path = photo.get("thumbRelativePath") or ""
+            thumb_url = url_for_asset(sid, photo.get("thumbId") or thumbnail_asset_id(pid)) if thumb_path else ""
+            photos[pid] = {"url": url_for_asset(sid, pid), "relativePath": photo.get("relativePath") or "",
+                           "thumbRelativePath": thumb_path, "thumbUrl": thumb_url}
+
+    def visit(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in ("photos", "resultPhotos") and isinstance(child, list):
+                    for ref in child:
+                        if not isinstance(ref, dict):
+                            continue
+                        canonical = photos.get(str(ref.get("id") or ""))
+                        if canonical:
+                            for field, replacement in canonical.items():
+                                if field in ref:
+                                    ref[field] = replacement
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(data.get("projects") or [])
+    visit((data.get("sampleLibrary") or {}).get("logs") or [])
+
+
 def merge_import_sample_subrecords(current_data: dict,
                                    incoming: dict,
                                    sample_id_map: dict[str, str]) -> tuple[int, int]:
@@ -218,6 +352,12 @@ def merge_import_sample_subrecords(current_data: dict,
             existing_photo_hashes.add(photo_hash)
             photos_added += 1
 
+        existing_files = {item["id"] for item in target_sample.get("files") or []}
+        for item in incoming_sample.get("files") or []:
+            if item["id"] not in existing_files:
+                target_sample.setdefault("files", []).append(copy.deepcopy(item))
+                existing_files.add(item["id"])
+
         existing_problem_hashes = {
             content_hash(record)
             for record in (target_sample.get("problemRecords") or [])
@@ -225,6 +365,15 @@ def merge_import_sample_subrecords(current_data: dict,
         }
         for record in incoming_sample.get("problemRecords") or []:
             if not isinstance(record, dict):
+                continue
+            # The same problem can acquire additional evidence on either copy.
+            # Merge links by stable problem identity instead of duplicating rows.
+            matching = next((old for old in target_sample.get("problemRecords") or []
+                             if isinstance(old, dict) and record.get("id") and old.get("id") == record["id"]
+                             and all(old.get(key, "") == record.get(key, "") for key in ("description", "source", "taskLabel"))), None)
+            if matching is not None:
+                if "photoIds" in matching or "photoIds" in record:
+                    matching["photoIds"] = list(dict.fromkeys([*(matching.get("photoIds") or []), *(record.get("photoIds") or [])]))
                 continue
             record_hash = content_hash(record)
             if record_hash in existing_problem_hashes:
@@ -257,7 +406,7 @@ def hydrate_import_target_photos(current_data: dict,
         return
 
     current_samples = sample_index_by_id(current_data)
-    with connect_db() as conn:
+    with closing(connect_db()) as conn:
         began = begin_read_snapshot(conn)
         try:
             for target_sample_id in sorted(target_ids):
@@ -346,7 +495,7 @@ def merge_project_sub_data(target: dict, source: dict) -> None:
 
 
 def detect_sample_occupancy_conflicts(data: dict) -> list[dict]:
-    """C1：检测同一样机被多个未完成任务占用的冲突。"""
+    """Apply the same reservation/execution rules as interactive task writes."""
     if not isinstance(data, dict):
         return []
     occupancy: dict[str, list[dict]] = defaultdict(list)
@@ -359,27 +508,23 @@ def detect_sample_occupancy_conflicts(data: dict) -> list[dict]:
             for task in stage.get("tasks", []) or []:
                 if not isinstance(task, dict):
                     continue
-                if task.get("archived") or task.get("completed"):
-                    continue
-                status = str(task.get("status") or "").strip()
-                if status in FINISHED_TASK_STATUSES:
+                if not task_reservations.is_open(task):
                     continue
                 sample_ids = task.get("sampleIds") or []
                 if not isinstance(sample_ids, list):
                     continue
-                for sample_id in sample_ids:
+                for sample_id in set(map(str, sample_ids)):
                     sample_id = str(sample_id)
                     if not sample_id:
                         continue
-                    occupancy[sample_id].append({
-                        "taskId": str(task.get("id") or ""),
-                        "projectId": str(project.get("id") or ""),
-                        "stageId": str(stage.get("id") or ""),
-                        "testItem": str(task.get("testItem") or ""),
-                        "status": status,
-                    })
+                    occupancy[sample_id].append(task_reservations.task_reference(task, project.get("id"), stage.get("id")))
     conflicts = []
     for sample_id, tasks in occupancy.items():
-        if len(tasks) > 1:
-            conflicts.append({"sampleId": sample_id, "tasks": tasks})
+        conflicting = set()
+        for index, task in enumerate(tasks):
+            for other_index in range(index + 1, len(tasks)):
+                if task_reservations.conflict_reason(task, tasks[other_index]):
+                    conflicting.update((index, other_index))
+        if conflicting:
+            conflicts.append({"sampleId": sample_id, "tasks": [tasks[index] for index in sorted(conflicting)]})
     return conflicts

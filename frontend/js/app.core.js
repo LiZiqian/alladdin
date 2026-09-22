@@ -51,11 +51,10 @@ const app = {
   serverAppVersion: "",
   serverVersionMismatch: false,
   serverOnline: false,
-  _saveInFlight: false,
-  _saveQueued: false,
-  _queuedRemark: "",
-  _saveTimer: null,
+  // 服务器已确认的字段基线，用于检测未保存编辑及三方合并。
+  // 按需加载只补对应实体的基线，不能直接把整份 data 复制进来。
   _baseData: null,
+  // bootstrap/分页状态不是完整数据库镜像，不能据此删除未加载的记录。
   _statePartial: false,
   _projectDetailPromises: {},
   _projectSelectionSequence: 0,
@@ -224,10 +223,31 @@ const app = {
         this.toggleSidebar();
         break;
       case "modal-close":
-        this.closeModal();
+        this.requestModalClose();
         break;
       case "project-add":
         this.addProject();
+        break;
+      case "device-group-add":
+        this.editDeviceGroup();
+        break;
+      case "device-group-edit":
+        this.editDeviceGroup(id);
+        break;
+      case "device-group-open":
+        this.openDeviceGroup(id);
+        break;
+      case "device-warehouse-refresh":
+        this.loadDeviceWarehouse();
+        break;
+      case "device-add":
+        this.editDevice();
+        break;
+      case "device-edit":
+        this.editDevice(id);
+        break;
+      case "device-open":
+        this.openDevice(id);
         break;
       case "project-edit":
         this.editProject(id);
@@ -238,8 +258,14 @@ const app = {
       case "project-delete":
         this.deleteProject(id);
         break;
+      case "project-export-scope":
+        this.exportProjectBundle(id);
+        break;
       case "sample-page":
         this.setSamplePage(value);
+        break;
+      case "sample-page-retry":
+        this.refreshCurrentSamplePage(this.currentSampleCategory());
         break;
       case "sample-page-size":
         this.setSamplePageSize(target.value);
@@ -255,6 +281,9 @@ const app = {
         break;
       case "sample-category-delete":
         this.deleteSampleCategory(id);
+        break;
+      case "sample-pool-export-scope":
+        this.exportSamplePoolBundle(id);
         break;
       case "sample-add":
         this.addSample(id);
@@ -364,6 +393,9 @@ const app = {
       case "task-config-tab":
         this.switchTaskConfigTab(value || target.dataset.tab || "plan");
         break;
+      case "task-sample-picker-schedule":
+        this.loadTaskSamplePickerPage(id);
+        break;
       case "stage-select":
         this.selectWorkspaceStageState(id);
         this.render();
@@ -384,10 +416,10 @@ const app = {
         this.toggleStageSortMode();
         break;
       case "stage-drag":
-        if (eventType === "dragstart") this.onStageDragStart(event, id);
-        if (eventType === "dragover") this.onStageDragOver(event, id);
-        if (eventType === "dragleave") this.onStageDragLeave(event);
-        if (eventType === "drop") this.onStageDrop(event, id);
+        if (eventType === "dragstart") this.onStageDragStart(event, id, target);
+        if (eventType === "dragover") this.onStageDragOver(event, id, target);
+        if (eventType === "dragleave") this.onStageDragLeave(event, target);
+        if (eventType === "drop") this.onStageDrop(event, id, target);
         if (eventType === "dragend") this.onStageDragEnd(event);
         break;
       case "project-member-edit":
@@ -413,6 +445,9 @@ const app = {
         break;
       case "project-members-clear-selection":
         this.clearProjectMemberSelection();
+        break;
+      case "project-members-bulk-remove":
+        this.bulkRemoveProjectMembers();
         break;
       case "project-members-role-toggle":
         this.toggleProjectMemberRoleGroup(value);
@@ -449,7 +484,7 @@ const app = {
         break;
       case "sample-readonly":
         {
-          const pending = this.openSampleReadonly(id);
+          const pending = this.openSampleReadonly(id, { readonlyOkText: target.dataset.returnText || "" });
           if (pending?.catch) pending.catch(e => {
             console.error("样机档案打开失败：", e);
             alert("样机档案打开失败：" + (e.message || e));
@@ -458,6 +493,9 @@ const app = {
         break;
       case "sample-archive-tab":
         this.switchSampleArchiveTab(target.dataset.tab || value || "info");
+        break;
+      case "sample-reassembly-refresh":
+        this.refreshSampleReassemblySources();
         break;
       case "sample-archive-export":
         this.exportSampleArchive(id);
@@ -475,6 +513,12 @@ const app = {
         if (target.dataset.selfOnly === "1" && event.target !== target) return;
         target.closest(".sample-photo-preview-mask")?.remove();
         break;
+      case "sample-file-upload":
+      case "sample-file-delete":
+      case "sample-file-preview":
+      case "sample-file-reload":
+        this.handleSampleFileAction(target, action.replace("sample-file-", ""));
+        break;
       case "sample-photo-upload":
         this.uploadSamplePhotos(id);
         break;
@@ -485,7 +529,11 @@ const app = {
         this.startPhotoRename(target, id, target.dataset.photoId || "");
         break;
       case "task-result-photo-upload":
-        this.uploadTaskResultPhotos(target);
+      case "problem-photos-open":
+        this.openProblemPhotos(target);
+        break;
+      case "task-result-photo-remove":
+        this.removeTaskResultPhoto(target);
         break;
       case "task-result-problem-remove":
         this.removeTaskResultProblemRow(target);
@@ -544,6 +592,15 @@ const app = {
         break;
       case "bom-add":
         this.addBomRow();
+        break;
+      case "matrix-sku-name":
+        this.renameMatrixSku(Number(target.dataset.index), target);
+        break;
+      case "matrix-sku-add":
+        this.addMatrixSku();
+        break;
+      case "matrix-sku-delete":
+        this.removeMatrixSku(Number(target.dataset.index));
         break;
       case "bom-update":
         this.updateBom(Number(target.dataset.index), field, target.value);

@@ -12,8 +12,9 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from server_modules import zip_security, sample_files
 
-LEGACY_FORMAT_V1 = "testchamber-export-bundle-v1"
+
 FORMAT_V2 = "chamberdata-package-v2"
 PROTOCOL_NAME = "ChamberData"
 SCHEMA_VERSION = 2
@@ -74,16 +75,17 @@ def _safe_data_path(data_dir: Path, relative_path: str) -> Path | None:
     return target
 
 
-def _asset_entry(data_dir: Path, sample_id: str, photo_id: str, role: str, relative_path: str) -> dict:
+def _asset_entry(data_dir: Path, sample_id: str, photo_id: str, role: str, relative_path: str, *, kind="sample_photo") -> dict:
     filename = Path(relative_path or "").name
-    zip_path = f"assets/samples/{sample_id}/photos/{filename}" if filename else ""
+    folder = "files" if kind == "sample_file" else "photos"
+    zip_path = f"assets/samples/{sample_id}/{folder}/{filename}" if filename else ""
     source_path = _safe_data_path(data_dir, relative_path)
     exists = bool(source_path and source_path.is_file())
     entry = {
         "assetId": f"{photo_id}::{role}",
         "entity": "sample",
         "entityId": sample_id,
-        "kind": "sample_photo",
+        "kind": kind,
         "role": role,
         "metadataId": photo_id,
         "sourceRelativePath": relative_path or "",
@@ -94,9 +96,15 @@ def _asset_entry(data_dir: Path, sample_id: str, photo_id: str, role: str, relat
         "sha256": "",
     }
     if exists and source_path:
-        raw = source_path.read_bytes()
-        entry["bytes"] = len(raw)
-        entry["sha256"] = sha256_bytes(raw)
+        digest = hashlib.sha256()
+        try:
+            with source_path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    entry["bytes"] += len(chunk)
+                    digest.update(chunk)
+        except OSError as exc:
+            raise ValueError("导出期间照片文件已变化或无法读取，请重试导出") from exc
+        entry["sha256"] = digest.hexdigest()
     return entry
 
 
@@ -147,9 +155,10 @@ def build_domain_documents(state: dict, data_dir: Path) -> tuple[dict[str, objec
             sample_doc = copy.deepcopy(sample)
             sample_doc["categoryId"] = category_id
             photos = sample_doc.pop("photos", [])
+            files = sample_doc.pop("files", [])
             sample_doc.pop("logs", None)
             samples.append(sample_doc)
-            for photo in photos or []:
+            for photo in [*(photos or []), *(files or [])]:
                 if not isinstance(photo, dict):
                     continue
                 photo_doc = copy.deepcopy(photo)
@@ -158,7 +167,7 @@ def build_domain_documents(state: dict, data_dir: Path) -> tuple[dict[str, objec
                 photo_id = str(photo.get("id") or "")
                 rel = str(photo.get("relativePath") or "")
                 if rel:
-                    asset_entries.append(_asset_entry(data_dir, sample_id, photo_id, "original", rel))
+                    asset_entries.append(_asset_entry(data_dir, sample_id, photo_id, "original", rel, kind="sample_file" if photo.get("kind") in sample_files.KINDS else "sample_photo"))
                 thumb_rel = str(photo.get("thumbRelativePath") or "")
                 if thumb_rel:
                     asset_entries.append(_asset_entry(data_dir, sample_id, photo_id, "thumbnail", thumb_rel))
@@ -219,7 +228,6 @@ def build_export_package(
         "scope": scope or "all",
         "domainPaths": DOMAIN_PATHS,
         "assetIndexPath": ASSET_INDEX_PATH,
-        "legacyCompatible": False,
         "counts": {
             "projects": len(domains["projects"]),
             "stages": len(domains["stages"]),
@@ -245,8 +253,74 @@ def package_payloads(package: dict, *, pretty: bool = True, extra_payloads: dict
     return payloads
 
 
-def is_chamberdata_manifest(manifest: dict) -> bool:
-    return str(manifest.get("format") or "") == FORMAT_V2 or str(manifest.get("protocol") or "") == PROTOCOL_NAME
+def validate_manifest(manifest: object) -> None:
+    if not isinstance(manifest, dict):
+        raise ValueError("导入包 manifest.json 必须是对象")
+    if manifest.get("format") != FORMAT_V2 or manifest.get("protocol") != PROTOCOL_NAME:
+        raise ValueError("导入包格式或协议不受支持")
+    if type(manifest.get("schemaVersion")) is not int or manifest["schemaVersion"] != SCHEMA_VERSION:
+        raise ValueError("导入包 schemaVersion 不受支持")
+    if manifest.get("packageKind", "full") not in ("full", "sample-archive"):
+        raise ValueError("导入包 packageKind 不受支持")
+    if manifest.get("scope", "all") not in ("all", "selected-projects", "selected-sample-categories", "selected-samples"):
+        raise ValueError("导入包 scope 不受支持")
+    if manifest.get("domainPaths") != DOMAIN_PATHS or manifest.get("assetIndexPath") != ASSET_INDEX_PATH:
+        raise ValueError("导入包 domainPaths 或 assetIndexPath 不正确")
+
+
+def _record_id(item: dict, label: str, seen: set[str]) -> str:
+    value = item.get("id")
+    if (not isinstance(value, str) or not value or value != value.strip() or "/" in value
+            or zip_security.safe_relative_member_name(value) is None):
+        raise ValueError(f"{label} ID 缺失或包含不安全字符")
+    if value in seen:
+        raise ValueError(f"{label} ID 重复: {value}")
+    seen.add(value)
+    return value
+
+
+def validate_state_structure(state: object) -> None:
+    """Validate the current domain tree before any database write."""
+    if not isinstance(state, dict):
+        raise ValueError("导入包数据必须是对象")
+
+    def records(parent, key):
+        rows = parent.get(key, [])
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise ValueError(f"导入包 {key} 必须是对象列表")
+        return rows
+
+    def owner(item, key, expected):
+        if item.get(key) not in (None, "", expected):
+            raise ValueError(f"导入包 {item.get('id')} 的 {key} 与所属记录不一致")
+
+    ids = {key: set() for key in ("project", "stage", "task", "category", "sample", "photo", "taskLog")}
+    for project in records(state, "projects"):
+        pid = _record_id(project, "项目", ids["project"])
+        for stage in records(project, "stages"):
+            sid = _record_id(stage, "阶段", ids["stage"])
+            owner(stage, "projectId", pid)
+            for task in records(stage, "tasks"):
+                _record_id(task, "任务", ids["task"])
+                owner(task, "projectId", pid)
+                owner(task, "stageId", sid)
+                for log in records(task, "logs"):
+                    if log.get("id"):
+                        _record_id(log, "任务日志", ids["taskLog"])
+                if not isinstance(task.get("sampleIds", []), list) or any(
+                    not isinstance(value, str) or not value for value in task.get("sampleIds", [])
+                ):
+                    raise ValueError("任务 sampleIds 必须是 ID 列表")
+    library = state.get("sampleLibrary", {})
+    if not isinstance(library, dict):
+        raise ValueError("导入包 sampleLibrary 必须是对象")
+    for category in records(library, "categories"):
+        cid = _record_id(category, "样机池", ids["category"])
+        for sample in records(category, "samples"):
+            _record_id(sample, "样机", ids["sample"])
+            owner(sample, "categoryId", cid)
+            for photo in [*records(sample, "photos"), *records(sample, "files")]:
+                _record_id(photo, "照片", ids["photo"])
 
 
 def state_from_domain_documents(manifest: dict, domains: dict[str, object]) -> dict:
@@ -328,7 +402,8 @@ def state_from_domain_documents(manifest: dict, domains: dict[str, object]) -> d
         if sample_id in samples_by_id:
             photo = copy.deepcopy(asset)
             photo.pop("sampleId", None)
-            samples_by_id[sample_id].setdefault("photos", []).append(photo)
+            field = "files" if photo.get("kind") in sample_files.KINDS else "photos"
+            samples_by_id[sample_id].setdefault(field, []).append(photo)
 
     events = domains.get("sampleEvents")
     state["sampleLibrary"]["logs"] = copy.deepcopy(events) if isinstance(events, list) else []
@@ -353,15 +428,13 @@ def _manifest_count_value(counts: dict, key: str) -> int | None:
     if key not in counts:
         return None
     value = counts.get(key)
-    if isinstance(value, bool):
+    if type(value) is not int or value < 0:
         raise ValueError(f"导入包 manifest counts 格式不正确: {key}")
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"导入包 manifest counts 格式不正确: {key}")
+    return value
 
 
 def validate_domain_documents(manifest: dict, domains: dict[str, object], asset_index: dict | None) -> None:
+    validate_manifest(manifest)
     if not isinstance(domains.get("app"), dict):
         raise ValueError(f"导入包 {DOMAIN_PATHS['app']} 格式不正确")
     for key in LIST_DOMAIN_KEYS:
@@ -370,10 +443,69 @@ def validate_domain_documents(manifest: dict, domains: dict[str, object], asset_
         for idx, item in enumerate(domains.get(key) or [], start=1):
             if not isinstance(item, dict):
                 raise ValueError(f"导入包 {DOMAIN_PATHS[key]} 第 {idx} 项格式不正确")
-    if asset_index is not None:
-        for idx, item in enumerate(asset_index.get("assets") or [], start=1):
-            if not isinstance(item, dict):
-                raise ValueError(f"导入包 {ASSET_INDEX_PATH} 第 {idx} 项格式不正确")
+    if not isinstance(asset_index, dict) or not isinstance(asset_index.get("assets"), list):
+        raise ValueError(f"导入包 {ASSET_INDEX_PATH} 格式不正确")
+    for idx, item in enumerate(asset_index["assets"], start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"导入包 {ASSET_INDEX_PATH} 第 {idx} 项格式不正确")
+
+    indexes = {}
+    for key in ("projects", "stages", "tasks", "sampleCategories", "samples", "sampleAssets"):
+        seen = set()
+        indexes[key] = {_record_id(item, key, seen): item for item in domains[key]}
+    for key, parent_key, parent_domain in (
+        ("stages", "projectId", "projects"), ("tasks", "stageId", "stages"),
+        ("samples", "categoryId", "sampleCategories"), ("sampleAssets", "sampleId", "samples"),
+    ):
+        for item in domains[key]:
+            if not isinstance(item.get(parent_key), str) or item[parent_key] not in indexes[parent_domain]:
+                raise ValueError(f"导入包 {key} 引用了不存在的 {parent_key}: {item.get('id')}")
+    for task in domains["tasks"]:
+        if task.get("projectId") != indexes["stages"][task["stageId"]]["projectId"]:
+            raise ValueError(f"导入包任务项目归属不一致: {task.get('id')}")
+    # Domain rows are flat. Nested child lists would otherwise be injected beside
+    # the validated rows during rehydration and could overwrite unrelated IDs.
+    for key, child in (("projects", "stages"), ("stages", "tasks"), ("sampleCategories", "samples"), ("samples", "photos"), ("samples", "files")):
+        if any(item.get(child) not in (None, []) for item in domains[key]):
+            raise ValueError(f"导入包 {key} 不应包含嵌套 {child}")
+
+    asset_keys, zip_paths = set(), set()
+    for asset in asset_index["assets"]:
+        sid, photo_id, role = asset.get("entityId"), asset.get("metadataId"), asset.get("role")
+        if (asset.get("entity") != "sample" or asset.get("kind") not in ("sample_photo", "sample_file")
+                or not isinstance(photo_id, str) or photo_id not in indexes["sampleAssets"]
+                or indexes["sampleAssets"][photo_id]["sampleId"] != sid or role not in ("original", "thumbnail")):
+            raise ValueError("导入包资产索引归属或类型不正确")
+        meta = indexes["sampleAssets"][photo_id]
+        is_file = meta.get("kind") in sample_files.KINDS
+        if (asset["kind"] == "sample_file") != is_file or (is_file and role != "original"):
+            raise ValueError("导入包文件类型不一致")
+        if is_file:
+            kind, _ = sample_files.file_type(meta.get("name"), "pointcloud" if meta["kind"] == "point_cloud" else "ct")
+            if kind != meta["kind"]:
+                raise ValueError("导入包文件格式不一致")
+        key = (sid, photo_id, role)
+        if key in asset_keys:
+            raise ValueError("导入包资产索引重复")
+        asset_keys.add(key)
+        path = zip_security.safe_relative_member_name(asset.get("zipPath"))
+        folder = "files" if is_file else "photos"
+        if not path or not path.startswith(f"assets/samples/{sid}/{folder}/") or path.casefold() in zip_paths:
+            raise ValueError("导入包资产路径不安全或重复")
+        zip_paths.add(path.casefold())
+        if asset.get("fileName") != path.rsplit("/", 1)[-1]:
+            raise ValueError("导入包资产文件名不一致")
+        # sourceRelativePath is only the source deployment's historical path;
+        # the validated asset index is authoritative for package file lookup.
+        if type(asset.get("exists")) is not bool or type(asset.get("bytes")) is not int or asset["bytes"] < 0:
+            raise ValueError("导入包资产大小或存在标记不正确")
+        digest = asset.get("sha256")
+        if asset["exists"] and (not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)):
+            raise ValueError("导入包资产校验值不正确")
+    for photo in domains["sampleAssets"]:
+        for role, field in (("original", "relativePath"), ("thumbnail", "thumbRelativePath")):
+            if photo.get(field) and (photo["sampleId"], photo["id"], role) not in asset_keys:
+                raise ValueError("导入包照片缺少资产索引")
 
     counts = manifest.get("counts") if isinstance(manifest, dict) else None
     if not isinstance(counts, dict):
@@ -398,7 +530,7 @@ def sample_photo_asset_lookup(asset_index: dict | None) -> dict[tuple[str, str, 
     for asset in asset_entries(asset_index):
         if str(asset.get("entity") or "") != "sample":
             continue
-        if str(asset.get("kind") or "") != "sample_photo":
+        if str(asset.get("kind") or "") not in ("sample_photo", "sample_file"):
             continue
         entity_id = str(asset.get("entityId") or "")
         metadata_id = str(asset.get("metadataId") or "")
@@ -409,11 +541,12 @@ def sample_photo_asset_lookup(asset_index: dict | None) -> dict[tuple[str, str, 
 
 
 def safe_package_member_path(root_dir: Path, member_path: str) -> Path | None:
-    if not member_path:
+    member_path = zip_security.safe_relative_member_name(member_path)
+    if member_path is None:
         return None
     root = Path(root_dir).resolve()
-    target = (root / member_path.replace("\\", "/")).resolve()
-    if target == root or root in target.parents:
+    target = (root / member_path).resolve()
+    if root in target.parents:
         return target
     return None
 

@@ -19,6 +19,11 @@
   border-radius: 8px; padding: 9px 10px; margin: 8px 0;
   font-size: 12px; line-height: 1.55;
 }
+.task-log-item > b,
+.task-log-item .sample-log-link,
+.task-log-item .sample-log-link:hover {
+  color: var(--brand-gold);
+}
 .task-log-text {
   margin-top: 4px;
   color: var(--text);

@@ -27,7 +27,7 @@ app.registerModule("workspace.samplePicker", {
     return `${this.taskSamplePickerDomId(inputName)}_${suffix}`;
   },
 
-  resetTaskSamplePickerState(inputName, { selectedIds = [], progressSelectId = "", hintId = "", excludeTaskId = "", progressId = "", requiredSampleCount = null, categoryId = null } = {}) {
+  resetTaskSamplePickerState(inputName, { selectedIds = [], progressSelectId = "", hintId = "", excludeTaskId = "", progressId = "", requiredSampleCount = null, categoryId = null, planStartInputId = "", planEndInputId = "", showScheduleHint = true, selectedHeaderHtml = "" } = {}) {
     if (!this._taskSamplePickerStates) this._taskSamplePickerStates = {};
     const uniqueSelected = [...new Set((selectedIds || []).map(id => String(id || "").trim()).filter(Boolean))];
     const initialCategoryId = categoryId === null || typeof categoryId === "undefined"
@@ -40,11 +40,17 @@ app.registerModule("workspace.samplePicker", {
       excludeTaskId,
       progressId,
       requiredSampleCount,
+      planStartInputId,
+      planEndInputId,
+      showScheduleHint,
+      selectedHeaderHtml,
       selectedIds: new Set(uniqueSelected),
       page: 1,
       pageSize: 50,
       categoryId: initialCategoryId || "",
       status: "",
+      problemState: "",
+      reassembled: "",
       keyword: "",
       excludeKeyword: "",
       keywordDraft: "",
@@ -56,6 +62,7 @@ app.registerModule("workspace.samplePicker", {
       loadSeq: 0,
       loading: true,
       error: "",
+      selectionError: "",
       initialized: false,
     };
     return this._taskSamplePickerStates[inputName];
@@ -80,16 +87,23 @@ app.registerModule("workspace.samplePicker", {
   },
 
   taskSamplePickerFetchParams(state, overrides = {}) {
-    return {
+    const params = {
       taskId: state.excludeTaskId || "",
       selectedIds: [...state.selectedIds],
       page: overrides.page || state.page || 1,
       pageSize: state.pageSize || 50,
       categoryId: state.categoryId || "",
       status: state.status || "",
+      problemState: state.problemState || "",
+      reassembled: state.reassembled || "",
       keyword: state.keyword || "",
       excludeKeyword: state.excludeKeyword || "",
     };
+    const start = state.planStartInputId ? document.getElementById(state.planStartInputId) : null;
+    const end = state.planEndInputId ? document.getElementById(state.planEndInputId) : null;
+    if (start) params.planStartDate = start.value || "";
+    if (end) params.planEndDate = end.value || "";
+    return params;
   },
 
   async loadTaskSamplePickerPage(inputName, overrides = {}) {
@@ -101,21 +115,35 @@ app.registerModule("workspace.samplePicker", {
     state.loading = true;
     state.error = "";
     this.renderTaskSamplePicker(inputName);
+    const epoch = this._dataSnapshotEpoch || 0;
+    const ownsRequest = () => this.taskSamplePickerState(inputName) === state && state.loadSeq === loadSeq;
+    const isCurrent = () => ownsRequest() && (this._dataSnapshotEpoch || 0) === epoch;
     try {
-      const result = await this.fetchTaskSampleCandidates(this.taskSamplePickerFetchParams(state, overrides));
-      if (state.loadSeq !== loadSeq) return false;
-      state.loading = false;
-      state.error = "";
-      state.page = result.page || state.page || 1;
-      state.pageSize = result.pageSize || state.pageSize || 50;
-      state.categories = result.categories || [];
-      state.lastResult = result;
-      this.cacheTaskSamplePickerResult(state, result);
-      this.mergeTaskSampleCandidateResult(result);
-      this.renderTaskSamplePicker(inputName);
-      return true;
+      const read = () => this.fetchTaskSampleCandidates(this.taskSamplePickerFetchParams(state, overrides));
+      const apply = result => {
+        if (!isCurrent()) return false;
+        state.loading = false;
+        state.error = "";
+        state.page = result.page || state.page || 1;
+        state.pageSize = result.pageSize || state.pageSize || 50;
+        state.categories = result.categories || [];
+        state.lastResult = result;
+        this.cacheTaskSamplePickerResult(state, result);
+        this.mergeTaskSampleCandidateResult(result);
+        this.renderTaskSamplePicker(inputName);
+        return true;
+      };
+      const applied = typeof this.readCurrentServerData === "function"
+        ? await this.readCurrentServerData(read, isCurrent, apply)
+        : apply(await read());
+      if (!applied && ownsRequest()) {
+        state.loading = false;
+        state.error = "数据已更新，请重试加载样机列表";
+        if (isCurrent()) this.renderTaskSamplePicker(inputName);
+      }
+      return !!applied;
     } catch (e) {
-      if (state.loadSeq !== loadSeq) return false;
+      if (!isCurrent()) { if (ownsRequest()) state.loading = false; return false; }
       console.error("任务样机候选加载失败：", e);
       state.loading = false;
       state.error = e.message || String(e);
@@ -132,7 +160,7 @@ app.registerModule("workspace.samplePicker", {
       const id = String(sample?.id || "");
       if (!id) return;
       const cached = state.sampleCache.get(id) || {};
-      const merged = { ...cached, ...sample };
+      const merged = { ...cached, ...sample, _missing: false };
       state.sampleCache.set(id, merged);
       if (selected || state.selectedIds?.has?.(id)) {
         const selectedCached = state.selectedSampleCache.get(id) || {};
@@ -143,8 +171,8 @@ app.registerModule("workspace.samplePicker", {
     (result.selectedItems || []).forEach(sample => remember(sample, true));
     (result.selectedMissingIds || []).forEach(id => {
       const sid = String(id || "");
-      if (sid && !state.sampleCache.has(sid)) {
-        const fallback = { id: sid, _missing: true, status: "" };
+      if (sid) {
+        const fallback = { ...state.sampleCache.get(sid), id: sid, _missing: true, status: "" };
         state.sampleCache.set(sid, fallback);
         state.selectedSampleCache.set(sid, fallback);
       }
@@ -175,6 +203,15 @@ app.registerModule("workspace.samplePicker", {
     const summaryById = new Map((result.categories || []).map(category => [String(category.id || ""), category]));
     const categories = this.sampleCategoryRecords();
     const existingById = new Map(categories.map(category => [String(category.id || ""), category]));
+    const baseById = new Map((this._baseData?.sampleLibrary?.categories || []).map(category => [String(category.id || ""), category]));
+    // Candidate hydration can run while another editor has an unsent draft.
+    // Refresh untouched fields and acknowledge only the server values read.
+    const mergeFields = (current, source, baseline) => {
+      Object.entries(source).forEach(([field, value]) => {
+        if (!baseline || JSON.stringify(current[field]) === JSON.stringify(baseline[field])) current[field] = value;
+      });
+      return current;
+    };
     (result.categories || []).forEach(summary => {
       const id = String(summary.id || "");
       if (!id) return;
@@ -182,10 +219,12 @@ app.registerModule("workspace.samplePicker", {
         const category = { ...summary, samples: [], samplesLoaded: false, _summaryOnly: true };
         categories.push(category);
         existingById.set(id, category);
+        this.syncHydratedCategoryBaseline?.(category);
       } else {
         const existing = existingById.get(id);
-        Object.assign(existing, summary);
+        mergeFields(existing, summary, baseById.get(id));
         if (!Array.isArray(existing.samples)) existing.samples = [];
+        this.syncHydratedCategoryBaseline?.(summary);
       }
     });
     [...(result.items || []), ...(result.selectedItems || [])].forEach(sample => {
@@ -204,12 +243,15 @@ app.registerModule("workspace.samplePicker", {
         };
         categories.push(category);
         existingById.set(categoryId, category);
+        this.syncHydratedCategoryBaseline?.(category);
       }
       if (!Array.isArray(category.samples)) category.samples = [];
       const idx = category.samples.findIndex(item => String(item.id || "") === String(sample.id || ""));
-      const merged = idx >= 0 ? { ...category.samples[idx], ...sample } : sample;
+      const baseline = baseById.get(categoryId)?.samples?.find(item => String(item.id || "") === String(sample.id || ""));
+      const merged = idx >= 0 ? mergeFields(category.samples[idx], sample, baseline) : sample;
       if (idx >= 0) category.samples[idx] = merged;
       else category.samples.push(merged);
+      this.syncHydratedSampleBaseline?.(categoryId, sample);
     });
   },
 
@@ -268,6 +310,10 @@ app.registerModule("workspace.samplePicker", {
     if (scrollSnapshot) this.restoreTaskSamplePickerScroll(el, scrollSnapshot);
   },
 
+  taskSampleScheduleHintHtml() {
+    return '<span class="task-sample-schedule-hint">计划时间不重叠可复用样机（含开始日和结束日）；启动时再次检查实际占用。</span>';
+  },
+
   taskSamplePickerContentHtml(state) {
     const result = state.lastResult || {};
     const page = result.page || state.page || 1;
@@ -292,12 +338,18 @@ app.registerModule("workspace.samplePicker", {
       })).join("");
     const statusOptions = ["", "闲置", "在位等待", "测试中", "已退库", "取走分析"].map(status => {
       const selected = status === String(state.status || "") ? "selected" : "";
-      return `<option value="${Utils.esc(status)}" ${selected}>${status || "全部状态"}</option>`;
+      return `<option value="${Utils.esc(status)}" ${selected}>${status || "测试状态"}</option>`;
     }).join("");
+    const problemOptions = [["", "故障不限"], ["ok", "无故障"], ["fault", "有故障"]]
+      .map(([value, label]) => `<option value="${value}" ${value === state.problemState ? "selected" : ""}>${label}</option>`).join("");
+    const reassemblyOptions = [["", "重组不限"], ["normal", "非重组"], ["reassembled", "重组"]]
+      .map(([value, label]) => `<option value="${value}" ${value === state.reassembled ? "selected" : ""}>${label}</option>`).join("");
     const keywordId = this.taskSamplePickerControlId(state.inputName, "keyword");
     const excludeId = this.taskSamplePickerControlId(state.inputName, "exclude");
     const categoryId = this.taskSamplePickerControlId(state.inputName, "category");
     const statusId = this.taskSamplePickerControlId(state.inputName, "status");
+    const problemId = this.taskSamplePickerControlId(state.inputName, "problem");
+    const reassemblyId = this.taskSamplePickerControlId(state.inputName, "reassembly");
     const selectedItems = this.taskSamplePickerSelectedItems(state);
     const candidateItems = this.taskSamplePickerCandidateItems(state, result);
     const candidateCategoryLabel = this.taskSamplePickerCategoryLabel(state, result);
@@ -308,32 +360,32 @@ app.registerModule("workspace.samplePicker", {
         ? `<div class="empty">候选样机加载失败：${Utils.esc(state.error)} <button type="button" class="btn btn-sm btn-outline" data-app-action="task-sample-picker-page" data-id="${Utils.esc(state.inputName)}" data-value="${page}">重试</button></div>`
         : candidateItems.map(sample => this.taskSamplePickerSampleRowHtml(sample, state)).join("") || `<div class="empty">没有匹配的候选样机。</div>`;
     return `
-      <div class="task-sample-picker-toolbar">
-        <select id="${categoryId}" data-app-action="task-sample-picker-filter" data-app-events="change" data-id="${Utils.esc(state.inputName)}" data-field="categoryId">${categoryOptions}</select>
-        <select id="${statusId}" data-app-action="task-sample-picker-filter" data-app-events="change" data-id="${Utils.esc(state.inputName)}" data-field="status">${statusOptions}</select>
-        <input id="${keywordId}" class="dispatch-search-input task-sample-picker-search" value="${Utils.esc(state.keywordDraft || "")}" placeholder="包含搜索" data-app-action="task-sample-picker-search" data-app-events="input keydown" data-id="${Utils.esc(state.inputName)}" data-field="keyword">
-        <input id="${excludeId}" class="dispatch-search-input dispatch-search-exclude task-sample-picker-search" value="${Utils.esc(state.excludeKeywordDraft || "")}" placeholder="排除搜索" data-app-action="task-sample-picker-search" data-app-events="input keydown" data-id="${Utils.esc(state.inputName)}" data-field="excludeKeyword">
-        <button type="button" class="dispatch-search-btn" data-app-action="task-sample-picker-search" data-id="${Utils.esc(state.inputName)}" title="搜索">🔍</button>
-        <span class="dispatch-match-count">${state.loading ? "加载中" : `候选 ${total} 台`}</span>
-      </div>
-      <div class="dispatch-sample-group task-sample-selected-group" data-sample-input-name="${Utils.esc(state.inputName)}">
-        <div class="dispatch-sample-head">
+      ${state.showScheduleHint ? this.taskSampleScheduleHintHtml() : ""}
+      <div class="dispatch-sample-group task-sample-selected-group" role="group" aria-label="已选样机" data-sample-input-name="${Utils.esc(state.inputName)}">
+        ${state.selectedHeaderHtml || `<div class="dispatch-sample-head">
           <div class="dispatch-sample-title-wrap">
             <div class="dispatch-sample-title">已选样机</div>
             <span class="dispatch-selected-count ${selectedCount ? "has-selected" : ""}" data-total="${selectedCount}">${selectedCount}</span>
           </div>
-        </div>
+        </div>`}
+        ${state.selectionError ? `<div class="field-error" role="alert">${Utils.esc(state.selectionError)}</div>` : ""}
         <div class="dispatch-sample-body open task-sample-candidate-grid">
           ${selectedItems.length ? selectedItems.map(sample => this.taskSamplePickerSampleRowHtml(sample, state, { selected: true })).join("") : `<div class="empty">尚未选择样机。</div>`}
         </div>
       </div>
       <div class="dispatch-sample-group task-sample-candidate-group" data-sample-input-name="${Utils.esc(state.inputName)}">
-        <div class="dispatch-sample-head">
-          <div class="dispatch-sample-title-wrap">
-            <div class="dispatch-sample-title task-sample-candidate-title" title="${Utils.esc(candidateTitle)}">候选样机 - <span class="task-sample-candidate-scope">${Utils.esc(candidateCategoryLabel)}</span></div>
-            <span class="dispatch-selected-count" data-total="${total}">${page}/${totalPages}</span>
-          </div>
-          <div class="dispatch-sample-tools">
+        <div class="task-sample-picker-toolbar">
+          <div class="dispatch-sample-title task-sample-candidate-title" title="${Utils.esc(candidateTitle)}">候选样机</div>
+          <select id="${categoryId}" class="task-sample-pool-filter" aria-label="候选样机池" data-app-action="task-sample-picker-filter" data-app-events="change" data-id="${Utils.esc(state.inputName)}" data-field="categoryId">${categoryOptions}</select>
+          <select id="${problemId}" class="task-sample-problem-filter" aria-label="候选样机故障" data-app-action="task-sample-picker-filter" data-app-events="change" data-id="${Utils.esc(state.inputName)}" data-field="problemState">${problemOptions}</select>
+          <select id="${reassemblyId}" class="task-sample-reassembly-filter" aria-label="候选样机重组" data-app-action="task-sample-picker-filter" data-app-events="change" data-id="${Utils.esc(state.inputName)}" data-field="reassembled">${reassemblyOptions}</select>
+          <select id="${statusId}" class="task-sample-status-filter" aria-label="候选样机测试状态" data-app-action="task-sample-picker-filter" data-app-events="change" data-id="${Utils.esc(state.inputName)}" data-field="status">${statusOptions}</select>
+          <input id="${keywordId}" class="dispatch-search-input task-sample-picker-search" value="${Utils.esc(state.keywordDraft || "")}" placeholder="包含搜索" aria-label="包含搜索" data-app-action="task-sample-picker-search" data-app-events="input keydown" data-id="${Utils.esc(state.inputName)}" data-field="keyword">
+          <input id="${excludeId}" class="dispatch-search-input dispatch-search-exclude task-sample-picker-search" value="${Utils.esc(state.excludeKeywordDraft || "")}" placeholder="排除搜索" aria-label="排除搜索" data-app-action="task-sample-picker-search" data-app-events="input keydown" data-id="${Utils.esc(state.inputName)}" data-field="excludeKeyword">
+          <button type="button" class="dispatch-search-btn" data-app-action="task-sample-picker-search" data-id="${Utils.esc(state.inputName)}" title="搜索">🔍</button>
+          <span class="dispatch-match-count">${state.loading ? "加载中" : `候选 ${total} 台`}</span>
+          <div class="task-sample-picker-pagination" role="group" aria-label="候选样机分页">
+            <span class="dispatch-selected-count" aria-label="第 ${page} 页，共 ${totalPages} 页">${page}/${totalPages}</span>
             <button type="button" class="btn btn-sm btn-outline" ${page <= 1 || state.loading ? "disabled" : `data-app-action="task-sample-picker-page" data-id="${Utils.esc(state.inputName)}" data-value="${Math.max(1, page - 1)}"`}>上一页</button>
             <button type="button" class="btn btn-sm btn-outline" ${page >= totalPages || state.loading ? "disabled" : `data-app-action="task-sample-picker-page" data-id="${Utils.esc(state.inputName)}" data-value="${page + 1}"`}>下一页</button>
           </div>
@@ -372,15 +424,23 @@ app.registerModule("workspace.samplePicker", {
 
   taskSamplePickerSampleRowHtml(sample, state, { selected = false } = {}) {
     const sid = String(sample?.id || "");
-    const isSelected = selected || state.selectedIds.has(sid) || sample?.alreadySelected === true;
+    const isSelected = selected || state.selectedIds.has(sid);
     const status = sample?._missing ? "资料缺失" : this.normalizeSampleStatusValue(sample?.effectiveStatus || sample?.status);
+    const isReassembled = this.sampleIsReassembled(sample);
+    const reassemblyText = sample?._missing ? "待确认" : isReassembled ? "重组" : "非重组";
+    const reassemblyClass = sample?._missing ? "s-待确认" : `task-sample-reassembly ${isReassembled ? "is-reassembled" : ""}`;
     const required = this.taskSamplePickerRequiredSampleCount(state.progressSelectId, state.inputName);
     const blockedByLimit = !isSelected && required !== null && state.selectedIds.size >= required;
-    const selectable = isSelected || (!blockedByLimit && sample?.selectable !== false);
+    const selectable = isSelected || (!blockedByLimit && !sample?.selectionConflict && sample?.selectable !== false);
     const disabledReason = blockedByLimit
       ? `样机已选满：需 ${required} 台。`
-      : selectable ? "" : (sample?.disabledReason || "");
+      : isSelected ? (state.loading ? "" : sample?.selectionConflict || "") : selectable ? "" : (sample?.selectionConflict || sample?.disabledReason || "");
     const missingReason = sample?._missing ? "样机资料未加载或已不存在，请取消后重新选择。" : "";
+    const availabilityReason = disabledReason || missingReason || (!selectable ? "当前状态不可用" : "");
+    const availabilityText = availabilityReason || (state.loading ? "正在核验可用性…" : "可用");
+    const availabilityTitle = availabilityReason || sample?.reservationHint || availabilityText;
+    const availabilityClass = availabilityReason ? "task-sample-disabled-reason"
+      : state.loading ? "task-sample-availability-pending" : "task-sample-available";
     const identity = this.taskSamplePickerIdentityText(sample);
     const controlKey = `${this.taskSamplePickerSafeKey(state.inputName)}_${String(sid).replace(/[^a-zA-Z0-9_]/g, "_")}`;
     const checkboxId = `taskSampleCheck_${controlKey}`;
@@ -394,24 +454,29 @@ app.registerModule("workspace.samplePicker", {
       : stageName ? Utils.esc(stageName)
       : skuName ? Utils.esc(skuName)
       : "未配置";
-    const testedItems = typeof this.sampleTestedItemNames === "function" ? this.sampleTestedItemNames(sid) : [];
+    const testedItems = typeof this.sampleTestedItemNames === "function" ? this.sampleTestedItemNames(sid, sample) : [];
     const testedText = testedItems.length === 0
       ? "无"
       : testedItems.length <= 3
         ? Utils.esc(testedItems.join("、"))
         : `${Utils.esc(testedItems.slice(0, 3).join("、"))} 等 ${testedItems.length} 项`;
     return `
-      <div class="dispatch-sample-row ${selectable ? "" : "is-disabled"} ${sample?._missing ? "task-sample-missing-row" : ""}" data-app-action="task-sample-picker-row" data-id="${Utils.esc(state.inputName)}" data-progress-id="${Utils.esc(state.progressSelectId || "")}" data-hint-id="${Utils.esc(state.hintId || "")}" title="${Utils.esc(disabledReason || missingReason)}">
+      <div class="dispatch-sample-row ${selectable ? "" : "is-disabled"} ${sample?._missing ? "task-sample-missing-row" : ""} ${isSelected && availabilityReason ? "has-selection-conflict" : ""}" data-app-action="task-sample-picker-row" data-id="${Utils.esc(state.inputName)}" data-progress-id="${Utils.esc(state.progressSelectId || "")}" data-hint-id="${Utils.esc(state.hintId || "")}" title="${Utils.esc(availabilityTitle)}">
         <div class="dispatch-sample-info">
           <div class="dispatch-sample-title-line">
             <button type="button" class="dispatch-sample-id" data-app-action="sample-readonly" data-id="${Utils.esc(sid)}" data-stop-propagation="1" title="查看样机详情" aria-label="查看样机详情 ${Utils.esc(identity)}">${Utils.esc(identity)}</button>
-            <label class="dispatch-sample-check" for="${Utils.esc(checkboxId)}"><input id="${Utils.esc(checkboxId)}" type="checkbox" name="${state.inputName}" value="${Utils.esc(sid)}" data-sample-pick="${state.inputName}" aria-label="${Utils.esc(checkboxLabel)}" ${disabledReason || missingReason ? `aria-describedby="${Utils.esc(reasonId)}"` : ""} ${isSelected ? "checked" : ""} ${selectable ? "" : "disabled"} ${selectable ? `data-app-action="task-sample-picker-checkbox" data-app-events="change" data-id="${Utils.esc(state.inputName)}" data-progress-id="${Utils.esc(state.progressSelectId || "")}" data-hint-id="${Utils.esc(state.hintId || "")}"` : ""}></label>
+            <label class="dispatch-sample-check" for="${Utils.esc(checkboxId)}"><input id="${Utils.esc(checkboxId)}" type="checkbox" name="${state.inputName}" value="${Utils.esc(sid)}" data-sample-pick="${state.inputName}" aria-label="${Utils.esc(checkboxLabel)}" aria-describedby="${Utils.esc(reasonId)}" ${isSelected ? "checked" : ""} ${selectable ? "" : "disabled"} ${selectable ? `data-app-action="task-sample-picker-checkbox" data-app-events="change" data-id="${Utils.esc(state.inputName)}" data-progress-id="${Utils.esc(state.progressSelectId || "")}" data-hint-id="${Utils.esc(state.hintId || "")}"` : ""}></label>
+            ${isSelected && availabilityReason ? `<span class="task-sample-selection-warning" aria-hidden="true" title="${Utils.esc(availabilityReason)}">!</span>` : ""}
           </div>
           <span class="dispatch-sample-stage">${stageSku}</span>
           <span class="dispatch-sample-tested">已测：${testedText}</span>
-          ${disabledReason || missingReason ? `<span id="${Utils.esc(reasonId)}" class="dispatch-sample-tested task-sample-disabled-reason">${Utils.esc(disabledReason || missingReason)}</span>` : ""}
         </div>
-        <div class="dispatch-sample-status"><span class="badge ${this.sampleHasProblem(sample) ? 's-有故障' : 's-无故障'}">${this.sampleHasProblem(sample) ? '有故障' : '无故障'}</span><span class="badge s-${Utils.esc(status)}">${Utils.esc(status)}</span></div>
+        <div class="dispatch-sample-status">
+          <span class="badge ${this.sampleHasProblem(sample) ? 's-有故障' : 's-无故障'}" title="故障状态">${this.sampleHasProblem(sample) ? '有故障' : '无故障'}</span>
+          <span class="badge s-${Utils.esc(status)}" title="使用状态">${Utils.esc(status)}</span>
+          <span class="badge ${reassemblyClass}" title="重组状态">${reassemblyText}</span>
+        </div>
+        <span id="${Utils.esc(reasonId)}" class="task-sample-availability ${availabilityClass}" title="${Utils.esc(availabilityTitle)}">${Utils.esc(availabilityText)}</span>
       </div>`;
   },
 
@@ -540,6 +605,7 @@ app.registerModule("workspace.samplePicker", {
   onTaskSampleCheckboxChange(progressSelectId, inputName, hintId, checkboxEl) {
     const state = this.taskSamplePickerState(inputName);
     if (state && checkboxEl?.value) {
+      state.selectionError = "";
       const sid = String(checkboxEl.value);
       if (checkboxEl.checked) {
         state.selectedIds.add(sid);
@@ -563,6 +629,9 @@ app.registerModule("workspace.samplePicker", {
     }
     if (state) {
       this.renderTaskSamplePicker(inputName, { preserveScroll: true });
+      // The server excludes selected IDs from candidates. Requery after changing
+      // selection so an unchecked sample returns with current filters and totals.
+      this.loadTaskSamplePickerPage(inputName, { page: state.page || 1 });
       return;
     }
     const allCheckboxes = [...(document.querySelectorAll?.(`input[name='${inputName}']`) || [])];

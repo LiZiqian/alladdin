@@ -8,13 +8,15 @@ from email.policy import default as email_policy
 
 def parse_multipart(headers, raw: bytes) -> tuple[dict[str, str], list[dict]]:
     content_type = headers.get("Content-Type", "")
-    if "multipart/form-data" not in content_type:
-        raise ValueError("请求必须使用 multipart/form-data")
     envelope = (
         f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
         + raw
     )
     message = BytesParser(policy=email_policy).parsebytes(envelope)
+    if message.get_content_type() != "multipart/form-data" or not message.get_boundary():
+        raise ValueError("请求必须使用带 boundary 的 multipart/form-data")
+    if not message.is_multipart() or any(part.defects for part in message.walk()):
+        raise ValueError("上传内容不完整或 multipart 格式损坏，请重新上传")
     fields: dict[str, str] = {}
     files: list[dict] = []
     for part in message.iter_parts():

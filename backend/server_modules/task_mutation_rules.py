@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from server_modules import sample_queries, status_normalization, task_queries
+from server_modules import sample_queries, status_normalization, task_queries, task_reservations
 
 
 def json_obj(text: str | None, fallback: object | None = None):
@@ -20,46 +20,21 @@ def detect_task_mutation_occupancy_conflicts(
     project_id: str,
     stage_id: str,
 ) -> list[dict]:
-    if task_queries.task_flow_status(task) in ("正常完成", "异常终止"):
+    if not task_reservations.is_open(task):
         return []
     target_sample_ids = {str(item) for item in (task.get("sampleIds") or []) if str(item)}
     if not target_sample_ids:
         return []
-    placeholders = ",".join("?" for _ in target_sample_ids)
-    rows = conn.execute(
-        f"""
-        SELECT sample_id, task_id, project_id, stage_id, test_item, status, flow_status
-        FROM project_task_samples
-        WHERE sample_id IN ({placeholders})
-          AND task_id != ?
-          AND flow_status NOT IN ('正常完成', '异常终止')
-        """,
-        (*target_sample_ids, task_id),
-    ).fetchall()
-    conflicts_by_sample: dict[str, list[dict]] = {}
-    for row in rows:
-        sample_id = str(row["sample_id"] or "")
-        if not sample_id:
-            continue
-        conflicts_by_sample.setdefault(sample_id, []).append({
-            "taskId": str(row["task_id"] or ""),
-            "projectId": str(row["project_id"] or ""),
-            "stageId": str(row["stage_id"] or ""),
-            "testItem": str(row["test_item"] or ""),
-            "status": str(row["status"] or ""),
-        })
+    occupancy = task_reservations.open_reservations(conn, target_sample_ids, exclude_task_id=task_id)
     conflicts = []
-    for sample_id, tasks in conflicts_by_sample.items():
+    for sample_id, other_tasks in occupancy.items():
+        tasks = [{**other, "reason": reason} for other in other_tasks if (reason := task_reservations.conflict_reason(task, other))]
+        if not tasks:
+            continue
         conflicts.append({
             "sampleId": sample_id,
             "tasks": [
-                {
-                    "taskId": task_id,
-                    "projectId": project_id,
-                    "stageId": stage_id,
-                    "testItem": str(task.get("testItem") or ""),
-                    "status": str(task.get("status") or ""),
-                },
+                task_reservations.task_reference({**task, "id": task_id}, project_id, stage_id),
                 *tasks,
             ],
         })
@@ -77,11 +52,12 @@ def detect_completed_task_sample_current_state_locks(
     placeholders = ",".join("?" for _ in target_sample_ids)
     rows = conn.execute(
         f"""
-        SELECT sample_id, task_id, project_id, stage_id, test_item, status, flow_status
-        FROM project_task_samples
-        WHERE sample_id IN ({placeholders})
-          AND task_id != ?
-          AND flow_status NOT IN ('正常完成', '异常终止')
+        SELECT pts.sample_id, pts.task_id, pts.project_id, pts.stage_id, pts.test_item, pts.status, pts.flow_status
+        FROM project_task_samples pts JOIN project_tasks t ON t.id = pts.task_id
+        WHERE pts.sample_id IN ({placeholders})
+          AND pts.task_id != ?
+          AND t.deleted_at IS NULL AND t.flow_status NOT IN ('正常完成', '异常终止')
+          AND {task_queries.task_visibility_sql('t.data_json')}
         """,
         (*target_sample_ids, task_id),
     ).fetchall()
@@ -106,6 +82,17 @@ def detect_completed_task_sample_current_state_locks(
 
 def task_sample_ids(task: dict) -> set[str]:
     return {str(item) for item in (task.get("sampleIds") or []) if str(item)}
+
+
+def task_sample_ids_failure(task: dict) -> dict | None:
+    # Empty assignments are valid; JSON and link-table identities must agree.
+    ids = task.get("sampleIds", [])
+    if (not isinstance(ids, list)
+            or any(not isinstance(sid, str) or not sid.strip() or sid != sid.strip() for sid in ids)
+            or len(ids) != len(set(ids))):
+        return {"status": 400, "error_code": "TASK_SAMPLE_IDS_INVALID",
+                "error": "sampleIds 必须是不重复的非空样机 ID 字符串数组"}
+    return None
 
 
 def existing_task_sample_ids(conn: sqlite3.Connection, task_id: str) -> set[str]:
@@ -216,10 +203,10 @@ def task_action_state_conflict(
             return conflict("任务状态转换与服务器当前状态不一致。")
         return None
 
-    # 兼容旧客户端的通用 mutation，但绝不允许它把服务器终态重新打开。
-    if current_flow in terminal and incoming_flow != current_flow:
-        return conflict("已结束任务不能被旧请求重新打开。")
-    return None
+    # 状态改变只允许上面列出的业务动作；通用元数据写入不能绕过转换规则。
+    if action in {"task_mutation", "task_batch_mutation"} and incoming_flow == current_flow:
+        return None
+    return conflict("不支持该任务变更动作，请使用当前业务接口的动作类型。")
 
 
 def sample_record_status(sample: dict) -> str:
@@ -229,12 +216,14 @@ def sample_record_status(sample: dict) -> str:
 def detect_task_mutation_sample_status_blockers(
     conn: sqlite3.Connection,
     tasks: list[tuple[str, dict]],
+    *,
+    check_all: bool = False,
 ) -> list[dict]:
     added_by_sample: dict[str, list[dict]] = {}
     for task_id, task in tasks:
         if task_queries.task_flow_status(task) in ("正常完成", "异常终止"):
             continue
-        added_ids = task_sample_ids(task) - existing_task_sample_ids(conn, task_id)
+        added_ids = task_sample_ids(task) if check_all else task_sample_ids(task) - existing_task_sample_ids(conn, task_id)
         for sample_id in added_ids:
             added_by_sample.setdefault(sample_id, []).append({
                 "taskId": task_id,
@@ -243,6 +232,7 @@ def detect_task_mutation_sample_status_blockers(
             })
     if not added_by_sample:
         return []
+    occupancy = task_reservations.open_reservations(conn, added_by_sample)
     placeholders = ",".join("?" for _ in added_by_sample)
     rows = conn.execute(
         f"""
@@ -263,7 +253,8 @@ def detect_task_mutation_sample_status_blockers(
         sample["isReassembled"] = bool(row["is_reassembled"]) if row["is_reassembled"] is not None else sample_queries.sample_is_reassembled(sample)
         sample["status"] = row["status"] or sample.get("status") or ""
         status = sample_record_status(sample)
-        if status == "闲置":
+        reason = task_reservations.sample_status_block_reason(sample, occupancy.get(str(row["id"]), []))
+        if not reason:
             continue
         blockers.append({
             "sampleId": str(row["id"] or ""),
@@ -271,6 +262,7 @@ def detect_task_mutation_sample_status_blockers(
             "sn": str(sample.get("sn") or ""),
             "imei": str(sample.get("imei") or ""),
             "status": status,
+            "reason": reason,
             "tasks": added_by_sample.get(str(row["id"] or ""), []),
         })
     return blockers

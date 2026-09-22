@@ -6,26 +6,20 @@
 app.registerModule("samples.history", {
 
   switchSampleArchiveTab(tab) {
+    const shell = document.querySelector(".sample-archive-shell");
+    const sampleId = shell?.dataset.sampleDetailId || this._activeSampleDetailId;
     document.querySelectorAll("[data-sample-archive-tab]").forEach(btn => {
       btn.classList.toggle("active", btn.dataset.sampleArchiveTab === tab);
     });
     document.querySelectorAll("[data-sample-archive-panel]").forEach(panel => {
       panel.classList.toggle("active", panel.dataset.sampleArchivePanel === tab);
     });
-    // 更新 footer 说明文字
-    const hints = {
-      info: "查看与编辑样机的基本档案，包括身份标识、当前状态、存放位置、人员归属及初检问题记录。",
-      history: "该样机参与过的全部测试任务记录，含测试结果、故障标记与状态变更日志。",
-      photos: "外观照片、失效分析图片、问题定位截图等。图片随样机档案一起保存，不随任务结束而清除。",
-      ct: "归档 CT 扫描图像、扫描批次、三维结构分析结论等工业 CT 数据。",
-      other: "预留扩展区。后续可在此定义更多样机维度的数据归档功能。"
-    };
-    const hint = document.getElementById("sampleArchiveFooterHint");
-    if (hint) hint.textContent = hints[tab] || "";
-    if ((tab === "photos" || tab === "history") && this._activeSampleDetailId) {
-      const sample = this.findSample(this._activeSampleDetailId)?.sample;
+    shell?.querySelectorAll(".sample-file-video video").forEach(video => video.pause());
+    if ((tab === "ct" || tab === "pointcloud") && sampleId) this.loadSampleArchiveFiles(shell, tab);
+    if ((tab === "photos" || tab === "history") && sampleId) {
+      const sample = this.findSample(sampleId)?.sample;
       if (tab === "history" && sample && sample.historyLoaded !== true) {
-        this.ensureSampleHistoryLoaded(this._activeSampleDetailId, {
+        this.ensureSampleHistoryLoaded(sampleId, {
           page: 1,
           pageSize: 20,
           renderPanels: true
@@ -34,7 +28,7 @@ app.registerModule("samples.history", {
           Utils.toast("样机测试履历加载失败：" + (e.message || e));
         });
       } else if (sample && tab === "photos" && sample.photosLoaded !== true) {
-        this.ensureSampleDetailsLoaded(this._activeSampleDetailId, {
+        this.ensureSampleDetailsLoaded(sampleId, {
           photos: true,
           events: false,
           renderPanels: true
@@ -42,6 +36,8 @@ app.registerModule("samples.history", {
           console.error("加载样机详情数据失败：", e);
           Utils.toast("样机详情数据加载失败：" + (e.message || e));
         });
+      } else if (sample && tab === "photos") {
+        this.refreshProblemPhotoArchive(shell, sampleId);
       }
     }
   },
@@ -55,14 +51,19 @@ app.registerModule("samples.history", {
       (upload.samples || [])
         .filter(item => item?.sampleId === sampleId)
         .forEach(item => {
-          (item.photos || []).forEach(ref => {
+          const refs = [...(item.photos || [])];
+          const ids = new Set(refs.map(ref => ref.id));
+          (item.problemRecords || []).forEach(record => this.problemPhotoIds(record).forEach(id => {
+            if (!ids.has(id)) { refs.push({ id }); ids.add(id); }
+          }));
+          refs.forEach(ref => {
             if (!ref?.id) return;
             const full = photoById.get(ref.id) || {};
             photos.push({
               id: ref.id,
               name: ref.name || full.name || "结果图片",
               url: ref.url || full.url || "",
-              thumbUrl: ref.thumbUrl || ref.thumbnailUrl || full.thumbUrl || full.thumbnailUrl || "",
+              thumbUrl: ref.thumbUrl || full.thumbUrl || "",
               uploadedAt: ref.uploadedAt || full.uploadedAt || upload.time || "",
               result: upload.result || "",
               user: upload.user || "",
@@ -206,6 +207,7 @@ app.registerModule("samples.history", {
   },
 
   async openTaskSampleReadonly(sampleId, { task = null, snapshot = null, readonlyOkText = "" } = {}) {
+    const request = this.beginDialogRequest?.();
     const parentTitle = String((typeof document !== "undefined" && document.getElementById?.("modalTitle")?.innerText) || "");
     const okText = readonlyOkText || (parentTitle.startsWith("任务日志") ? "返回日志" : "关闭");
     const snap = snapshot || task?.sampleSnapshots?.[sampleId] || this.findSampleSnapshot(sampleId)?.snapshot || null;
@@ -216,6 +218,7 @@ app.registerModule("samples.history", {
     if (!found && typeof this.ensureSampleLoaded === "function") {
       found = await this.ensureSampleLoaded(sampleId, { snapshot: snap });
     }
+    if (this.isDialogRequestCurrent?.(request) === false) return;
     if (found) {
       this.openSampleDetail(found.sample.id, { readonly: true, readonlyOkText: okText });
       return;
@@ -234,8 +237,8 @@ app.registerModule("samples.history", {
     );
   },
 
-  async openSampleReadonly(sampleId) {
-    return this.openTaskSampleReadonly(sampleId);
+  async openSampleReadonly(sampleId, options = {}) {
+    return this.openTaskSampleReadonly(sampleId, options);
   },
 
 });

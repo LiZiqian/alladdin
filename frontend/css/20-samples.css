@@ -30,8 +30,8 @@
   bottom: 8px; right: 10px;
   background: none; border: none;
   font-size: 18px; font-weight: 900;
-  color: var(--danger); cursor: pointer;
-  opacity: 0.75;
+  color: var(--brand-navy); cursor: pointer;
+  opacity: 1;
   transition: opacity .15s;
   padding: 2px; line-height: 1;
 }
@@ -47,20 +47,22 @@
 }
 .sample-card-edit-btn:hover { color: var(--primary); background: var(--primary-bg) }
 
-/* 样机池卡片 — 标题 / 说明 / 分隔线 / 底部统计四区布局 */
+/* 样机池卡片 — 名称与说明 / 独立入口 / 统计 / 底部操作 */
 .sample-category-grid {
-  grid-template-columns: repeat(auto-fill, 330px);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 380px));
   justify-content: start;
   overflow: visible;
 }
 .sample-category-grid > .sample-card {
-  height: 300px; min-height: 300px; max-height: 300px;
+  min-height: 360px;
+  min-width: 0;
   box-sizing: border-box; overflow: visible;
-  display: grid;
-  grid-template-rows: auto minmax(20px, auto) 2px minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 18px 28px 34px 40px;
+  padding: 18px 28px 18px 40px;
   border-radius: 14px;
+  cursor: default;
 }
 .sample-category-grid > .sample-card:hover {
   z-index: 30;
@@ -68,28 +70,19 @@
 .sample-category-grid > .sample-card:before {
   width: 8px;
   border-radius: 14px 0 0 14px;
-  background: var(--primary);
+  background: var(--brand-gold);
 }
 .sample-category-grid > .sample-card .sample-card-destroy-btn {
-  right: 28px;
-  top: 24px;
-  bottom: auto;
-  z-index: 2;
-  opacity: 0;
-  pointer-events: none;
-}
-.sample-category-grid > .sample-card:hover .sample-card-destroy-btn,
-.sample-category-grid > .sample-card:focus-within .sample-card-destroy-btn {
-  opacity: 1;
-  pointer-events: auto;
+  position: static;
 }
 .sample-pool-card-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   min-width: 0;
-  padding-right: 46px;
 }
+.sample-pool-card-header .sample-card-edit-btn { width: 28px; height: 28px; }
 .sample-pool-card-name {
   min-width: 0;
   overflow: hidden;
@@ -143,16 +136,29 @@
 .sample-pool-card-divider {
   width: 100%;
   height: 2px;
-  background: var(--primary);
+  flex-shrink: 0;
+  background: var(--brand-gold);
   border-radius: 999px;
+}
+.sample-pool-card-enter-row { display: flex; align-items: center; min-height: 32px; }
+.sample-pool-card-enter-btn {
+  background: var(--accent-bg);
+  color: var(--brand-gold);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 112px;
+  min-height: 32px;
 }
 .sample-pool-card-body {
   display: grid;
-  grid-template-columns: 110px max-content;
+  grid-template-columns: minmax(118px, 1fr) minmax(142px, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   align-items: start;
-  column-gap: 18px;
+  column-gap: 22px;
   row-gap: 10px;
+  flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
 }
@@ -226,14 +232,14 @@
   gap: 4px;
   align-self: end;
   justify-self: start;
-  width: max-content;
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   padding-top: 1px;
 }
 .sample-pool-status-row {
   display: grid;
-  grid-template-columns: 12px 4em 5ch;
+  grid-template-columns: 12px minmax(4em, 1fr) 5ch;
   align-items: center;
   column-gap: 8px;
   min-width: 0;
@@ -265,13 +271,109 @@
   font-weight: 800;
   text-align: right;
 }
-/* sample add cards now use generic .add-card from 02-components.css */
+.sample-pool-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.sample-pool-card-footer .sample-card-destroy-btn,
+.sample-pool-card-export-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.sample-pool-card-export-btn { color: var(--primary); background: var(--primary-bg); font-weight: 700; }
+.sample-pool-card-export-btn:hover { filter: brightness(.95); }
+.sample-category-grid > .add-card { min-height: 360px; box-sizing: border-box; }
+@media (max-width: 480px) {
+  .sample-category-grid > .sample-card { padding: 18px 16px 18px 24px; }
+  .sample-pool-card-body { grid-template-columns: minmax(0, 1fr) max-content; column-gap: 8px; }
+}
 
 /* ---- Project Cards ---- */
 .project-grid > .card:not(.add-card) {
-  position: relative; padding: 16px 40px 32px 16px;
+  position: relative; padding: 18px;
   border-radius: 14px;
 }
+.project-grid > .project-entry-card {
+  border: 3px solid var(--brand-navy);
+  min-width: 0;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.project-grid > .add-card { min-height: 220px; }
+.project-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.project-card-title {
+  margin: 0;
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+  line-height: 1.35;
+}
+.project-card-heading .sample-card-edit-btn { width: 28px; height: 28px; }
+.project-card-body { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.project-card-meta { width: 100%; display: grid; gap: 5px; }
+.project-card-meta .path { color: var(--text); }
+.project-card-meta .path > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.project-card-enter-btn {
+  background: var(--accent-bg);
+  color: var(--brand-gold);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+}
+.project-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--brand-gold);
+}
+.project-card-footer .sample-card-destroy-btn,
+.project-card-export-btn {
+  position: static;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.project-card-export-btn { color: var(--primary); background: var(--primary-bg); font-weight: 700; }
+.project-card-footer .sample-card-destroy-btn,
+.project-card-footer .project-card-export-btn {
+  color: var(--brand-navy);
+  background: transparent;
+  opacity: 1;
+}
+.project-card-footer button:hover { background: var(--surface-hover); }
+.project-card-footer button:focus-visible { outline: 2px solid var(--brand-navy); outline-offset: 2px; }
+.project-card-footer svg { width: 20px; height: 20px; fill: currentColor; pointer-events: none; }
 .project-grid > .card:not(.add-card):hover {
   transform: translateY(-2px); box-shadow: 0 8px 28px rgba(15,23,42,.10);
 }
@@ -290,11 +392,12 @@
   }
 }
 .sample-pool-grid > .sample-card {
-  height: 176px; min-height: 176px; max-height: 176px;
+  height: 200px; min-height: 200px; max-height: 200px;
   box-sizing: border-box; overflow: hidden;
   padding: 16px 16px 16px 16px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: center;
   gap: 8px;
   border-radius: 8px;
 }
@@ -313,11 +416,11 @@
 }
 .sample-archive-card {
   background: var(--card);
-  border: 1px solid var(--border);
+  border: 1px solid var(--brand-navy);
   box-shadow: none;
 }
 .sample-archive-card.has-problem {
-  border-color: var(--border);
+  border-color: var(--brand-navy);
   box-shadow: none;
 }
 .sample-archive-card:hover {
@@ -359,15 +462,15 @@
   border-radius: 4px;
 }
 .sample-card-content {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  grid-template-rows: auto auto;
+  gap: 8px;
   min-width: 0;
   min-height: 0;
 }
 .sample-card-main {
-  display: grid;
-  gap: 8px;
-  max-width: none;
-  min-width: 0;
+  display: contents;
 }
 .sample-card-ident,
 .sample-card-detail {
@@ -376,36 +479,40 @@
   min-width: 0;
 }
 .sample-card-ident {
-  max-width: calc(100% - 62px);
-  transform: translateY(-4px);
+  grid-column: 1;
+  grid-row: 1;
+  align-self: end;
 }
 .sample-card-detail {
+  grid-column: 1 / -1;
+  grid-row: 2;
   max-width: none;
   margin-right: -4px;
-  padding-top: 8px;
+  padding: 8px 0 0;
+  align-content: center;
   border-top: 1px solid var(--border);
 }
 .sample-card-statuses {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
-  min-width: 56px;
-  position: absolute;
-  top: 42px;
-  right: 16px;
-  padding-top: 0;
+  gap: 3px;
+  min-width: 48px;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
 }
 .sample-state-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
+  width: 48px;
   box-sizing: border-box;
-  min-height: 18px;
-  padding: 2px 6px;
+  min-height: 16px;
+  padding: 2px 4px;
+  border: 0;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1;
   font-weight: 900;
   white-space: nowrap;
@@ -437,17 +544,17 @@
   align-items: start;
   gap: 4px;
   min-width: 0;
-  color: var(--muted);
+  color: var(--text);
   font-size: 12px;
   line-height: 1.35;
 }
 .sample-card-line span {
-  color: var(--muted);
+  color: var(--text);
   font-weight: 500;
 }
 .sample-card-line b {
   min-width: 0;
-  color: var(--muted);
+  color: var(--text);
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -494,25 +601,8 @@
   }
   .sample-pool-grid > .sample-card {
     height: auto;
-    min-height: 176px;
+    min-height: 200px;
     max-height: none;
-  }
-  .sample-card-content {
-    display: block;
-  }
-  .sample-card-main {
-    max-width: none;
-  }
-  .sample-card-ident,
-  .sample-card-detail {
-    max-width: none;
-  }
-  .sample-card-statuses {
-    position: static;
-    flex-direction: row;
-    align-items: flex-start;
-    margin-top: 14px;
-    padding-top: 0;
   }
 }
 
@@ -574,18 +664,13 @@
   font-weight: 900;
 }
 /* .add-card sizing overrides per context are handled inline or via grid */
+#samplePageShell { container: sample-pool-page / inline-size; }
 .sample-pool-toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) max-content;
   align-items: start;
   gap: 12px 16px;
   padding: 14px 16px 16px;
-  --sample-search-fr: 2.35fr;
-  --sample-filter-status-fr: 1.08fr;
-  --sample-filter-result-fr: 1fr;
-  --sample-filter-reassembly-fr: .98fr;
-  --sample-filter-owner-fr: 1.02fr;
-  --sample-filter-borrower-fr: 1.02fr;
 }
 .sample-pool-toolbar-title {
   grid-column: 1;
@@ -599,6 +684,8 @@
   font-size: 20px;
   font-weight: 900;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sample-pool-desc {
   max-width: 160px;
@@ -611,16 +698,13 @@
   grid-row: 2;
   display: grid;
   grid-template-columns:
-    minmax(240px, var(--sample-search-fr))
-    minmax(132px, var(--sample-filter-status-fr))
-    minmax(132px, var(--sample-filter-result-fr))
-    minmax(132px, var(--sample-filter-reassembly-fr))
-    minmax(132px, var(--sample-filter-owner-fr))
-    minmax(132px, var(--sample-filter-borrower-fr))
-    68px
+    minmax(180px, 1.7fr)
+    repeat(3, minmax(92px, .85fr))
+    repeat(2, minmax(112px, 1.2fr))
+    56px
     max-content;
   align-items: center;
-  gap: 10px 12px;
+  gap: 8px;
   min-width: 0;
   border-top: 1px solid var(--border);
   padding-top: 12px;
@@ -643,7 +727,7 @@
   min-width: 0;
 }
 .sample-pool-clear-btn {
-  width: 68px;
+  width: 56px;
   height: 32px;
   padding: 5px 8px;
   white-space: nowrap;
@@ -675,29 +759,17 @@
   justify-content: center;
   font-weight: 800;
 }
-@media (max-width: 1480px) {
-  .sample-pool-toolbar {
-    grid-template-columns: 1fr;
-  }
-  .sample-pool-toolbar-actions {
-    grid-column: 1;
-    grid-row: 2;
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
+@container sample-pool-page (max-width: 1000px) {
   .sample-pool-toolbar-filters {
-    grid-row: 3;
     grid-template-columns:
-      minmax(220px, 1.7fr)
-      minmax(132px, 1fr)
-      minmax(132px, 1fr)
-      minmax(132px, 1fr);
+      minmax(180px, 1.7fr)
+      repeat(3, minmax(92px, 1fr));
   }
   .sample-pool-count {
     grid-column: auto;
   }
 }
-@media (max-width: 900px) {
+@container sample-pool-page (max-width: 600px) {
   .sample-pool-toolbar {
     grid-template-columns: 1fr;
   }
@@ -725,6 +797,18 @@
 }
 .sample-pager {
   justify-content: flex-start;
+  font-size: 12px;
+}
+.sample-pager .path,
+.sample-pager .btn,
+.sample-pager .sample-page-size-select { font-size: inherit; }
+.sample-pager .btn,
+.sample-pager .sample-page-size-select {
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  padding: 4px 8px;
+  line-height: 18px;
 }
 .sample-pager.is-loading,
 .task-flow-pager.is-loading {
@@ -743,7 +827,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-width: 0;
 }
 .sample-pager .sample-page-size-select {
@@ -754,9 +838,9 @@
 }
 .sample-pool-grid > .sample-card,
 .sample-pool-grid > .add-card {
-  height: 176px;
-  min-height: 176px;
-  max-height: 176px;
+  height: 200px;
+  min-height: 200px;
+  max-height: 200px;
   box-sizing: border-box;
 }
 .sample-empty-hint {
@@ -772,6 +856,9 @@
 .sample-archive-modal {
   width: min(1040px, 96vw);
   overflow: hidden;
+}
+.sample-archive-modal .modal-header {
+  border-bottom: 3px solid var(--brand-navy);
 }
 .sample-archive-modal .modal-body {
   padding: 0;
@@ -798,7 +885,7 @@
 .sample-archive-nav button {
   border: 1px solid transparent;
   background: transparent;
-  color: var(--muted);
+  color: var(--brand-navy);
   border-radius: 9px;
   padding: 10px 12px;
   text-align: left;
@@ -818,25 +905,24 @@
   font-weight: 800;
   box-shadow: 0 4px 12px var(--focus-ring);
 }
-.sample-archive-nav .sample-archive-export-nav {
-  margin-top: auto;
-  border-color: var(--primary-border);
-  background: var(--card);
+.sample-archive-modal .sample-archive-export-footer {
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--primary);
   text-align: center;
+  cursor: pointer;
 }
-.sample-archive-nav .sample-archive-export-nav:hover {
-  border-color: var(--primary);
-  background: var(--primary-bg);
+.sample-archive-modal .sample-archive-export-footer:hover {
+  background: var(--surface-hover);
   color: var(--primary);
-}
-#sampleArchiveFooterHint {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.5;
-  flex: 1;
-  min-width: 0;
 }
 .sample-archive-modal .modal-footer {
   flex-wrap: nowrap;

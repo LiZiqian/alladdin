@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 
-from server_modules import sample_assets, sample_queries, status_normalization, task_queries
+from server_modules import sample_assets, sample_queries, status_normalization, task_queries, problem_photos, problem_records
 
 
 def now_iso() -> str:
@@ -146,7 +146,7 @@ def write_task_logs(conn: sqlite3.Connection, task: dict, project_id: str, stage
         if log_id in seen_log_ids:
             continue
         seen_log_ids.add(log_id)
-        log = status_normalization.normalize_business_value(log)
+        log = log
         log["id"] = log_id
         log["taskId"] = task_id
         log["projectId"] = project_id
@@ -182,6 +182,8 @@ def upsert_task_record(conn: sqlite3.Connection, task: dict, project_id: str, st
     if not existing and not create_if_missing:
         raise KeyError("任务不存在")
     existing_task = json_obj(existing["data_json"], {}) if existing else {}
+    problem_records.preserve_task_created_at(conn, task, existing_task)
+    problem_photos.validate_task_problem_photos(conn, task)
     existing_logs = task_queries.load_task_logs_for(conn, [task_id]).get(task_id, []) if existing else []
     if existing:
         task = merge_existing_task_reference_fields(task, incoming_task, existing_task)
@@ -296,17 +298,17 @@ def clear_audit_log_when_platform_empty(conn: sqlite3.Connection) -> int:
 def prune_orphan_operational_logs(conn: sqlite3.Connection, *, clear_empty_platform_audit: bool = False) -> dict[str, int]:
     """Remove operational records whose owning task or sample no longer exists."""
     cleanup_sql = {
-        "task_logs": """
+        "task_logs": f"""
             DELETE FROM task_logs
             WHERE COALESCE(task_id, '') = ''
                OR NOT EXISTS (
                     SELECT 1
                     FROM project_tasks t
                     WHERE t.id = task_logs.task_id
-                      AND (t.deleted_at IS NULL OR t.flow_status IN ('正常完成', '异常终止'))
+                      AND (t.deleted_at IS NULL OR t.flow_status IN ('正常完成', '异常终止') OR {task_queries.task_archived_sql('t.data_json')})
                )
         """,
-        "project_task_samples": """
+        "project_task_samples": f"""
             DELETE FROM project_task_samples
             WHERE COALESCE(task_id, '') = ''
                OR COALESCE(sample_id, '') = ''
@@ -314,7 +316,7 @@ def prune_orphan_operational_logs(conn: sqlite3.Connection, *, clear_empty_platf
                     SELECT 1
                     FROM project_tasks t
                     WHERE t.id = project_task_samples.task_id
-                      AND (t.deleted_at IS NULL OR t.flow_status IN ('正常完成', '异常终止'))
+                      AND (t.deleted_at IS NULL OR t.flow_status IN ('正常完成', '异常终止') OR {task_queries.task_archived_sql('t.data_json')})
                )
                OR NOT EXISTS (
                     SELECT 1
@@ -333,7 +335,7 @@ def prune_orphan_operational_logs(conn: sqlite3.Connection, *, clear_empty_platf
                       AND s.deleted_at IS NULL
                )
         """,
-        "sample_events": """
+        "sample_events": f"""
             DELETE FROM sample_events
             WHERE COALESCE(sample_id, '') = ''
                OR NOT EXISTS (
@@ -348,7 +350,7 @@ def prune_orphan_operational_logs(conn: sqlite3.Connection, *, clear_empty_platf
                         SELECT 1
                         FROM project_tasks t
                         WHERE t.id = sample_events.task_id
-                          AND (t.deleted_at IS NULL OR t.flow_status IN ('正常完成', '异常终止'))
+                          AND (t.deleted_at IS NULL OR t.flow_status IN ('正常完成', '异常终止') OR {task_queries.task_archived_sql('t.data_json')})
                     )
                )
         """,
@@ -385,6 +387,7 @@ def update_project_record(conn: sqlite3.Connection, project: dict, *, create_if_
     project_json = copy.deepcopy(project)
     project_json["id"] = project_id
     project_json.pop("stages", None)
+    project_json.pop("samplePersonCounts", None)
     if existing:
         conn.execute(
             """
@@ -431,13 +434,14 @@ def delete_project_record(conn: sqlite3.Connection, project_id: str) -> None:
     if not row:
         raise KeyError(f"项目不存在: {project_id}")
     task_rows = conn.execute(
-        "SELECT id, flow_status FROM project_tasks WHERE project_id = ?",
+        "SELECT id, flow_status, data_json FROM project_tasks WHERE project_id = ?",
         (project_id,),
     ).fetchall()
     unfinished_task_ids = [
         str(task_row["id"] or "")
         for task_row in task_rows
         if task_row["id"] and str(task_row["flow_status"] or "") not in ("正常完成", "异常终止")
+        and not json_obj(task_row["data_json"], {}).get("archived")
     ]
     if unfinished_task_ids:
         placeholders = ",".join("?" for _ in unfinished_task_ids)
@@ -483,6 +487,9 @@ def update_stage_record(conn: sqlite3.Connection, stage: dict, project_id: str, 
     stage_json["id"] = stage_id
     stage_json["projectId"] = project_id
     stage_json.pop("tasks", None)
+    stage_json.pop("usedSampleRuns", None)
+    stage_json.pop("runningSampleCount", None)
+    stage_json.pop("progressTaskCounts", None)
     if existing:
         conn.execute(
             """
@@ -527,13 +534,14 @@ def delete_stage_record(conn: sqlite3.Connection, stage_id: str) -> None:
     if not row:
         raise KeyError(f"阶段不存在: {stage_id}")
     task_rows = conn.execute(
-        "SELECT id, flow_status FROM project_tasks WHERE stage_id = ?",
+        "SELECT id, flow_status, data_json FROM project_tasks WHERE stage_id = ?",
         (stage_id,),
     ).fetchall()
     unfinished_task_ids = [
         str(task_row["id"] or "")
         for task_row in task_rows
         if task_row["id"] and str(task_row["flow_status"] or "") not in ("正常完成", "异常终止")
+        and not json_obj(task_row["data_json"], {}).get("archived")
     ]
     if unfinished_task_ids:
         placeholders = ",".join("?" for _ in unfinished_task_ids)
@@ -560,11 +568,13 @@ def update_sample_category_record(conn: sqlite3.Connection, category: dict, *, c
     if not category_id:
         return
     existing = conn.execute(
-        "SELECT id, sort_order FROM sample_categories WHERE id = ? AND deleted_at IS NULL",
+        "SELECT id, sort_order, data_json FROM sample_categories WHERE id = ? AND deleted_at IS NULL",
         (category_id,),
     ).fetchone()
     if not existing and not create_if_missing:
         raise KeyError(f"样机池不存在: {category_id}")
+    if existing:
+        category = {**json_obj(existing["data_json"], {}), **category}
     if sort_order is None:
         if existing:
             sort_order = int(existing["sort_order"] or 0)
@@ -574,6 +584,8 @@ def update_sample_category_record(conn: sqlite3.Connection, category: dict, *, c
     category_json = copy.deepcopy(category)
     category_json["id"] = category_id
     category_json.pop("samples", None)
+    for key in ("sampleCount", "statusCounts", "problemCounts", "_summaryOnly", "_summary", "_detailLoaded", "samplesLoaded"):
+        category_json.pop(key, None)
     if existing:
         conn.execute(
             """
@@ -616,11 +628,14 @@ def update_sample_record(conn: sqlite3.Connection, sample: dict, *, create_if_mi
     if not sample_id:
         return
     row = conn.execute(
-        "SELECT category_id FROM sample_records WHERE id = ? AND deleted_at IS NULL",
+        "SELECT category_id, data_json FROM sample_records WHERE id = ? AND deleted_at IS NULL",
         (sample_id,),
     ).fetchone()
     if not row and not create_if_missing:
         raise KeyError(f"样机不存在: {sample_id}")
+    previous = json_obj(row["data_json"], {}) if row else {}
+    problem_records.preserve_created_at(sample.get("problemRecords"), previous.get("problemRecords"))
+    problem_photos.validate_problem_photos(conn, sample_id, sample.get("problemRecords"))
     category_id = str((row["category_id"] if row else None) or sample.get("categoryId") or "")
     if not category_id:
         raise KeyError(f"样机缺少 categoryId: {sample_id}")
@@ -628,8 +643,9 @@ def update_sample_record(conn: sqlite3.Connection, sample: dict, *, create_if_mi
     sample_json["id"] = sample_id
     sample_json["categoryId"] = category_id
     sample_json.pop("photos", None)
+    sample_json.pop("files", None)
     sample_json.pop("logs", None)
-    for key in ("photosLoaded", "eventsLoaded", "photoCount", "effectiveStatus"):
+    for key in ("photosLoaded", "eventsLoaded", "photoCount", "effectiveStatus", "testedItemNames", "testHistoryCount"):
         sample_json.pop(key, None)
     if row:
         conn.execute(
@@ -691,7 +707,7 @@ def upsert_sample_events(conn: sqlite3.Connection, sample_events: list[dict]) ->
     for log in sample_events or []:
         if not isinstance(log, dict):
             continue
-        log = status_normalization.normalize_business_value(log)
+        log = log
         event_id = str(log.get("id") or f"event_{uuid.uuid4().hex}")
         if event_id in seen:
             continue

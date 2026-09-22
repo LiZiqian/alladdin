@@ -11,27 +11,29 @@
 .task-flow-summary {
   display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 7px; margin: 8px 0 0;
-  padding-bottom: 10px;
-  border-bottom: 2px solid var(--gray);
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
 }
 .task-flow-stat {
+  display: flex; align-items: center; gap: 8px;
   background: var(--primary-bg); color: var(--primary-text); border: 1px solid var(--primary-border);
-  border-radius: 9px; padding: 7px 9px;
-  min-height: 54px;
+  border-radius: 9px; padding: 5px 9px;
+  min-height: 38px;
 }
 .task-flow-stat b { font-size: 20px; line-height: 1.1; color: inherit; font-weight: 800 }
-.task-flow-stat span { display: block; font-size: 12px; color: inherit; margin-top: 4px; line-height: 1.2; font-weight: 600 }
-.task-flow-stat.stat-total { background: var(--primary-bg); color: var(--primary-text); border-color: var(--primary-border) }
+.task-flow-stat span { font-size: 12px; color: inherit; line-height: 1.2; font-weight: 600; white-space: nowrap }
+.task-flow-stat.stat-total { background: var(--task-blue-bg); color: var(--task-blue-text); border-color: var(--task-blue-border) }
 .task-flow-stat.stat-pending { background: var(--status-task-pending-bg); color: var(--status-task-pending-text); border-color: var(--status-task-pending-border) }
 .task-flow-stat.stat-running { background: var(--status-task-running-bg); color: var(--status-task-running-text); border-color: var(--status-task-running-border) }
 .task-flow-stat.stat-blocked { background: var(--status-task-blocked-bg); color: var(--status-task-blocked-text); border-color: var(--status-task-blocked-border) }
 .task-flow-stat.stat-bad { background: var(--status-task-aborted-bg); color: var(--status-task-aborted-text); border-color: var(--status-task-aborted-border) }
 .task-flow-stat.stat-done { background: var(--status-task-done-bg); color: var(--status-task-done-text); border-color: var(--status-task-done-border) }
 .task-filter-bar {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(150px, 1.25fr) minmax(150px, 1.25fr) minmax(120px, 1fr) minmax(120px, 1fr) minmax(140px, 1.1fr) minmax(160px, 1.45fr) 96px;
-  align-items: end;
-  gap: 10px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 8px;
   margin: 12px 0 14px;
 }
 .task-filter-item {
@@ -43,7 +45,10 @@
   max-width: none;
   width: 100%;
 }
-.task-filter-bar > .task-filter-item { min-width: 0 }
+.task-filter-bar > .task-filter-item { flex: 1 0 108px; width: auto; min-width: 0 }
+.task-filter-bar > .task-filter-item:has(#taskFlowFilterOwner) { flex-basis: 156px }
+.task-filter-bar > .task-filter-item:has(#taskFlowFilterSku),
+.task-filter-bar > .task-filter-item:has(#taskFlowFilterStatus) { flex-basis: 94px }
 .task-filter-item label {
   font-size: 12px;
   color: var(--text);
@@ -70,31 +75,16 @@
   align-items: center;
   align-self: flex-end;
   min-width: 0;
-  width: 100%;
+  flex: 0 0 84px;
+  width: 84px;
   padding-bottom: 0;
 }
 .task-filter-actions .btn {
   height: 34px;
   padding: 5px 12px;
   white-space: nowrap;
-  width: 96px;
+  width: 84px;
   color: var(--primary);
-}
-@media (max-width: 1480px) {
-  .task-filter-bar {
-    grid-template-columns: repeat(4, minmax(145px, 1fr));
-    gap: 10px;
-  }
-}
-@media (max-width: 760px) {
-  .task-filter-bar {
-    grid-template-columns: repeat(2, minmax(145px, 1fr));
-  }
-}
-@media (max-width: 420px) {
-  .task-filter-bar {
-    grid-template-columns: minmax(180px, 1fr);
-  }
 }
 .task-flow-pager {
   justify-content: flex-start;
@@ -105,12 +95,15 @@
   flex-wrap: nowrap;
   gap: 8px;
 }
-.task-flow-pager-range {
-  white-space: nowrap;
-}
+.task-flow-pager .btn,
 .task-flow-pager select {
-  min-width: 116px;
+  height: 28px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  box-sizing: border-box;
 }
+.task-flow-pager .btn { width: auto; min-width: 0; white-space: nowrap }
+.task-flow-pager select { width: 88px; min-width: 88px }
 @media (max-width: 760px) {
   .task-flow-pager .list-pager-controls {
     flex-wrap: wrap;
@@ -136,7 +129,7 @@
 .task-flow-table th:nth-child(7) { width: 260px; text-align: center  }
 .task-flow-table th:nth-child(8) { width: 200px; text-align: center  }
 .task-flow-table th:nth-child(9) { width: 80px; text-align: center }
-.task-flow-table td:nth-child(9) { text-align: center }
+.task-flow-table td:nth-child(9) { text-align: center; padding-left: 4px; padding-right: 4px }
 
 /* 序号列：紧凑加粗，最多按三位数空间设计 */
 .task-flow-table .task-seq-cell {
@@ -285,6 +278,7 @@
   line-height: 1.4;
 }
 .task-time-cell span { display: block; line-height: 1.5; color: var(--muted); font-size: 12px; font-weight: 400; white-space: normal }
+.task-time-cell .task-time-set { color: var(--text) }
 .task-sample-summary { display: flex; align-items: center; gap: 6px; white-space: nowrap }
 .task-sample-summary b { font-size: 17px; color: var(--heading) }
 .task-sample-summary span { color: var(--muted); font-size: 12px }
@@ -301,10 +295,27 @@
 .task-flow-table td:nth-child(9) .badge {
   font-size: 12px;
   font-weight: 600;
+  min-width: 0;
+  padding-left: 8px;
+  padding-right: 8px;
+}
+.task-result-outcome.is-doing {
+  width: 52px;
+  padding: 0 6px;
+  background: var(--task-blue-bg);
+  color: var(--task-blue-text);
+  border-color: var(--task-blue-border);
+}
+.task-flow-pager,
+.task-flow-pager .btn,
+.task-flow-pager select,
+.task-flow-pager .path {
+  font-size: 12px;
+  font-weight: 400;
 }
 /* —— 任务表格：类别/用例、执行人双行；样机数量即查看入口 —— */
 .task-type-cell { display: flex; flex-direction: column; gap: 2px; line-height: 1.5 }
-.task-type-cat { font-size: 12px; color: var(--primary); font-weight: 600 }
+.task-type-cat { font-size: 12px; color: var(--brand-gold); font-weight: 600 }
 .task-type-item { font-size: 12px; color: var(--text); font-weight: 600; line-height: 1.5; word-break: break-word }
 
 .task-executor-cell { display: flex; flex-direction: column; gap: 1px; line-height: 1.5 }
@@ -315,18 +326,19 @@
 .task-sample-count { font-size: 12px; color: var(--muted); font-weight: 600; line-height: 1.5 }
 .task-sample-count-num { font-weight: 700 }
 .task-sample-link {
-  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 1px; min-width: 58px; min-height: 42px; padding: 5px 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 48px; min-height: 28px; padding: 4px 7px; white-space: nowrap;
   border: 1px solid var(--primary-border); border-radius: 6px;
   background: var(--primary-bg); color: var(--primary-text);
   font: inherit; font-size: 12px; line-height: 1.3; cursor: pointer;
 }
-.task-sample-link-hint { font-size: 11px; text-decoration: underline; text-underline-offset: 2px }
 .task-sample-link:hover, .task-sample-link:focus-visible {
   background: var(--primary-hover); border-color: var(--primary-hover); color: var(--on-accent);
 }
 
 /* —— 操作按钮列紧凑换行 —— */
+.task-flow-table .task-result-btn { background: var(--task-blue); color: var(--on-accent) }
+.task-flow-table .task-result-btn:hover { background: var(--task-blue-hover) }
 .task-op-group { display: flex; flex-direction: column; gap: 4px; align-items: flex-start }
 .task-op-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center }
 .task-op-row .btn { min-width: auto; text-align: center; padding-left: 7px; padding-right: 7px; font-size: 12px; font-weight: 600; white-space: nowrap }

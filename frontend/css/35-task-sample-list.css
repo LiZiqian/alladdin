@@ -4,6 +4,9 @@
    ======================================== */
 
 /* 任务样机清单 — 行式布局 */
+.task-sample-modal .modal-header {
+  border-bottom: 3px solid var(--brand-navy);
+}
 .task-sample-row-list {
   display: flex;
   flex-direction: column;
@@ -75,7 +78,7 @@
   flex: 0 1 200px;
   min-width: 120px;
   font-size: 12px;
-  color: var(--muted);
+  color: var(--text);
   display: flex;
   flex-direction: column;
   gap: 1px;
@@ -90,11 +93,13 @@
   gap: 1px;
 }
 .task-sample-row-label {
-  font-size: 10px;
+  font-size: inherit;
   font-weight: 700;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+  color: var(--text);
+}
+.task-sample-tested-item {
+  display: block;
+  overflow-wrap: anywhere;
 }
 .task-sample-row-status {
   flex-shrink: 0;
@@ -122,17 +127,10 @@
   flex-wrap: wrap;
 }
 .task-sample-problem-text {
-  color: var(--status-sample-problem-text);
+  color: var(--danger-text);
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: help;
-}
-.task-sample-problem-count {
-  color: var(--status-sample-problem-text);
-  font-weight: 700;
-  cursor: help;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .task-sample-problem-none {
   color: var(--status-sample-problem-empty-text);
@@ -154,9 +152,9 @@
   justify-content: center;
   gap: 10px;
   min-width: 168px;
-  border: 1px dashed var(--status-sample-add-border);
-  background: var(--status-sample-add-bg);
-  color: var(--status-sample-add-text);
+  border: 1px dashed var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--brand-gold);
   border-radius: 8px;
   padding: 7px 14px;
   font-size: 14px;
@@ -167,11 +165,25 @@
 }
 .task-add-main:hover {
   transform: translateY(-1px);
-  border-color: var(--status-sample-add-hover-border);
-  background: var(--status-sample-add-hover-bg);
+  border-color: var(--brand-gold);
+  background: color-mix(in srgb, var(--accent-bg) 85%, var(--brand-gold));
   box-shadow: 0 8px 18px rgba(15, 23, 42, .12);
 }
-.task-add-main .row-action-btn { width: 28px; height: 28px; flex: 0 0 auto }
+.task-add-main .row-action-btn {
+  width: 28px; height: 28px; flex: 0 0 auto;
+  background: transparent;
+  color: var(--brand-gold);
+  border: 1px solid var(--brand-gold);
+  box-sizing: border-box;
+  box-shadow: none;
+}
+.task-add-main:focus-visible { outline-color: var(--accent-border) }
+.task-add-main[data-app-action="task-add"] .row-action-btn {
+  background: var(--brand-gold);
+  color: var(--on-accent);
+}
+.task-add-main[data-app-action="task-add"] .row-action-btn::before { height: 3px }
+.task-add-main[data-app-action="task-add"] .row-action-btn::after { width: 3px }
 .task-add-header {
   min-width: 118px;
   padding: 5px 12px;
@@ -199,11 +211,11 @@
   font-weight: 800;
 }
 .task-pool-table {
-  overflow-x: hidden;
+  overflow-x: auto;
   overflow-y: auto;
 }
 .task-pool-table table {
-  min-width: 0;
+  min-width: 620px;
   width: 100%;
   table-layout: fixed;
 }

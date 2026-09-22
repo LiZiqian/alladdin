@@ -5,7 +5,7 @@
         对当前内存数据快照做只读一致性检查。
    严格只读：本脚本不修改任何数据、不触发 save / render。
    覆盖检查：
-     1. 同一样机被多个未完成任务占用（与服务端 C1 对齐）
+     1. 同一样机预约时间重叠或同时执行（与服务端规则对齐）
      2. 任务引用了已删除的策略池 progress（任务快照独立性 B2 影响面）
      3. 任务引用了不存在的样机档案
      4. 样机当前 status 与任务占用关系不一致
@@ -24,6 +24,18 @@ app.registerModule("debug.auditConsistency", {
     const status = String(task.status || "").trim();
     if (this._auditFinishedStatuses.includes(status)) return false;
     return true;
+  },
+
+  _auditReservationsConflict(a, b) {
+    if ([a, b].every(task => ["进行中", "阻塞中"].includes(task.status))) return true;
+    const range = task => {
+      const dates = [task.planStartDate || task.planDate || "", task.planEndDate || task.endDate || ""];
+      if (!dates.every(value => /^\d{4}-\d{2}-\d{2}$/.test(value)
+        && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value)) return null;
+      return dates[0] <= dates[1] ? dates : null;
+    };
+    const left = range(a), right = range(b);
+    return !left || !right || (left[0] <= right[1] && right[0] <= left[1]);
   },
 
   /**
@@ -102,6 +114,8 @@ app.registerModule("debug.auditConsistency", {
                 projectId: project.id,
                 stageId: stage.id,
                 status: task.status || "",
+                planStartDate: task.planStartDate || task.planDate || "",
+                planEndDate: task.planEndDate || task.endDate || "",
               });
             }
           });
@@ -120,7 +134,7 @@ app.registerModule("debug.auditConsistency", {
 
     // 占用冲突
     occupancy.forEach((tasks, sid) => {
-      if (tasks.length > 1) {
+      if (tasks.some((task, index) => tasks.slice(index + 1).some(other => this._auditReservationsConflict(task, other)))) {
         const sample = sampleIndex.get(sid);
         report.sampleOccupancyConflicts.push({
           sampleId: sid,
@@ -163,7 +177,7 @@ app.registerModule("debug.auditConsistency", {
       c.group?.("%c[一致性审计] 只读报告", "color:#2563eb;font-weight:700");
       c.table?.(report.summary);
       if (report.sampleOccupancyConflicts.length) {
-        c.warn("样机占用冲突（同一样机被多个未完成任务占用）：", report.sampleOccupancyConflicts);
+        c.warn("样机预约时间重叠或同时执行：", report.sampleOccupancyConflicts);
       }
       if (report.orphanProgressTasks.length) {
         c.warn("任务引用已删除的策略池 progress（依赖任务快照继续执行）：", report.orphanProgressTasks);

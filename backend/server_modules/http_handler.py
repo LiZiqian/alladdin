@@ -84,16 +84,26 @@ def create_handler(
         def do_GET(self) -> None:
             http_api.handle_get(self, runtime_context())
 
+        def _allow_mutation(self) -> bool:
+            if http_helpers.request_origin_is_allowed(self.headers):
+                return True
+            # Do not reuse a connection whose rejected request body is unread.
+            self.close_connection = True
+            http_helpers.discard_rejected_body(self)
+            self._send_json({"ok": False, "error": "请从本平台页面提交修改请求", "errorCode": "CROSS_ORIGIN_WRITE_REJECTED"}, 403)
+            return False
+
         def do_POST(self) -> None:
-            http_api.handle_post(self, runtime_context())
+            if self._allow_mutation():
+                http_api.handle_post(self, runtime_context())
 
         def do_DELETE(self) -> None:
-            http_api.handle_delete(self, runtime_context())
+            if self._allow_mutation():
+                http_api.handle_delete(self, runtime_context())
 
         def do_PATCH(self) -> None:
-            http_api.handle_patch(self, runtime_context())
+            if self._allow_mutation():
+                http_api.handle_patch(self, runtime_context())
 
-        def do_PUT(self) -> None:
-            http_api.handle_put(self, runtime_context())
 
     return Handler

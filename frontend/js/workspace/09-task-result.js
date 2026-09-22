@@ -34,17 +34,23 @@ app.registerModule("workspace.taskResult", {
   },
 
   taskResultCurrentEditLock(task, sampleId) {
-    if (!task || !this.isTaskCompleted(task) || !sampleId) return { locked: false, hint: "" };
+    if (!task || !sampleId) return { locked: false, hint: "" };
+    // Removed samples may already belong to another task before this one ends.
+    // Current samples can still finish normally despite a future reservation.
+    if (!this.isTaskCompleted(task) && (task.sampleIds || []).includes(sampleId)) return { locked: false, hint: "" };
     const usages = typeof this.activeTaskUsagesForSample === "function"
       ? this.activeTaskUsagesForSample(sampleId, task.id)
       : [];
-    if (!usages.length) return { locked: false, hint: "" };
+    const sample = this.findSample(sampleId)?.sample;
+    const currentOtherTask = sample?.currentTaskId && sample.currentTaskId !== task.id
+      && ["测试中", "在位等待"].includes(this.sampleEffectiveStatus(sample));
+    if (!usages.length && !currentOtherTask) return { locked: false, hint: "" };
     const names = usages.map(usage => {
       const projectName = usage.project?.name || "未知项目";
       const stageName = usage.stage?.name || "未知阶段";
       const taskName = usage.task?.testItem || usage.task?.id || "未命名任务";
       return `${projectName} / ${stageName} / ${taskName}`;
-    }).join("；");
+    }).join("；") || sample.currentTestItem || "其他任务";
     return {
       locked: true,
       hint: `该样机正在其他任务中：${names}。不可再次变更样机信息。`
@@ -110,7 +116,7 @@ app.registerModule("workspace.taskResult", {
       }
     }
     // 更新取走人标签上的必填星号
-    const takerLabel = row.querySelector(".task-result-route-grid .form-group:nth-child(3) > label");
+    const takerLabel = row.querySelector(".task-result-taker-group > label");
     if (takerLabel) {
       const star = takerLabel.querySelector(".req-star");
       if (dest === "取走分析") {
@@ -138,6 +144,20 @@ app.registerModule("workspace.taskResult", {
     return menuId ? document.getElementById(menuId) : input.closest?.(".task-result-location-combobox")?.querySelector?.(".task-result-location-menu");
   },
 
+  positionTaskResultMenu(input, menu) {
+    const modal = input?.closest?.(".task-result-modal");
+    const body = modal?.querySelector?.(".modal-body");
+    const picker = input?.closest?.(".project-member-picker");
+    if (!body?.getBoundingClientRect || !picker?.getBoundingClientRect || !menu?.style) return;
+    const bounds = body.getBoundingClientRect();
+    const field = picker.getBoundingClientRect();
+    const below = Math.max(0, bounds.bottom - field.bottom - 8);
+    const above = Math.max(0, field.top - bounds.top - 8);
+    const openAbove = below < Math.min(menu.scrollHeight || 240, 200) && above > below;
+    picker.classList.toggle("task-result-menu-above", openAbove);
+    menu.style.maxHeight = `${Math.max(40, Math.min(240, openAbove ? above : below))}px`;
+  },
+
   openTaskResultLocationCombobox(input, options = {}) {
     if (!input || input.disabled) return;
     const picker = input.closest?.(".task-result-location-combobox");
@@ -148,6 +168,7 @@ app.registerModule("workspace.taskResult", {
     picker.classList.add("is-open");
     input.setAttribute?.("aria-expanded", "true");
     if (options.reset !== false) this.filterTaskResultLocationCombobox(input, "");
+    this.positionTaskResultMenu(input, menu);
   },
 
   closeTaskResultLocationComboboxes(exceptInput = null) {
@@ -221,6 +242,7 @@ app.registerModule("workspace.taskResult", {
     if (!input || !event) return;
     if (this.isImeCompositionEvent?.(event)) return;
     if (event.key === "Escape") {
+      if (input.closest?.(".task-result-location-combobox")?.classList.contains("is-open")) event.preventDefault();
       this.closeTaskResultLocationComboboxes();
       return;
     }
@@ -326,47 +348,57 @@ app.registerModule("workspace.taskResult", {
   },
 
   taskResultProblemTableHtml(sample, rowIdx, draftItem = null) {
+    const baseline = sample ? this.sampleProblemRecords(sample) : [];
     const problems = Array.isArray(draftItem?.problemRecords)
-      ? draftItem.problemRecords
-      : (sample ? this.sampleProblemRecords(sample) : []);
+      ? this.mergeProblemPhotoRecords(baseline, draftItem.problemRecords, draftItem.problemRecordsBaseline)
+      : baseline;
     const rows = problems.map(item => this.taskResultProblemRowHtml(item)).join("");
     const photos = Array.isArray(draftItem?.photos) ? draftItem.photos : [];
     return `
       <div class="task-result-new-problem">
-        <label>本次新增失效/问题</label>
+        <label for="taskResultProblem_${rowIdx}">本次新增问题</label>
         <div class="task-result-problem-line">
-          <input class="task-result-sample-problem" value="${Utils.esc(draftItem?.problem || "")}" placeholder="不填则不追加问题记录">
-          <button type="button" class="btn btn-outline task-result-photo-btn" ${sample ? "" : "disabled"} data-app-action="task-result-photo-upload">上传图片</button>
+          <input id="taskResultProblem_${rowIdx}" class="task-result-sample-problem" value="${Utils.esc(draftItem?.problem || "")}" placeholder="填写本次失效或问题；没有新增可留空">
+          <button type="button" class="btn btn-outline task-result-photo-btn" ${sample ? "" : "disabled"} data-app-action="problem-photos-open">添加图片</button>
         </div>
         <input type="hidden" class="task-result-sample-photos" value="${Utils.esc(JSON.stringify(photos))}">
         <div class="task-result-photo-list"></div>
       </div>
       <div class="task-result-problem-board">
+        <input type="hidden" class="task-result-problem-baseline" value="${Utils.esc(JSON.stringify(baseline))}">
         <div class="task-result-problem-head">
-          <b>样机问题表</b>
-          <span>这里和样机档案里的问题表同步；修改或删除后，点击保存。</span>
+          <b>已有问题</b>
         </div>
-        <div class="task-result-existing-problems">
-          ${rows || `<div class="task-result-problem-empty">当前档案暂无问题记录。</div>`}
-        </div>
+        <div class="sample-problem-table-scroll"><table class="sample-problem-table task-result-problem-table" aria-label="已有问题表">
+          ${this.problemTableHeadHtml()}
+          <tbody class="task-result-existing-problems">
+            ${rows || `<tr class="task-result-problem-empty"><td colspan="${this.problemTableColumns().length}">当前档案暂无问题记录。</td></tr>`}
+          </tbody>
+        </table></div>
       </div>`;
   },
 
   taskResultProblemRowHtml(record = {}) {
-    const item = typeof record === "string" ? { description: record, source: "手动补录", taskLabel: "" } : record;
-    return `<div class="task-result-existing-problem-row" data-problem-id="${Utils.esc(item.id || Utils.id("problem_"))}">
-      <div class="task-result-problem-no">已有</div>
-      <input class="task-result-existing-problem-desc" value="${Utils.esc(item.description || "")}" placeholder="问题描述">
-      <input class="task-result-existing-problem-source" value="${Utils.esc(item.source || "手动补录")}" placeholder="来源">
-      <input class="task-result-existing-problem-task" value="${Utils.esc(item.taskLabel || "")}" placeholder="关联任务">
-      <button type="button" class="sample-result-btn remove" title="从样机问题表删除" data-app-action="task-result-problem-remove">-</button>
-    </div>`;
+    const item = this.normalizeSampleProblemRecord(record) || this.normalizeSampleProblemRecord({});
+    return `<tr class="task-result-existing-problem-row" data-problem-id="${Utils.esc(item.id)}" data-problem-record="${Utils.esc(JSON.stringify(item))}">
+      ${this.problemTableCellsHtml({
+        description: `<input class="task-result-existing-problem-desc" value="${Utils.esc(item.description || "")}" title="${Utils.esc(item.description || "")}" placeholder="问题描述" aria-label="已有问题描述">`,
+        source: `<input class="task-result-existing-problem-source" value="${Utils.esc(item.source || "手动补录")}" title="${Utils.esc(item.source || "手动补录")}" placeholder="来源" aria-label="已有问题来源">`,
+        date: this.problemDateHtml(item),
+        task: this.problemTaskFieldHtml(item, "task-result-existing-problem", "已有问题关联任务"),
+        photos: this.problemPhotoButtonHtml(item),
+        actions: `<div class="sample-problem-actions"><button type="button" class="sample-result-btn remove" title="从样机问题表删除" aria-label="删除此条已有问题" data-app-action="task-result-problem-remove">${Utils.iconHtml("trash")}</button></div>`
+      })}
+    </tr>`;
   },
 
   taskResultProblemEmptyNode() {
-    const node = document.createElement("div");
+    const node = document.createElement("tr");
     node.className = "task-result-problem-empty";
-    node.textContent = "当前档案暂无问题记录。";
+    const cell = document.createElement("td");
+    cell.colSpan = this.problemTableColumns().length;
+    cell.textContent = "当前档案暂无问题记录。";
+    node.appendChild(cell);
     return node;
   },
 
@@ -413,11 +445,11 @@ app.registerModule("workspace.taskResult", {
       const lockedAttr = editLock.locked ? " disabled" : "";
       const lockedHint = editLock.locked ? `<div class="task-result-current-lock">${Utils.esc(editLock.hint)}</div>` : "";
       const removedInfo = entry.state === "removed"
-        ? `<span class="task-result-sample-state removed">退出测试</span><span>退出时间：${Utils.esc(entry.removedAt || "-")}</span>${entry.reason ? `<span>退出原因：${Utils.esc(entry.reason)}</span>` : ""}`
-        : `<span class="task-result-sample-state active">当前测试样机</span>`;
+? `<span class="task-result-sample-state removed">变更样机</span><span>退出时间：${Utils.esc(Utils.dateTimeLabel(entry.removedAt))}</span>${entry.reason ? `<span>退出原因：${Utils.esc(entry.reason)}</span>` : ""}`
+        : `<span class="task-result-sample-state active">正式样机</span>`;
       const archiveName = this.taskSampleArchiveName(id, snapshot);
       const sampleCodeHtml = id && !snapshot?.destroyedAt
-        ? `<button type="button" class="task-result-sample-link" data-app-action="sample-readonly" data-id="${Utils.esc(id)}" data-stop-propagation="1" title="查看样机详情" aria-label="查看样机详情 ${Utils.esc(archiveName)}">${Utils.esc(archiveName)}</button>`
+        ? `<button type="button" class="task-result-sample-link" data-app-action="sample-readonly" data-id="${Utils.esc(id)}" data-stop-propagation="1" title="查看样机详情：${Utils.esc(archiveName)}" aria-label="查看样机详情 ${Utils.esc(archiveName)}">${Utils.esc(archiveName)}</button>`
         : `<b>${Utils.esc(archiveName)}</b>`;
       // 项目位置列表（供去向位置自定义下拉使用）
       const p = this.currentProject();
@@ -431,19 +463,19 @@ app.registerModule("workspace.taskResult", {
         </div>
         <div class="task-result-route-grid">
           <div class="form-group">
-            <label class="req">样机去向</label>
-            <select class="task-result-sample-destination" data-app-action="task-result-destination" data-app-events="change"${lockedAttr}>${this.taskSampleDestinationOptionsHtml(destination, { includeCurrent: editLock.locked })}</select>
+            <label class="req" for="taskResultDestination_${idx}">样机去向</label>
+            <select id="taskResultDestination_${idx}" class="task-result-sample-destination" data-app-action="task-result-destination" data-app-events="change"${lockedAttr}>${this.taskSampleDestinationOptionsHtml(destination, { includeCurrent: editLock.locked })}</select>
           </div>
           <div class="form-group">
-            <label class="req">去向位置</label>
+            <label class="req" for="taskResultLocation_${idx}">去向位置</label>
             ${this.taskResultLocationComboboxHtml(`taskResultLocation_${idx}`, destLocation, locations, editLock.locked)}
           </div>
-          <div class="form-group">
-            <label>取走人${destination === '取走分析' ? '<span class="req-star">*</span>' : ''}</label>
-            ${this.projectMemberSelectHtml(`taskResultTaker_${idx}`, receiver, takerPlaceholder, { scope: "developer", disabled: isTakerDisabled })}
+          <div class="form-group task-result-taker-group">
+            <label for="taskResultTaker_${idx}">${editLock.locked ? "当前持有人" : "取走人"}${!editLock.locked && destination === '取走分析' ? '<span class="req-star">*</span>' : ''}</label>
+            ${this.projectMemberSelectHtml(`taskResultTaker_${idx}`, receiver, takerPlaceholder, { scope: editLock.locked ? "all" : "developer", showRole: true, disabled: isTakerDisabled })}
           </div>
           <div class="form-group task-result-account-group">
-            <label>挂账人</label>
+            <label for="taskResultAccountOwner_${idx}">挂账人</label>
             ${this.projectMemberSelectHtml(`taskResultAccountOwner_${idx}`, accountOwner, "请选择挂账人", { scope: "all", disabled: editLock.locked })}
           </div>
         </div>
@@ -523,7 +555,18 @@ app.registerModule("workspace.taskResult", {
     const label = document.createElement("span");
     label.textContent = name;
     button.append(label);
-    return button;
+    const chip = document.createElement("div");
+    chip.className = "task-result-photo-item";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "task-result-photo-remove";
+    remove.dataset.appAction = "task-result-photo-remove";
+    remove.dataset.photoId = photo.id || "";
+    remove.title = `移除图片：${name}`;
+    remove.ariaLabel = remove.title;
+    remove.textContent = "×";
+    chip.append(button, remove);
+    return chip;
   },
 
   renderTaskResultPhotoList(row) {
@@ -535,52 +578,9 @@ app.registerModule("workspace.taskResult", {
     photos.forEach(photo => list.append(this.taskResultPhotoChipNode(sampleId, photo)));
   },
 
-  uploadTaskResultPhotos(btn) {
-    const row = btn?.closest?.(".task-result-sample-row");
-    const sampleId = row?.dataset?.sid || "";
-    const found = this.findSample(sampleId);
-    if (!row || !found) return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.multiple = true;
-    input.addEventListener("change", async () => {
-      const files = [...(input.files || [])];
-      if (!files.length) return;
-      const oldText = btn.innerText;
-      btn.disabled = true;
-      btn.innerText = "上传中...";
-      try {
-        if (!(await this.prepareBeforeDirectMutation("上传任务结果图片前同步"))) return;
-        const form = new FormData();
-        await this.appendPhotoUploadFiles(form, files);
-        form.append("revision", String(this.serverRevision || 0));
-        const ctx = this._taskResultUploadContext || {};
-        form.append("remark", `任务结果图片：${ctx.taskLabel || "未命名任务"}`);
-        const res = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/photos`, { method: "POST", body: form });
-        const obj = await res.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
-        if (!res.ok || !obj.ok) throw new Error(obj.error || ("HTTP " + res.status));
-        const uploaded = (obj.uploaded || []).map(photo => ({
-          id: photo.id,
-          name: photo.name || "结果图片",
-          url: photo.url || "",
-          thumbUrl: photo.thumbUrl || photo.thumbnailUrl || "",
-          thumbnailUrl: photo.thumbnailUrl || photo.thumbUrl || "",
-          uploadedAt: photo.uploadedAt || Utils.now(),
-          type: photo.type || "",
-          size: photo.size || 0
-        })).filter(photo => photo.id);
-        this.applySamplePhotosMutationResult(sampleId, obj, { statusText: "已保存" });
-        this.setTaskResultRowPhotos(row, [...this.taskResultRowPhotos(row), ...uploaded]);
-        Utils.toast(`已上传 ${uploaded.length || files.length} 张结果图片。`);
-      } catch (e) {
-        alert("结果图片上传失败：" + (e.message || e));
-      } finally {
-        btn.disabled = false;
-        btn.innerText = oldText;
-      }
-    }, { once: true });
-    input.click();
+  removeTaskResultPhoto(btn) {
+    const row = btn.closest(".task-result-sample-row");
+    this.setTaskResultRowPhotos(row, this.taskResultRowPhotos(row).filter(photo => photo.id !== btn.dataset.photoId));
   },
 
   appendTaskSampleFault(task, sampleId, record) {
@@ -612,12 +612,11 @@ app.registerModule("workspace.taskResult", {
       const accountOwner = this.taskResultMemberField(row, "taskResultAccountOwner_")?.value.trim() || "";
       const receiver = this.taskResultMemberField(row, "taskResultTaker_")?.value.trim() || "";
       const problem = row.querySelector(".task-result-sample-problem")?.value.trim() || "";
-      const problemRecords = [...row.querySelectorAll(".task-result-existing-problem-row")].map(problemRow => ({
-        id: problemRow.dataset.problemId || Utils.id("problem_"),
-        description: problemRow.querySelector(".task-result-existing-problem-desc")?.value.trim() || "",
-        source: problemRow.querySelector(".task-result-existing-problem-source")?.value.trim() || "手动补录",
-        taskLabel: problemRow.querySelector(".task-result-existing-problem-task")?.value.trim() || ""
-      })).filter(item => item.description && !Utils.isNoSampleIssueText(item.description));
+      const problemRecords = [...row.querySelectorAll(".task-result-existing-problem-row")]
+        .map(problemRow => this.sampleProblemRecordFromRow(problemRow, "task-result-existing-problem"))
+        .filter(item => item.description && !Utils.isNoSampleIssueText(item.description));
+      let problemRecordsBaseline;
+      try { problemRecordsBaseline = JSON.parse(row.querySelector(".task-result-problem-baseline")?.value || "null"); } catch (_) { /* Invalid form baseline cannot be trusted. */ }
       // 自动判断：只有本次填写了新增失效才算故障，已有问题表不参与故障判定
       const hasNewProblem = !!problem && !Utils.isNoSampleIssueText(problem);
       const fault = hasNewProblem ? "有故障" : "无故障";
@@ -625,13 +624,12 @@ app.registerModule("workspace.taskResult", {
         id: photo.id,
         name: photo.name || "结果图片",
         url: photo.url || "",
-        thumbUrl: photo.thumbUrl || photo.thumbnailUrl || "",
-        thumbnailUrl: photo.thumbnailUrl || photo.thumbUrl || "",
+        thumbUrl: photo.thumbUrl || "",
         uploadedAt: photo.uploadedAt || "",
         type: photo.type || "",
         size: photo.size || 0
       }));
-      return { sid, state, currentEditLocked, fault, destination, destLocation, accountOwner, receiver, problem, problemRecords, photos };
+      return { sid, state, currentEditLocked, fault, destination, destLocation, accountOwner, receiver, problem, problemRecords, problemRecordsBaseline, photos };
     });
     return this.normalizeTaskResultFinishPayload({ result, user, resultDate, finishType, samples });
   },
@@ -639,8 +637,8 @@ app.registerModule("workspace.taskResult", {
   validateTaskResultPayload(payload, finishTask = false) {
     payload = this.normalizeTaskResultFinishPayload(payload);
     if (!payload.result) return "请选择通过 / 不通过。";
-    if (!payload.user) return "请选择操作人。请先在项目人员配置中新增测试人员。";
-    const userCheck = this.validatePersonForScope(payload.user, "tester", "操作人");
+    if (!payload.user) return "请选择结果录入人。请先在项目人员配置中新增测试人员。";
+    const userCheck = this.validatePersonForScope(payload.user, "tester", "结果录入人");
     if (!userCheck.ok) return userCheck.msg;
     if (finishTask && payload.finishType === "异常终止" && payload.result !== "不通过") {
       return "没有完成预定计划时，结果必须选择不通过。";
@@ -662,7 +660,7 @@ app.registerModule("workspace.taskResult", {
   validateTaskResultMemberFields(payload) {
     payload = this.normalizeTaskResultFinishPayload(payload);
     if (payload.user) {
-      const userCheck = this.validatePersonForScope(payload.user, "tester", "操作人");
+      const userCheck = this.validatePersonForScope(payload.user, "tester", "结果录入人");
       if (!userCheck.ok) return userCheck.msg;
     }
     const editableSamples = (payload.samples || []).filter(x => !x.currentEditLocked);
@@ -689,7 +687,7 @@ app.registerModule("workspace.taskResult", {
     this.clearTaskResultValidationMarks();
     if (!finishTask) return;
     if (!payload.result) this.markTaskResultInvalid(document.getElementById("taskResultValue"), "结束任务前必须选择通过 / 不通过");
-    if (!payload.user || !this.validatePersonForScope(payload.user, "tester", "操作人").ok) this.markTaskResultInvalid(document.getElementById("taskResultUser"), "结束任务前必须选择测试人员作为操作人");
+    if (!payload.user || !this.validatePersonForScope(payload.user, "tester", "结果录入人").ok) this.markTaskResultInvalid(document.getElementById("taskResultUser"), "结束任务前必须选择测试人员作为结果录入人");
     document.querySelectorAll(".task-result-sample-row").forEach((row, idx) => {
       const item = payload.samples[idx];
       if (!item) return;
@@ -714,8 +712,8 @@ app.registerModule("workspace.taskResult", {
 
   markTaskResultMemberValidation(payload) {
     this.clearTaskResultValidationMarks();
-    if (payload.user && !this.validatePersonForScope(payload.user, "tester", "操作人").ok) {
-      this.markTaskResultInvalid(document.getElementById("taskResultUser"), "操作人必须选择测试人员");
+    if (payload.user && !this.validatePersonForScope(payload.user, "tester", "结果录入人").ok) {
+      this.markTaskResultInvalid(document.getElementById("taskResultUser"), "结果录入人必须选择测试人员");
     }
     document.querySelectorAll(".task-result-sample-row").forEach((row, idx) => {
       const item = payload.samples?.[idx];
@@ -771,9 +769,10 @@ app.registerModule("workspace.taskResult", {
 
 
   syncTaskResultSampleProblems(sample, item, ctx = {}) {
-    if (!sample) return [];
+    if (!sample) return item.problemRecords || [];
     const taskLabel = this.sampleTaskLabelFromCtx(ctx);
-    const records = (item.problemRecords || []).map(record => ({
+    const records = this.mergeProblemPhotoRecords(sample.problemRecords || [], item.problemRecords || [], item.problemRecordsBaseline).map(record => ({
+      ...record,
       id: record.id || Utils.id("problem_"),
       description: String(record.description || "").trim(),
       source: String(record.source || "手动补录").trim(),
@@ -783,27 +782,33 @@ app.registerModule("workspace.taskResult", {
     if (newProblem && !Utils.isNoSampleIssueText(newProblem)) {
       const newRecord = {
         id: Utils.id("problem_"),
+        createdAt: Utils.now(),
         description: newProblem,
         source: "测试任务",
-        taskLabel
+        taskLabel,
+        taskLabelFormat: "project-stage-scheme-task",
+        taskId: ctx.taskId || "",
+        projectId: ctx.projectId || "",
+        stageId: ctx.stageId || "",
+        photoIds: [...new Set((item.photos || []).map(photo => photo.id).filter(Boolean))]
       };
-      const exists = records.some(record =>
+      const exists = records.find(record =>
         record.description === newRecord.description &&
         record.source === newRecord.source &&
-        record.taskLabel === newRecord.taskLabel
+        (ctx.taskId && record.taskId === ctx.taskId || this.sampleProblemTaskLabel(record) === newRecord.taskLabel)
       );
       if (!exists) records.push(newRecord);
+      else exists.photoIds = [...new Set([...(exists.photoIds || []), ...newRecord.photoIds])];
     }
     if (ctx.mutateSample !== false) {
-      sample.problemRecords = records;
-      sample.initialResults = records.map(record => record.description);
-      sample.initialResult = sample.initialResults.join("\n");
+      this.replaceSampleProblemRecords(sample, records);
     }
     return records;
   },
 
   saveTaskResultDraft(project, stage, task, payload) {
     const ctx = {
+      project, stage, task,
       projectId: project.id,
       stageId: stage.id,
       taskId: task.id,
@@ -818,7 +823,10 @@ app.registerModule("workspace.taskResult", {
       return {
         ...item,
         problem: "",
-        problemRecords: problemRecords.length ? problemRecords : (item.problemRecords || [])
+        // Once a new problem is promoted to the table, its images belong to that
+        // record. Do not attach them to the next new problem on reopening.
+        photos: item.problem && !Utils.isNoSampleIssueText(item.problem) ? [] : (item.photos || []),
+        problemRecords
       };
     });
     task.resultDraft = {
@@ -841,6 +849,7 @@ app.registerModule("workspace.taskResult", {
     payload.samples.forEach(item => {
       const found = this.findSample(item.sid);
       item.problemRecords = this.syncTaskResultSampleProblems(found?.sample, item, {
+        project, stage, task,
         projectId: project.id,
         stageId: stage.id,
         taskId: task.id,
@@ -943,12 +952,14 @@ app.registerModule("workspace.taskResult", {
     return sa.every((item, i) => {
       const o = sb[i];
       if (!o) return false;
+      if ((item.sid || item.sampleId || "") !== (o.sid || o.sampleId || "")) return false;
       if (!!item.currentEditLocked !== !!o.currentEditLocked) return false;
       if (item.state !== o.state || item.fault !== o.fault || item.destination !== o.destination) return false;
       if (item.destLocation !== o.destLocation || item.accountOwner !== o.accountOwner || item.receiver !== o.receiver || item.problem !== o.problem) return false;
-      const ra = (item.problemRecords || []).map(r => r.description || "").filter(Boolean).sort().join("|");
-      const rb = (o.problemRecords || []).map(r => r.description || "").filter(Boolean).sort().join("|");
-      return ra === rb;
+      const problemKey = records => JSON.stringify((records || []).filter(r => r.description).map(r =>
+        JSON.stringify([r.id || "", r.description, r.source || "手动补录", r.taskLabel || "", [...new Set(r.photoIds || [])].sort()])).sort());
+      const photoKey = photos => JSON.stringify((photos || []).map(photo => String(photo.id || photo.url || "")).filter(Boolean).sort());
+      return problemKey(item.problemRecords) === problemKey(o.problemRecords) && photoKey(item.photos) === photoKey(o.photos);
     });
   },
 
@@ -963,12 +974,16 @@ app.registerModule("workspace.taskResult", {
 
   restoreTaskResultSaveSnapshot(snapshot) {
     if (!snapshot) return;
+    if (this.isDataSnapshotCurrent?.(snapshot.data) === false) return;
     this.restoreDataSnapshot(snapshot.data);
     this._baseData = snapshot.baseData;
     this._lastTaskMutationError = null;
   },
 
   async refreshTaskAfterAlreadyFinished(projectId, stageId) {
+    if (typeof this.refreshAfterMutationRevisionConflict === "function") {
+      return this.refreshAfterMutationRevisionConflict();
+    }
     if (!this.fetchProjectDetail || !this.mergeProjectDetail) return;
     try {
       this.updateServerStatus?.("刷新任务");
@@ -988,6 +1003,10 @@ app.registerModule("workspace.taskResult", {
   },
 
   async saveTaskResult(projectId, stageId, taskId, finishTask = false) {
+    if (this._taskResultPhotoUploads > 0) {
+      Utils.toast("结果图片仍在上传，请等待上传完成后保存。");
+      return true;
+    }
     const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
     if (!p || !s || !t) return false;
     if (finishTask && this.isTaskCompleted(t)) return false;
@@ -1002,7 +1021,9 @@ app.registerModule("workspace.taskResult", {
         return false;
       }
 
-      const memberError = this.validateTaskResultMemberFields(payload);
+      // An unfinished draft is a private task record, not an assignment to the archive.
+      // Required people and destinations are validated only when synchronizing results.
+      const memberError = this.isTaskCompleted(t) ? this.validateTaskResultMemberFields(payload) : "";
       if (memberError) {
         this.markTaskResultMemberValidation(payload);
         Utils.toast(memberError);
@@ -1083,9 +1104,13 @@ app.registerModule("workspace.taskResult", {
 
   // 上传结果（完成前后均可）
   async uploadResult(projectId, stageId, taskId) {
-    const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
+    const dialogRequest = this.beginDialogRequest?.();
+    let { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
     if (!t) return;
     if (this.taskFlowStatus(t) === "待下发") { alert("任务尚未启动。"); return; }
+    const request = this._taskResultOpenSequence = (this._taskResultOpenSequence || 0) + 1;
+    const modalId = this._currentModalId;
+    const viewKey = JSON.stringify(this.view || {});
     const entries = this.taskResultSampleEntries(t);
     const resultSampleIds = entries.map(item => item.sampleId || item.sid).filter(Boolean);
     if (typeof this.prepareTaskActionSamples === "function") {
@@ -1095,6 +1120,10 @@ app.registerModule("workspace.taskResult", {
       const loadingSamples = this.ensureTaskReferenceSamplesLoaded?.(t);
       if (loadingSamples?.then) await loadingSamples;
     }
+    if (request !== this._taskResultOpenSequence || modalId !== this._currentModalId || viewKey !== JSON.stringify(this.view || {})) return;
+    if (this.isDialogRequestCurrent?.(dialogRequest) === false) return;
+    ({ p, s, t } = this.getProjectStageTask(projectId, stageId, taskId));
+    if (!t || this.taskFlowStatus(t) === "待下发") return;
     const addOnly = this.isTaskCompleted(t);
     const draft = addOnly ? null : (t.resultDraft || {});
     const resultValue = this.normalizeTaskResultValue(draft?.result || "");
@@ -1105,36 +1134,46 @@ app.registerModule("workspace.taskResult", {
       projectId,
       stageId,
       taskId,
-      taskLabel: [p?.name, s?.name, t.testItem].filter(Boolean).join(" - ")
+      taskLabel: this.sampleTaskLabelFromCtx({ project: p, stage: s, task: t })
     };
 
-    const resultModalId = this.showModal(addOnly ? "追加测试结果" : "测试结果录入", `
+    const resultTitle = addOnly ? "追加测试结果" : "测试结果录入";
+    const resultTitleNode = document.createElement("span");
+    resultTitleNode.className = "task-result-title";
+    resultTitleNode.textContent = resultTitle;
+    const resultHelp = document.createElement("button");
+    resultHelp.type = "button";
+    resultHelp.className = "project-config-help-button";
+    resultHelp.textContent = "?";
+    resultHelp.title = addOnly
+      ? "任务已结束。追加结果会同步样机档案，不改变任务结束状态。"
+      : "保存草稿允许暂缺人员或去向，仅记录本次填写；结束任务时须补全并校验，成功后才同步到样机档案。";
+    resultHelp.setAttribute("aria-label", resultHelp.title);
+    resultTitleNode.appendChild(resultHelp);
+    const resultModalId = this.showModal(resultTitle, `
       <div class="task-result-layout">
         <section class="task-result-fixed-panel">
-          <div class="task-result-form-grid">
-            <div class="form-group"><label class="req">结果</label><select id="taskResultValue" data-app-action="task-result-value" data-app-events="change"><option value="">请选择通过 / 不通过</option>${resultOptions}</select></div>
-            <div class="form-group"><label class="req">操作人</label>${this.projectMemberSelectHtml("taskResultUser", draft?.user || "", "请选择操作人", { scope: "tester" })}</div>
+          <div class="task-result-form-grid ${addOnly ? "is-completed" : ""}">
+            <div class="form-group"><label class="req" for="taskResultValue">测试结果</label><select id="taskResultValue" data-app-action="task-result-value" data-app-events="change"><option value="">请选择结果</option>${resultOptions}</select></div>
+            <div class="form-group"><label class="req" for="taskResultUser">结果录入人</label>${this.projectMemberSelectHtml("taskResultUser", draft?.user || "", "请选择结果录入人", { scope: "tester", showRole: true })}</div>
             ${addOnly
-              ? `<div class="form-group"><label>结果日期</label><input type="date" id="taskResultDate" value="${Utils.today()}"><input type="hidden" id="taskFinishType" value="正常完成"></div>`
-              : `<div class="form-group"><label>结果日期</label><input type="date" id="taskResultDate" value="${Utils.esc(resultDate)}"></div>
-                <div class="form-group"><label>结束任务方式</label><select id="taskFinishType" class="hint-select" data-app-action="task-result-finish-type" data-app-events="change"><option value="正常完成" ${finishType === "正常完成" ? "selected" : ""}>完成计划，正常结束</option><option value="异常终止" ${finishType === "异常终止" ? "selected" : ""}>未完成计划，异常结束</option></select></div>`}
+              ? `<div class="form-group"><label for="taskResultDate">结果日期</label><input type="date" id="taskResultDate" value="${Utils.today()}"><input type="hidden" id="taskFinishType" value="正常完成"></div>`
+              : `<div class="form-group"><label for="taskResultDate">结果日期</label><input type="date" id="taskResultDate" value="${Utils.esc(resultDate)}"></div>
+                <div class="form-group"><label for="taskFinishType">结束任务方式</label><select id="taskFinishType" class="hint-select" data-app-action="task-result-finish-type" data-app-events="change"><option value="正常完成" ${finishType === "正常完成" ? "selected" : ""}>完成计划，正常结束</option><option value="异常终止" ${finishType === "异常终止" ? "selected" : ""}>未完成计划，异常结束</option></select></div>`}
           </div>
         </section>
         <section class="task-result-scroll-panel">
           <div class="task-result-section-title">
-            <div>
-              <b>每台样机结果与去向</b>
-              <span>先确认样机结果，再填写去向和接收人；结束任务或向已结束任务追加结果后，问题表才会同步到样机档案。</span>
-            </div>
+            <b>样机结果与去向</b>
+            <span>${entries.length} 台样机</span>
           </div>
           <div class="task-result-sample-list">${this.taskResultSampleRowsHtml(t, draft)}</div>
         </section>
       </div>
     `, () => this.saveTaskResult(projectId, stageId, taskId, false), addOnly ? "保存并同步" : "保存草稿", {
       className: "task-result-modal",
-      headerHint: addOnly
-        ? `任务：${t.testItem || "-"}；任务已结束，可追加结果并同步样机当前去向、位置和人员，不改变任务结束状态。`
-        : `任务：${t.testItem || "-"}；“保存草稿”只保存本任务录入，不改变样机档案；“结束任务并同步”会结束任务，并把本次样机去向、人员和新增问题同步到样机档案。`
+      titleNodes: [resultTitleNode],
+      headerHint: t.testItem || "未命名测试任务"
     });
     document.querySelectorAll(".task-result-sample-row").forEach(row => this.renderTaskResultPhotoList(row));
     this.syncTaskResultFinishType();

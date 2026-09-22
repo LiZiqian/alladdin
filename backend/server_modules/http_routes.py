@@ -15,7 +15,7 @@ def path_parts(path: str) -> list[str]:
 
 def sample_photo_route(path: str) -> tuple[str, str | None] | None:
     parts = path_parts(path)
-    if len(parts) >= 4 and parts[0] == "api" and parts[1] == "samples" and parts[3] == "photos":
+    if len(parts) in (4, 5) and parts[0] == "api" and parts[1] == "samples" and parts[3] == "photos":
         sample_id = unquote(parts[2])
         photo_id = unquote(parts[4]) if len(parts) >= 5 else None
         return sample_id, photo_id

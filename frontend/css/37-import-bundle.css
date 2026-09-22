@@ -50,6 +50,16 @@
   overflow: auto;
 }
 
+.import-bundle-modal input[type="checkbox"],
+.import-bundle-modal input[type="radio"] {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+  vertical-align: middle;
+}
+
 .import-section {
   margin-bottom: 16px;
 }
@@ -64,7 +74,7 @@
 
 .import-source-grid {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 4px 12px;
   font-size: 13px;
 }
@@ -74,6 +84,7 @@
   background: var(--surface);
   padding: 1px 6px;
   border-radius: 3px;
+  overflow-wrap: anywhere;
 }
 
 .import-stats {
@@ -114,7 +125,8 @@
   color: var(--text);
   font-size: 13px;
   cursor: pointer;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .import-tree-row input {
@@ -340,12 +352,13 @@
 
 .conflict-compare {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
 
 .conflict-col {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -398,6 +411,10 @@
   align-items: center;
   gap: 4px;
   font-size: 12px;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* ── 按钮小号 ── */
@@ -407,4 +424,25 @@
   font-size: 11px;
   margin-right: 6px;
   margin-bottom: 6px;
+}
+
+@media (max-width: 640px) {
+  .import-selection-grid,
+  .conflict-compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .field-choice-row {
+    padding-left: 0;
+    gap: 6px 12px;
+  }
+
+  .conflict-card-header {
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .conflict-card-body {
+    padding: 10px;
+  }
 }

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import base64
 import mimetypes
 import re
 import sqlite3
+import sys
 import uuid
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
-from urllib.parse import quote, unquote_to_bytes
+from urllib.parse import quote
 
 
 @dataclass(frozen=True)
@@ -16,6 +18,76 @@ class AssetStorageContext:
     data_dir: Path
     sample_data_dir: Path
     now_iso: Callable[[], str]
+
+
+# File effects belong to the current explicit SQLite write scope. A token reset
+# prevents a failed request from leaving a journal attached to the worker thread.
+_FILE_TRANSACTION: ContextVar[dict | None] = next((
+    module._FILE_TRANSACTION for name in ("server_modules.sample_assets", "backend.server_modules.sample_assets")
+    if (module := sys.modules.get(name)) is not None and hasattr(module, "_FILE_TRANSACTION")
+), ContextVar("sample_asset_files", default=None))
+
+
+def has_asset_file_transaction(conn: sqlite3.Connection) -> bool:
+    active = _FILE_TRANSACTION.get()
+    return active is not None and active["conn"] is conn
+
+
+@contextmanager
+def asset_file_transaction(conn: sqlite3.Connection, *, owns_transaction: bool = True):
+    active = _FILE_TRANSACTION.get()
+    if active is not None and active["conn"] is conn:
+        yield
+        return
+    journal = {"conn": conn, "created": {}, "removed": {}, "owns_transaction": owns_transaction}
+    token = _FILE_TRANSACTION.set(journal)
+    try:
+        yield
+    finally:
+        _FILE_TRANSACTION.reset(token)
+        # The caller must settle SQLite first. Never delete while an enclosing
+        # transaction can still roll back, or after an unknown connection error.
+        if journal["created"] or journal["removed"]:
+            try:
+                if not conn.in_transaction:
+                    # Serialize the reference check with other writers so a
+                    # revived asset cannot acquire its path just before unlink.
+                    with conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        for ctx, relative_path in {**journal["created"], **journal["removed"]}.values():
+                            target = path_inside_data(ctx, relative_path)
+                            # Legacy rows may contain ./, ../ or backslashes.
+                            # The filename index limits canonical path checks to
+                            # candidate aliases instead of scanning every asset.
+                            candidates = conn.execute(
+                                "SELECT relative_path FROM sample_assets WHERE deleted_at IS NULL AND "
+                                "(relative_path = ? COLLATE NOCASE OR file_name = ? COLLATE NOCASE)",
+                                (relative_path, target.name),
+                            ).fetchall()
+                            referenced = any(
+                                str(path_inside_data(ctx, str(row["relative_path"]))).casefold() == str(target).casefold()
+                                for row in candidates
+                            )
+                            if not referenced:
+                                _unlink_asset_relative_paths(ctx, [relative_path])
+            except Exception as exc:
+                print(f"[WARN] 清理事务照片文件失败：{exc}")
+
+
+def _journal_file(ctx: AssetStorageContext, relative_path: str, operation: str) -> bool:
+    journal = _FILE_TRANSACTION.get()
+    if journal is None:
+        return False
+    _require_file_transaction_owner(allow_settled_delete=operation == "removed")
+    target = path_inside_data(ctx, relative_path)
+    journal[operation][str(target).casefold()] = (ctx, relative_path)
+    return True
+
+
+def _require_file_transaction_owner(*, allow_settled_delete: bool = False) -> None:
+    journal = _FILE_TRANSACTION.get()
+    if journal is not None and not journal["owns_transaction"] and (not allow_settled_delete or journal["conn"].in_transaction):
+        raise RuntimeError("文件写入或删除需要由外层 asset_file_transaction 管理数据库提交")
 
 
 def safe_segment(value: object, fallback: str = "item") -> str:
@@ -53,7 +125,7 @@ def path_inside_data(ctx: AssetStorageContext, relative_path: str) -> Path:
 
 def normalize_photo_meta(ctx: AssetStorageContext, sample_id: str, photo: dict) -> dict:
     photo_id = str(photo.get("id") or f"photo_{uuid.uuid4().hex}")
-    thumb_id = str(photo.get("thumbId") or photo.get("thumbnailId") or "")
+    thumb_id = str(photo.get("thumbId") or "")
     name = str(photo.get("name") or photo.get("originalName") or "外观照片")
     mime_type = str(photo.get("type") or photo.get("mimeType") or mimetypes.guess_type(name)[0] or "application/octet-stream")
     relative_path = str(photo.get("relativePath") or "")
@@ -68,14 +140,13 @@ def normalize_photo_meta(ctx: AssetStorageContext, sample_id: str, photo: dict) 
         "relativePath": relative_path,
         "uploadedAt": uploaded_at,
     }
-    thumb_url = str(photo.get("thumbUrl") or photo.get("thumbnailUrl") or "")
-    thumb_relative_path = str(photo.get("thumbRelativePath") or photo.get("thumbnailRelativePath") or "")
+    thumb_url = str(photo.get("thumbUrl") or "")
+    thumb_relative_path = str(photo.get("thumbRelativePath") or "")
     if thumb_id or thumb_url or thumb_relative_path:
         thumb_id = thumb_id or thumbnail_asset_id(photo_id)
         meta.update({
             "thumbId": thumb_id,
             "thumbUrl": thumb_url or url_for_asset(sample_id, thumb_id),
-            "thumbnailUrl": thumb_url or url_for_asset(sample_id, thumb_id),
             "thumbRelativePath": thumb_relative_path,
         })
     return meta
@@ -86,7 +157,6 @@ def attach_thumbnail_meta(photo_meta: dict, thumb_meta: dict | None) -> dict:
         return photo_meta
     photo_meta["thumbId"] = thumb_meta["id"]
     photo_meta["thumbUrl"] = thumb_meta["url"]
-    photo_meta["thumbnailUrl"] = thumb_meta["url"]
     photo_meta["thumbRelativePath"] = thumb_meta.get("relativePath", "")
     photo_meta["thumbType"] = thumb_meta.get("type", "")
     photo_meta["thumbSize"] = thumb_meta.get("size", 0)
@@ -104,13 +174,26 @@ def write_sample_asset_file(
     uploaded_at: str | None = None,
     file_prefix: str = "photo",
 ) -> dict:
+    _require_file_transaction_owner()
     ext = file_ext(original_name, mime_type)
     file_name = f"{safe_segment(asset_id, file_prefix)}{ext}"
-    target_dir = ctx.sample_data_dir / safe_segment(sample_id, "sample") / "photos"
+    target_dir = ctx.sample_data_dir / safe_segment(sample_id, "sample") / ("files" if file_prefix == "file" else "photos")
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / file_name
-    target.write_bytes(content)
+    while True:
+        try:
+            with target.open("xb") as stream:
+                try:
+                    stream.write(content)
+                except BaseException:
+                    stream.close()
+                    target.unlink(missing_ok=True)
+                    raise
+            break
+        except FileExistsError:
+            target = target_dir / f"{safe_segment(asset_id, file_prefix)}_{uuid.uuid4().hex}{ext}"
     relative_path = target.relative_to(ctx.data_dir).as_posix()
+    _journal_file(ctx, relative_path, "created")
     created_at = uploaded_at or ctx.now_iso()
     return {
         "id": asset_id,
@@ -134,6 +217,7 @@ def upsert_sample_asset_meta(
 ) -> None:
     asset_id = str(meta.get("id") or "")
     relative_path = str(meta.get("relativePath") or "")
+    validate_asset_reference(ctx, conn, sample_id, asset_id, kind, relative_path)
     file_name = Path(relative_path).name if relative_path else safe_segment(asset_id, "asset")
     conn.execute(
         """
@@ -167,6 +251,30 @@ def upsert_sample_asset_meta(
     )
 
 
+def validate_asset_reference(ctx, conn, sample_id, asset_id, kind, relative_path=""):
+    if not asset_id or not sample_id:
+        raise ValueError("照片编号和样机编号不能为空")
+    existing = conn.execute("SELECT * FROM sample_assets WHERE id = ?", (asset_id,)).fetchone()
+    if existing and (str(existing["sample_id"]) != str(sample_id) or existing["kind"] != kind):
+        raise ValueError("照片编号已被其他样机或资产类型使用，不能修改归属")
+    if relative_path:
+        target = path_inside_data(ctx, relative_path)
+        if ctx.sample_data_dir.resolve() not in target.parents:
+            raise ValueError("照片路径必须位于样机资产目录")
+        canonical = target.relative_to(ctx.data_dir.resolve()).as_posix()
+        if relative_path != canonical:
+            raise ValueError("照片路径必须使用规范的相对路径")
+        claimed = conn.execute(
+            "SELECT id FROM sample_assets WHERE relative_path = ? COLLATE NOCASE AND id <> ? LIMIT 1",
+            (relative_path, asset_id),
+        ).fetchone()
+        if claimed:
+            raise ValueError("照片路径已被其他资产使用")
+        if existing and existing["relative_path"] and str(existing["relative_path"]).casefold() != relative_path.casefold():
+            raise ValueError("已有照片编号不能改用其他文件路径")
+    return existing
+
+
 def store_asset_bytes(
     ctx: AssetStorageContext,
     conn: sqlite3.Connection,
@@ -180,6 +288,12 @@ def store_asset_bytes(
     uploaded_by: str = "",
 ) -> dict:
     asset_id = photo_id or f"photo_{uuid.uuid4().hex}"
+    existing = validate_asset_reference(ctx, conn, sample_id, asset_id, "photo")
+    if existing:
+        return normalize_photo_meta(ctx, sample_id, {
+            "id": asset_id, "name": existing["original_name"], "type": existing["mime_type"],
+            "size": existing["size"], "relativePath": existing["relative_path"], "uploadedAt": existing["created_at"],
+        })
     meta = write_sample_asset_file(
         ctx,
         sample_id,
@@ -190,7 +304,11 @@ def store_asset_bytes(
         uploaded_at=uploaded_at,
         file_prefix="photo",
     )
-    upsert_sample_asset_meta(ctx, conn, sample_id, meta, "photo", uploaded_by=uploaded_by)
+    try:
+        upsert_sample_asset_meta(ctx, conn, sample_id, meta, "photo", uploaded_by=uploaded_by)
+    except Exception:
+        _unlink_asset_relative_paths(ctx, [meta["relativePath"]])
+        raise
     return meta
 
 
@@ -207,6 +325,12 @@ def store_thumbnail_bytes(
     uploaded_by: str = "",
 ) -> dict:
     asset_id = thumbnail_asset_id(photo_id)
+    existing = validate_asset_reference(ctx, conn, sample_id, asset_id, "photo_thumb")
+    if existing:
+        return normalize_photo_meta(ctx, sample_id, {
+            "id": asset_id, "name": existing["original_name"], "type": existing["mime_type"],
+            "size": existing["size"], "relativePath": existing["relative_path"], "uploadedAt": existing["created_at"],
+        })
     meta = write_sample_asset_file(
         ctx,
         sample_id,
@@ -217,37 +341,20 @@ def store_thumbnail_bytes(
         uploaded_at=uploaded_at,
         file_prefix="thumb",
     )
-    upsert_sample_asset_meta(ctx, conn, sample_id, meta, "photo_thumb", uploaded_by=uploaded_by)
-    return meta
-
-
-def materialize_data_url_photo(ctx: AssetStorageContext, conn: sqlite3.Connection, sample_id: str, photo: dict) -> dict | None:
-    data_url = str(photo.get("dataUrl") or "")
-    match = re.match(r"^data:([^;,]+)?(;base64)?,(.*)$", data_url, flags=re.S)
-    if not match:
-        return None
-    mime_type = match.group(1) or photo.get("type") or "application/octet-stream"
-    is_base64 = bool(match.group(2))
-    payload = match.group(3) or ""
     try:
-        content = base64.b64decode(payload, validate=False) if is_base64 else unquote_to_bytes(payload)
+        upsert_sample_asset_meta(ctx, conn, sample_id, meta, "photo_thumb", uploaded_by=uploaded_by)
     except Exception:
-        return None
-    return store_asset_bytes(
-        ctx,
-        conn,
-        sample_id,
-        content,
-        str(photo.get("name") or "外观照片"),
-        str(mime_type),
-        photo_id=str(photo.get("id") or f"photo_{uuid.uuid4().hex}"),
-        uploaded_at=str(photo.get("uploadedAt") or ctx.now_iso()),
-    )
+        _unlink_asset_relative_paths(ctx, [meta["relativePath"]])
+        raise
+    return meta
 
 
 def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connection, sample_id: str, photo: dict) -> dict:
     meta = normalize_photo_meta(ctx, sample_id, photo)
     relative_path = meta.get("relativePath") or ""
+    existing = validate_asset_reference(ctx, conn, sample_id, meta["id"], "photo", relative_path)
+    if not relative_path:
+        raise ValueError("照片缺少 relativePath；请使用当前资产元数据。")
     file_name = Path(relative_path).name if relative_path else safe_segment(meta["id"], "photo")
     conn.execute(
         """
@@ -279,6 +386,7 @@ def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connecti
     thumb_relative_path = meta.get("thumbRelativePath") or ""
     if thumb_relative_path:
         thumb_id = meta.get("thumbId") or thumbnail_asset_id(meta["id"])
+        validate_asset_reference(ctx, conn, sample_id, thumb_id, "photo_thumb", thumb_relative_path)
         thumb_file_name = Path(thumb_relative_path).name
         conn.execute(
             """
@@ -299,11 +407,11 @@ def upsert_existing_photo_asset(ctx: AssetStorageContext, conn: sqlite3.Connecti
             (
                 thumb_id,
                 sample_id,
-                str(photo.get("thumbName") or photo.get("thumbnailName") or f"{meta['name']} 缩略图"),
+                str(photo.get("thumbName") or f"{meta['name']} 缩略图"),
                 thumb_file_name,
                 thumb_relative_path,
-                str(photo.get("thumbType") or photo.get("thumbnailType") or "image/jpeg"),
-                int(photo.get("thumbSize") or photo.get("thumbnailSize") or 0),
+                str(photo.get("thumbType") or "image/jpeg"),
+                int(photo.get("thumbSize") or 0),
                 meta["uploadedAt"],
             ),
         )
@@ -317,11 +425,8 @@ def normalize_sample_photos(ctx: AssetStorageContext, conn: sqlite3.Connection, 
     for raw_photo in sample.get("photos", []) or []:
         if not isinstance(raw_photo, dict):
             continue
-        if raw_photo.get("dataUrl"):
-            meta = materialize_data_url_photo(ctx, conn, sample_id, raw_photo)
-            if meta:
-                normalized.append(meta)
-            continue
+        if "dataUrl" in raw_photo:
+            raise ValueError("不支持内嵌照片；请使用照片上传接口或 V2 资产索引。")
         if raw_photo.get("url") or raw_photo.get("relativePath"):
             normalized.append(upsert_existing_photo_asset(ctx, conn, sample_id, raw_photo))
     return normalized
@@ -339,9 +444,16 @@ def remove_empty_dirs_up_to(path: Path, stop_dir: Path) -> None:
 
 
 def unlink_asset_relative_paths(ctx: AssetStorageContext, relative_paths: list[str], *, warn_label: str = "删除资产文件") -> None:
+    immediate = [path for path in relative_paths if path and not _journal_file(ctx, path, "removed")]
+    _unlink_asset_relative_paths(ctx, immediate, warn_label=warn_label)
+
+
+def _unlink_asset_relative_paths(ctx: AssetStorageContext, relative_paths: list[str], *, warn_label: str = "删除资产文件") -> None:
     for relative_path in relative_paths:
         try:
             target = path_inside_data(ctx, relative_path)
+            if ctx.sample_data_dir.resolve() not in target.parents:
+                raise ValueError("照片路径必须位于样机资产目录")
             if target.is_file():
                 target.unlink()
                 remove_empty_dirs_up_to(target.parent, ctx.sample_data_dir)

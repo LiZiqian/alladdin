@@ -2,6 +2,17 @@
    阶段配置 — BOM 上料清单、测试策略表、用例下拉框
    ======================================== */
 
+.stage-config-title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.stage-config-title .project-config-help-text {
+  max-width: min(360px, calc(100vw - 64px));
+  white-space: pre-line;
+}
+
 .strategy-config-table {
   table-layout: fixed;
   width: 100%;
@@ -25,6 +36,7 @@
 .strategy-config-table .col-strategy-sku { width: 92px }
 .bom-config-table .col-action,
 .strategy-config-table .col-action { width: 86px }
+
 .strategy-config-table input[data-field="sampleSize"] {
   text-align: center;
 }
@@ -68,15 +80,18 @@
 /* ---- 策略表正向/反向搜索 ---- */
 .strategy-search-bar {
   display: grid;
-  grid-template-columns: minmax(220px, 320px) minmax(220px, 320px) max-content max-content;
-  align-items: end;
+  grid-template-columns: minmax(200px, 1fr) minmax(200px, 1fr) max-content max-content;
+  align-items: center;
   column-gap: 10px;
   row-gap: 8px;
   padding: 10px 0 12px;
+  overflow-x: auto;
 }
 .strategy-search-field {
   display: grid;
-  gap: 5px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
   width: auto;
   min-width: 0;
   margin: 0;
@@ -84,7 +99,8 @@
 .strategy-search-field span {
   font-size: 12px;
   font-weight: 800;
-  color: var(--muted);
+  color: var(--brand-navy);
+  white-space: nowrap;
 }
 .strategy-search-field input {
   height: 34px;
@@ -94,7 +110,7 @@
   height: 34px;
   display: inline-flex;
   align-items: center;
-  color: var(--muted);
+  color: var(--brand-navy);
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
@@ -102,15 +118,6 @@
 .strategy-search-bar .btn {
   height: 34px;
   white-space: nowrap;
-}
-
-@media (max-width: 900px) {
-  .strategy-search-bar {
-    grid-template-columns: 1fr;
-  }
-  .strategy-search-count {
-    justify-content: flex-start;
-  }
 }
 
 /* ---- Split tables: frozen area + independent horizontal scroll area ---- */
@@ -157,6 +164,11 @@
 .strategy-config-table th,
 .strategy-config-table td {
   border-right: 1px solid var(--border);
+  vertical-align: middle;
+}
+.strategy-scroll-table th:first-child,
+.strategy-scroll-table td:first-child {
+  border-left: 1px solid var(--border);
 }
 .strategy-frozen-table th:last-child,
 .strategy-frozen-table td:last-child {
@@ -278,3 +290,50 @@
 .strategy-config-table .col-sample-size input::placeholder { text-align: left }
 .strategy-config-table .col-strategy-sku { width: 92px }
 .strategy-config-table .col-action { width: 86px }
+
+/* Below this width the frozen columns consume the whole content area. Let
+   both halves scroll together so every field and SKU checkbox stays reachable. */
+@media (max-width: 1200px) {
+  .strategy-table {
+    grid-template-columns: 688px max-content;
+    overflow-x: auto;
+  }
+  .bom-table {
+    grid-template-columns: 224px max-content;
+    overflow-x: auto;
+  }
+  .strategy-table > .split-scroll,
+  .bom-table > .split-scroll {
+    overflow: visible;
+  }
+  .strategy-table > .split-scroll > table,
+  .bom-table > .split-scroll > table {
+    width: auto;
+  }
+}
+/* Combined scheme/material matrix: square grid with a pinned scheme column. */
+.stage-edit-panel { min-width: 0; }
+.stage-edit-panel .inline-stage-name { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.stage-edit-panel .inline-stage-name label { margin: 0; white-space: nowrap; }
+.stage-edit-panel .inline-stage-name input { width: min(300px, 100%); }
+.scheme-bom-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; color: var(--brand-navy); }
+.scheme-bom-actions { display: flex; gap: 8px; }
+.scheme-bom-scroll { max-width: 100%; max-height: 460px; overflow: auto; border: 1px solid var(--border); border-radius: 0; }
+.scheme-bom-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; color: var(--brand-navy); }
+.scheme-bom-table th, .scheme-bom-table td { padding: 5px 6px; border: 0; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; background: var(--card); }
+.scheme-bom-table tr > :last-child { border-right: 0; }
+.scheme-bom-table tbody tr:last-child > * { border-bottom: 0; }
+.scheme-bom-table thead th { position: sticky; top: 0; z-index: 2; height: 42px; background: var(--table-head-bg); text-align: center; }
+.scheme-bom-table .scheme-bom-name { position: sticky; left: 0; z-index: 1; }
+.scheme-bom-table thead .scheme-bom-name { z-index: 3; }
+.scheme-bom-heading { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.scheme-bom-table thead .scheme-bom-heading { padding-left: 30px; }
+.scheme-bom-table thead input, .scheme-bom-table .scheme-bom-name input { text-align: center; }
+.scheme-bom-index { width: 20px; flex: 0 0 20px; font-size: 12px; text-align: center; font-weight: 400; }
+.scheme-bom-table input, .scheme-bom-table textarea { width: 100%; min-width: 0; height: 32px; margin: 0; padding: 6px; border: 1px solid transparent; border-radius: 0; background: transparent; color: var(--brand-navy); font: inherit; font-size: 12px; box-shadow: none; }
+.scheme-bom-table textarea { display: block; min-height: 32px; resize: vertical; line-height: 18px; }
+.scheme-bom-table input:hover, .scheme-bom-table textarea:hover { background: var(--surface-hover); }
+.scheme-bom-table input:focus, .scheme-bom-table textarea:focus { outline: none; border-color: var(--brand-navy); background: var(--card); }
+.scheme-bom-heading .stage-row-delete-btn { flex: 0 0 26px; width: 26px; color: var(--brand-navy); }
+.scheme-bom-heading .stage-row-delete-btn:disabled { opacity: .25; cursor: default; }
+.scheme-bom-empty { font-size: 12px; color: var(--brand-navy); text-align: center !important; }

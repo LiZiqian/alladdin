@@ -1,59 +1,78 @@
 /* ========================================
-   全平台色板：中性层级 + 蓝 / 紫 / 绿 / 黄 / 红语义色。
+   全平台色板：阿拉丁藏蓝 / 金色品牌色 + 中性层级 + 独立业务状态色。
    深色用于操作与选中态，浅色用于统计与状态；浅底配深色边框和 text。
    正常完成固定深绿底白字。组件与业务状态只引用变量。
    ======================================== */
 
 :root {
-  /* 中性灰层级：页面底色、卡片内底色、悬停底色、表头与统一边界。 */
-  --bg: #d9dadb;
-  --card: #fff;
-  --surface: #f0f1f2;
-  --surface-hover: #e4e6e8;
-  --table-head-bg: #e0e2e4;
-  --heading: #182334;
-  --text: #263142;
-  --muted: #505d6c;
-  --border: #b3b4b5;
-  --gray: #707982;
-  --on-accent: #fff;
+  /* Logo 实色区域主色：藏蓝承担文字与主操作，金色承担品牌强调。 */
+  --brand-navy: #0c3143;
+  --brand-gold: #c88637;
 
-  /* 蓝：导航、普通操作、选中与信息提示。 */
-  --primary: #2563eb;
+  /* 页面底色固定；基础辅助色仅保留白色与灰色。内层/表头/悬停/禁用底色复用页面大背景。 */
+  --bg: #d9dadb;
+  --neutral-white: #fff;
+  --neutral-gray: #b3b4b5;
+  --card: var(--neutral-white);
+  --surface: var(--bg);
+  --surface-hover: var(--bg);
+  --table-head-bg: var(--bg);
+  --heading: var(--brand-navy);
+  --text: var(--brand-navy);
+  --muted: var(--neutral-gray);
+  --border: var(--neutral-gray);
+  --gray: var(--neutral-gray);
+  --on-accent: var(--neutral-white);
+
+  /* 品牌藏蓝：主色、边框、文字同色；浅背景透明，不额外铺底色。实色操作按钮配白字。 */
+  --primary: var(--brand-navy);
   --primary2: var(--primary);
-  --primary-hover: #1d4ed8;
-  --primary-text: #1d4ed8;
-  --primary-bg: #e9f0ff;
+  --primary-hover: #082534;
+  --primary-text: var(--brand-navy);
+  --primary-bg: transparent;
   --primary-border: var(--primary);
 
-  /* 紫：待下发、在位等待。 */
+  /* 重点蓝：总任务数、任务结果入口与测试类别；浅底配深蓝文字和蓝色边框。 */
+  --task-blue: #2563eb;
+  --task-blue-text: #1d4ed8;
+  --task-blue-bg: #caddf8;
+  --task-blue-border: var(--task-blue);
+  --task-blue-hover: var(--task-blue-text);
+
+  /* 金色：品牌标识、导航强调、重要入口；文字和边框统一主金色。 */
+  --accent: var(--brand-gold);
+  --accent-text: var(--brand-gold);
+  --accent-bg: #e6ddd3;
+  --accent-border: var(--brand-gold);
+
+  /* 待命紫：兰紫主色、深紫文字、浅丁香背景；用于待下发、在位等待。 */
   --purple: #7c3aed;
   --purple-text: #6d28d9;
-  --purple-bg: #eee1ff;
+  --purple-bg: #e8daf5;
   --purple-border: var(--purple);
 
-  /* 绿：进行中、通过、可用；完成使用更深的绿色。 */
-  --pass: #087d47;
-  --pass-text: #09633a;
-  --pass-bg: #def8e8;
+  /* OK绿：叶绿主色、深绿文字、浅薄荷背景；用于进行中、通过、可用。 */
+  --pass: #258351;
+  --pass-text: #1b5e3a;
+  --pass-bg: #c5e8d2;
   --pass-border: var(--pass);
   --complete: #174d32;
 
-  /* 黄：阻塞、重组、移除等需要留意的状态。 */
+  /* 警示黄色色系：主色/边框、深色文字、浅色背景；用于阻塞、重组、移除等需要留意的状态。 */
   --warn: #b85c00;
   --warn-text: #854300;
   --warn-bg: #fff0c2;
   --warn-border: var(--warn);
 
-  /* 红：故障、失败、异常与危险操作。 */
-  --danger: #ce273e;
-  --danger-text: #a91e32;
-  --danger-bg: #ffe8eb;
+  /* NG红：玫红主色、深红文字、浅蔷薇背景；用于故障、失败、异常与危险操作。 */
+  --danger: #ca4056;
+  --danger-text: #982c40;
+  --danger-bg: #f5c3cd;
   --danger-border: var(--danger);
 
-  --focus-ring: rgba(37, 99, 235, .24);
-  --danger-ring: rgba(206, 39, 62, .20);
-  --shadow: 0 8px 24px rgba(15, 23, 42, .06);
+  --focus-ring: rgba(12, 49, 67, .24);
+  --danger-ring: rgba(202, 64, 86, .20);
+  --shadow: 0 8px 24px rgba(12, 49, 67, .06);
   --radius: 12px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
 }

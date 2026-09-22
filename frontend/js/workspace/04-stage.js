@@ -11,19 +11,69 @@ app.registerModule("workspace.stage", {
 
   // ==================== 阶段 CRUD ====================
   inlineStageEditorHtml(stage) {
-    const skuNames = stage.skuNames?.length ? stage.skuNames : ["SKU1"];
     return `
       <div class="inline-stage-name">
-        <label>阶段名称<span class="req-star">*</span></label>
+        <label for="inlineStageName">阶段名称<span class="req-star">*</span></label>
         <input id="inlineStageName" value="${Utils.esc(stage.name || "")}" data-app-action="inline-stage-name" data-app-events="input focusout">
       </div>
-      <div class="inline-sku-editor">
-        <label>方案设置<span class="req-star">*</span></label>
-        <div id="inlineSkuList">
-          ${skuNames.map((name, idx) => this.inlineSkuRowHtml(name, idx)).join("")}
-        </div>
-        <button type="button" class="btn btn-sm btn-outline" data-app-action="inline-sku-add">+ 增加方案</button>
-      </div>`;
+      ${this.workspaceBomHtml(stage)}`;
+  },
+  renameMatrixSku(index, input) {
+    const stage = this.currentStage();
+    if (!stage || !stage.skuNames?.[index]) return;
+    const name = input.value.trim();
+    if (!name || stage.skuNames.some((other, i) => i !== index && other === name)) {
+      input.value = stage.skuNames[index];
+      Utils.toast(name ? "方案名称不能重复" : "方案名称不能为空");
+      return;
+    }
+    stage.skuNames[index] = name;
+    this.scheduleStageStrategySave(0, "update_stage_skus_inline", "编辑方案名称");
+    // Refresh labels in the strategy table without replacing the focused matrix.
+    document.querySelectorAll(".strategy-scroll-table thead th")[index]?.replaceChildren(document.createTextNode(name));
+  },
+  addMatrixSku() {
+    const stage = this.currentStage();
+    if (!stage) return;
+    stage.skuNames ||= [];
+    let number = stage.skuNames.length + 1;
+    while (stage.skuNames.includes("方案" + number)) number++;
+    stage.skuNames.push("方案" + number);
+    this.scheduleStageStrategySave(0, "update_stage_skus_inline", "新增方案");
+    this.render();
+  },
+  removeMatrixSku(index) {
+    const stage = this.currentStage();
+    if (!stage || !Number.isInteger(index) || index < 0 || index >= stage.skuNames.length || stage.skuNames.length <= 1) return;
+    this.showConfirm(`删除方案「${stage.skuNames[index]}」及其物料明细和测试配置？`, async () => {
+      if (this.currentStage() !== stage) return;
+      const draft = JSON.parse(JSON.stringify(stage));
+      const count = draft.skuNames.length;
+      draft.skuNames.splice(index, 1);
+      (draft.bom || []).forEach(material => {
+        for (let i = index + 1; i < count; i++) {
+          if (Object.hasOwn(material, "sku" + (i + 1))) material["sku" + i] = material["sku" + (i + 1)];
+          else delete material["sku" + i];
+        }
+        delete material["sku" + count];
+      });
+      (draft.strategy || []).forEach(row => {
+        if (!row.skuMap) return;
+        for (let i = index + 1; i < count; i++) {
+          if (Object.hasOwn(row.skuMap, i + 1)) row.skuMap[i] = row.skuMap[i + 1];
+          else delete row.skuMap[i];
+        }
+        delete row.skuMap[count];
+      });
+      draft.progress = (draft.progress || []).filter(row => Number(row.skuIndex) !== index + 1).map(row => Number(row.skuIndex) > index + 1 ? { ...row, skuIndex: Number(row.skuIndex) - 1 } : row);
+      clearTimeout(this._stageStrategySaveTimer);
+      this._stageStrategySaveTimer = null;
+      const saved = await this.persistStageStrategyMutation("remove_scheme", "删除方案", { render: false, stage: draft });
+      if (saved && this.currentStage() === stage) {
+        for (const key of ["skuNames", "bom", "strategy", "progress"]) stage[key] = draft[key];
+      }
+      this.render();
+    }, { title: "删除方案", okText: "删除" });
   },
   inlineSkuRowHtml(name = "", idx = 0) {
     return `<div class="inline-sku-row">
@@ -216,7 +266,7 @@ app.registerModule("workspace.stage", {
         this.markFieldInvalid(skuInput || stageNameEl, "方案名称不能重复");
         return true;
       }
-      const s = { id: Utils.id("stage_"), name, skuNames, bom: [], strategy: [], progress: [], tasks: [] };
+      const s = { id: Utils.id("stage_"), name, skuNames, bom: Array.from({ length: 4 }, () => ({ materialName: "" })), strategy: [], progress: [], tasks: [] };
       p.stages.push(s);
       this.selectStageAfterMutation(s.id);
       const saved = await this.commitStageMutation(p, s, {
@@ -232,6 +282,7 @@ app.registerModule("workspace.stage", {
   },
 
   editStage(id) {
+    const projectId = this.currentProject()?.id;
     const s = this.currentProject()?.stages.find(x => x.id === id);
     if (!s) return;
     this.showModal("编辑阶段与 SKU", `
@@ -239,7 +290,9 @@ app.registerModule("workspace.stage", {
       <div class="form-group"><label class="req modal-field-title">方案名称</label>${this.skuEditorHtml(s.skuNames?.length ? s.skuNames : ["SKU1"], { placeholder: "如 主方案 / A1 / B7" })}</div>
     `, async () => {
       this.clearFieldValidationMarks();
-      const p = this.currentProject();
+      const p = this.findProjectRecord(projectId);
+      const s = p?.stages?.find(stage => stage.id === id);
+      if (!p || !s) { alert("阶段已不存在，请关闭后刷新。"); return true; }
       const snapshot = this.dataSnapshot();
       const stageNameEl = document.getElementById("stageName");
       const name = stageNameEl.value.trim();
@@ -248,6 +301,10 @@ app.registerModule("workspace.stage", {
       if (!skuNames.length) {
         const skuInput = document.querySelector(".sku-name-input");
         this.markFieldInvalid(skuInput || stageNameEl, "至少保留一个 SKU");
+        return true;
+      }
+      if (new Set(skuNames).size !== skuNames.length) {
+        this.markFieldInvalid(document.querySelector(".sku-name-input") || stageNameEl, "方案名称不能重复");
         return true;
       }
       s.name = name; s.skuNames = skuNames;
@@ -263,9 +320,11 @@ app.registerModule("workspace.stage", {
   },
 
   async deleteStage(id) {
+    const request = this.beginDialogRequest?.();
     let p = this.currentProject();
     if (!p) return;
-    p = await this.ensureProjectLoaded(p.id, { includeTasks: true, render: false }) || p;
+    p = await this.ensureProjectLoaded(p.id, { includeTasks: true, render: false });
+    if (!p || this.isDialogRequestCurrent?.(request) === false) return;
     const stage = (p.stages || []).find(s => s.id === id);
     if (!stage) return;
     // 安全机制：阶段下存在「进行中/未完成」任务且占用样机时，禁止直接删除，避免样机占用状态丢失
@@ -315,12 +374,16 @@ app.registerModule("workspace.stage", {
     const p = this.currentProject();
     const source = p?.stages?.find(s => s.id === id);
     if (!p || !source) return;
+    const projectId = p.id;
     this.showModal("复制阶段", `
       <div class="form-group">
         <label class="req modal-field-title">新阶段名称</label>
         <input id="copyStageName" placeholder="如 V3 / VN1">
       </div>
     `, async () => {
+      const p = this.findProjectRecord(projectId);
+      const source = p?.stages?.find(stage => stage.id === id);
+      if (!p || !source) { alert("来源阶段已不存在，请关闭后刷新。"); return true; }
       this.clearFieldValidationMarks();
       const snapshot = this.dataSnapshot();
       const copyNameEl = document.getElementById("copyStageName");

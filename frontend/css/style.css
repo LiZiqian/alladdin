@@ -9,6 +9,8 @@
 @import '20-samples.css?v=__APP_VERSION__';
 @import '21-sample-photos.css?v=__APP_VERSION__';
 @import '22-sample-archive.css?v=__APP_VERSION__';
+@import '22-sample-files.css?v=__APP_VERSION__';
+@import '23-devices.css?v=__APP_VERSION__';
 @import '30-workspace-home.css?v=__APP_VERSION__';
 @import '30-workspace-members.css?v=__APP_VERSION__';
 @import '30-workspace-sections.css?v=__APP_VERSION__';
@@ -21,6 +23,7 @@
 @import '35-task-result.css?v=__APP_VERSION__';
 @import '35-task-result-modal.css?v=__APP_VERSION__';
 @import '35-task-sample-list.css?v=__APP_VERSION__';
+@import '35-problem-photos.css?v=__APP_VERSION__';
 @import '36-task-log.css?v=__APP_VERSION__';
 @import '37-import-bundle.css?v=__APP_VERSION__';
 @import '90-responsive.css?v=__APP_VERSION__';

@@ -5,10 +5,11 @@ import json
 import shutil
 import uuid
 from dataclasses import dataclass
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Callable
 
-from server_modules import chamber_package, import_commit, import_diff, migration_scope, mutation_summary as mutation_summary_module, record_writers
+from server_modules import sample_files, chamber_package, import_commit, import_diff, import_preview_cache, migration_scope, mutation_summary as mutation_summary_module, record_writers, sample_assets, task_reservations
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,79 @@ class ImportBundleCommitContext:
     url_for_asset: Callable[[str, str], str]
     thumbnail_asset_id: Callable[[str], str]
 
+
+@contextmanager
+def staged_import_assets(ctx, data, photo_sources, source_for, asset_lookup):
+    """Publish new asset files with collision-safe names, undoing failed commits."""
+    created = []
+    created_dirs = set()
+    outcome = {"committed": False, "photoCount": 0}
+    try:
+        for category in (data.get("sampleLibrary") or {}).get("categories") or []:
+            for sample in category.get("samples") or []:
+                sid = str(sample.get("id") or "")
+                for photo in [*(sample.get("photos") or []), *(sample.get("files") or [])]:
+                    pid = str(photo.get("id") or "")
+                    incoming_sid = photo_sources.get((sid, pid))
+                    if incoming_sid is None:
+                        continue
+                    for role, path_field, url_field in (("original", "relativePath", "url"),
+                                                         ("thumbnail", "thumbRelativePath", "thumbUrl")):
+                        asset = asset_lookup.get((incoming_sid, pid, role))
+                        relative_path = photo.get(path_field) or ""
+                        if not relative_path and not asset:
+                            photo[path_field] = photo[url_field] = ""
+                            continue
+                        source, filename = source_for(incoming_sid, photo, role, relative_path)
+                        if source is None or not source.is_file() or not filename:
+                            raise ValueError(f"导入照片资源已缺失，请重新选择文件: {pid}")
+                        folder = "files" if photo.get("kind") in sample_files.KINDS else "photos"
+                        dest = chamber_package.safe_package_member_path(ctx.sample_data_dir, f"{sid}/{folder}/{filename}")
+                        if dest is None:
+                            raise ValueError(f"导入照片目标路径不安全: {pid}")
+                        if not dest.parent.exists():
+                            created_dirs.add(dest.parent)
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                        while True:
+                            try:
+                                output = dest.open("xb")
+                                break
+                            except FileExistsError:
+                                dest = dest.with_name(f"{Path(filename).stem}_{uuid.uuid4().hex[:12]}{Path(filename).suffix}")
+                        created.append(dest)
+                        with output, source.open("rb") as input_file:
+                            shutil.copyfileobj(input_file, output)
+                        if asset and asset.get("sha256") and chamber_package.sha256_file(dest) != asset["sha256"]:
+                            raise ValueError(f"导入照片资源校验失败: {pid}")
+                        photo[path_field] = f"samples/{sid}/{folder}/{dest.name}"
+                        photo[url_field] = sample_files.file_url(sid, pid) if folder == "files" else ctx.url_for_asset(sid, pid if role == "original" else ctx.thumbnail_asset_id(pid))
+                        if role == "thumbnail":
+                            photo["thumbId"] = ctx.thumbnail_asset_id(pid)
+                        if role == "original":
+                            outcome["photoCount"] += 1
+        yield outcome
+    finally:
+        if not outcome["committed"]:
+            if created:
+                asset_ctx = sample_assets.AssetStorageContext(
+                    data_dir=ctx.sample_data_dir.parent, sample_data_dir=ctx.sample_data_dir, now_iso=ctx.now_iso)
+                try:
+                    # A failure after SQLite committed must not erase files
+                    # already referenced by durable asset rows. The journal
+                    # checks references under its short cleanup write scope.
+                    with ctx.write_db_connection():
+                        sample_assets.unlink_asset_relative_paths(asset_ctx, [
+                            path.relative_to(asset_ctx.data_dir).as_posix() for path in created
+                        ], warn_label="清理导入临时照片")
+                except Exception as exc:
+                    print(f"[WARN] 清理导入临时照片失败，保留文件等待恢复：{exc}")
+            for directory in created_dirs:
+                try:
+                    directory.rmdir()
+                    directory.parent.rmdir()
+                except OSError:
+                    pass
+
 def commit_merged_import_state(
     ctx: ImportBundleCommitContext,
     merged_data: dict,
@@ -41,6 +115,7 @@ def commit_merged_import_state(
     client_ip: str,
     remark: str,
     user: str,
+    imported_sample_ids: set[str] | None = None,
 ) -> tuple[bool, dict]:
     """Persist an already-merged import state without composing full current state again."""
     detect_sample_occupancy_conflicts = ctx.detect_sample_occupancy_conflicts
@@ -56,7 +131,7 @@ def commit_merged_import_state(
         return False, {
             "status": 409,
             "error_code": "SAMPLE_OCCUPANCY_CONFLICT",
-            "error": "样机占用冲突：同一样机被多个未完成任务占用，已拒绝保存。",
+            "error": "样机预约时间重叠，或存在多个执行中/阻塞中的任务，已拒绝保存。",
             "conflicts": conflict,
         }
 
@@ -71,9 +146,19 @@ def commit_merged_import_state(
                 "server_revision": current_revision,
             }
 
+        identity_conflicts = import_commit.detect_import_identity_conflicts(merged_data, imported_sample_ids)
+        if identity_conflicts:
+            return False, {
+                "status": 409, "error_code": "SAMPLE_IDENTITY_CONFLICT",
+                "error": "导入样机的 SN/IMEI/主板SN 重复，请修改标识或合并到已有样机。",
+                "conflicts": identity_conflicts,
+            }
+
         new_revision = current_revision + 1
         updated_at = now_iso()
         merged_data["version"] = APP_VERSION
+        task_reservations.reconcile_state_reservations(merged_data)
+        events_added = import_commit.preserve_existing_import_events(conn, merged_data)
         sync_project_library(conn, merged_data, allow_empty=True)
         sync_sample_library(conn, merged_data, allow_empty=True)
         record_writers.prune_orphan_operational_logs(conn)
@@ -93,11 +178,30 @@ def commit_merged_import_state(
         record_writers.clear_audit_log_when_platform_empty(conn)
         conn.commit()
 
-    return True, {"revision": new_revision, "updated_at": updated_at}
+    return True, {"revision": new_revision, "updated_at": updated_at, "sampleEventsAdded": events_added}
+
+
+def _commit_with_preview_claim(ctx: ImportBundleCommitContext, payload: dict, commit: Callable) -> dict:
+    if not isinstance(payload, dict) or not isinstance(payload.get("previewId"), str):
+        return {"ok": False, "error": "导入参数或 previewId 格式不正确", "status": 400}
+    ctx.cleanup_expired_previews()
+    try:
+        with import_preview_cache.claim_preview(ctx.import_previews, payload["previewId"]):
+            return commit(ctx, payload)
+    except import_preview_cache.PreviewBusyError as exc:
+        return {"ok": False, "error": str(exc), "status": 409, "error_code": "IMPORT_PREVIEW_BUSY"}
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": str(exc), "status": 400}
 
 
 def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
+    return _commit_with_preview_claim(ctx, payload, _commit_import_bundle)
+
+
+def _commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     """执行导入写入"""
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "导入参数必须是 JSON 对象", "status": 400}
     _cleanup_expired_previews = ctx.cleanup_expired_previews
     _IMPORT_PREVIEWS = ctx.import_previews
     _load_import_preview_payload = ctx.load_import_preview_payload
@@ -107,7 +211,6 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     SAMPLE_DATA_DIR = ctx.sample_data_dir
     url_for_asset = ctx.url_for_asset
     thumbnail_asset_id = ctx.thumbnail_asset_id
-    _normalize_project = import_diff.normalize_project
     _register_imported_project_tree = import_commit.register_imported_project_tree
     _register_imported_stage_tree = import_commit.register_imported_stage_tree
     _find_incoming_stage = import_commit.find_incoming_stage
@@ -133,6 +236,8 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
         )
     preview_id = payload.get("previewId", "")
     decisions = payload.get("decisions") or {}
+    if not isinstance(preview_id, str) or not isinstance(decisions, dict):
+        return {"ok": False, "error": "导入预览或决策格式不正确", "status": 400}
 
     _cleanup_expired_previews()
     entry = _IMPORT_PREVIEWS.get(preview_id)
@@ -142,7 +247,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     incoming_payload, result = _load_import_preview_payload(entry)
     if not result:
         _cleanup_preview_temp(preview_id)
-        del _IMPORT_PREVIEWS[preview_id]
+        import_preview_cache.remove_entry(_IMPORT_PREVIEWS, preview_id)
         return {"ok": False, "error": "导入预览缓存损坏，请重新选择文件导入", "status": 400}
 
     # ── Revision 校验：commit 时主库 revision 必须与 preview 时一致 ──
@@ -169,6 +274,8 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
 
     current_data = None
     selection = payload.get("selection")
+    if selection is not None and migration_scope.selection_is_empty(selection):
+        return {"ok": False, "error": "请至少选择一项导入数据", "status": 400}
     if not migration_scope.selection_is_empty(selection):
         current_data, _, _ = get_state(compact=True)
         incoming_payload = migration_scope.filter_state_by_selection(incoming_payload, selection)
@@ -181,7 +288,12 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                     manifest = loaded_manifest
             except (OSError, json.JSONDecodeError):
                 manifest = {}
-        result = import_diff.diff_import_bundle(current_data, incoming_payload, manifest, tmp_dir, asset_index=asset_index)
+        selected_result = import_diff.diff_import_bundle(current_data, incoming_payload, manifest, tmp_dir, asset_index=asset_index)
+        try:
+            import_diff.retain_preview_conflict_ids(selected_result, result)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "status": 409, "error_code": "IMPORT_PREVIEW_CONFLICT"}
+        result = selected_result
 
     blockers = result.get("blockers") or []
     if blockers:
@@ -193,12 +305,32 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
         if cid not in decisions:
             return {"ok": False, "error": f"冲突 {cid} 尚未处理", "status": 400}
         d = decisions[cid]
+        if not isinstance(d, dict):
+            return {"ok": False, "error": f"冲突 {cid} 的决策格式不正确", "status": 400}
         action = d.get("action", "")
+        supported_actions = {
+            "field_conflict": ("apply_field_choices",),
+            "project_name_conflict": ("merge_into_existing", "rename_import"),
+            "stage_name_conflict": ("merge_into_existing", "rename_import"),
+            "task_name_conflict": ("merge_into_existing", "rename_import"),
+            "sample_identity_conflict": ("merge_into_existing", "import_as_new_with_identity_edit"),
+            "task_occupancy_conflict": ("skip_occupancy", "import_no_occupy"),
+        }
+        if not isinstance(action, str) or action not in {*supported_actions.get(c.get("type"), ()), "skip"}:
+            return {"ok": False, "error": f"冲突 {cid} 的处理方式无效", "status": 400}
+        if d.get("targetId") is not None and not isinstance(d["targetId"], str):
+            return {"ok": False, "error": f"冲突 {cid} 的目标 ID 格式不正确", "status": 400}
+        if "fieldChoices" in d and (not isinstance(d["fieldChoices"], dict) or any(
+            value not in ("current", "incoming") for value in d["fieldChoices"].values()
+        )):
+            return {"ok": False, "error": f"冲突 {cid} 的字段选择格式不正确", "status": 400}
         if action == "rename_import":
             # 项目/阶段/任务改名导入：必须有 newName
-            if not d.get("newName", "").strip():
+            if not isinstance(d.get("newName"), str) or not d["newName"].strip():
                 return {"ok": False, "error": f"冲突 {cid} 选择改名导入但未提供新名称", "status": 400}
         elif action == "import_as_new_with_identity_edit":
+            if any(not isinstance(d.get(key, ""), str) for key in ("newSN", "newIMEI", "newBoardSn", "newSampleNo")):
+                return {"ok": False, "error": f"冲突 {cid} 的样机标识格式不正确", "status": 400}
             # 样机标识编辑导入：必须有至少一个新标识字段
             new_sn = (d.get("newSN") or "").strip()
             new_imei = (d.get("newIMEI") or "").strip()
@@ -215,6 +347,13 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     if current_data is None:
         current_data, _, _ = get_state(compact=True)
     existing_sample_ids_before_import = set(_sample_index_by_id(current_data).keys())
+    existing_task_samples = {
+        (str(task.get("id") or ""), str(sid))
+        for project in current_data.get("projects") or []
+        for stage in project.get("stages") or []
+        for task in stage.get("tasks") or []
+        for sid in task.get("sampleIds") or []
+    }
 
     incoming = copy.deepcopy(incoming_payload)
     source_manifest = (result.get("source") or {})
@@ -228,10 +367,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
             source_path = chamber_package.safe_package_member_path(tmp_dir, zip_path)
             filename = Path(str(asset.get("fileName") or Path(zip_path).name or Path(fallback_relative_path).name)).name
             return source_path, filename
-        filename = Path(fallback_relative_path or "").name
-        if not filename:
-            return None, ""
-        return tmp_dir / "assets" / "samples" / str(incoming_sample_id) / "photos" / filename, filename
+        return None, ""
 
     # 构建决策索引
     decision_map: dict[str, dict] = {}
@@ -258,13 +394,15 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     fully_imported_project_ids: set[str] = set()
     fully_imported_stage_ids: set[str] = set()
     touched_structure_project_ids: set[str] = set()
+    skipped_reservations: set[tuple[str, str]] = set()
+    conditional_occupancy_targets: dict[tuple[str, str], str] = {}
 
     for auto in result.get("autoApply") or []:
         atype = auto["type"]
         if atype == "new_project":
             pid = auto["id"]
             if pid not in curr_projects and pid in incoming_projects_by_id:
-                project = _normalize_project(incoming_projects_by_id[pid])
+                project = copy.deepcopy(incoming_projects_by_id[pid])
                 curr_projects[pid] = project
                 stats["projectsAdded"] += 1
                 project_id_map[pid] = pid
@@ -356,10 +494,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                     if target_id in curr_projects and inc_id in incoming_projects_by_id:
                         curr_p = curr_projects[target_id]
                         inc_p = incoming_projects_by_id[inc_id]
-                        for fname in c.get("diffFields", []):
-                            choice = field_choices.get(fname, "current")
-                            if choice == "incoming" and fname in inc_p:
-                                curr_p[fname] = inc_p[fname]
+                        import_commit.apply_import_field_choices(curr_p, inc_p, c.get("diffFields", []), field_choices)
                         stats["projectsMerged"] += 1
                         project_id_map[inc_id] = target_id
                         touched_structure_project_ids.add(target_id)
@@ -370,10 +505,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                             if stage.get("id") == target_id:
                                 inc_stage = _find_incoming_stage(incoming_projects_by_id, inc_id)
                                 if inc_stage:
-                                    for fname in c.get("diffFields", []):
-                                        choice = field_choices.get(fname, "current")
-                                        if choice == "incoming" and fname in inc_stage:
-                                            stage[fname] = inc_stage[fname]
+                                    import_commit.apply_import_field_choices(stage, inc_stage, c.get("diffFields", []), field_choices)
                                 if inc_id:
                                     stage_id_map[inc_id] = target_id
                                 touched_structure_project_ids.add(proj_id)
@@ -385,10 +517,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                                 if task.get("id") == target_id:
                                     inc_task = _find_incoming_task(incoming_projects_by_id, inc_id)
                                     if inc_task:
-                                        for fname in c.get("diffFields", []):
-                                            choice = field_choices.get(fname, "current")
-                                            if choice == "incoming" and fname in inc_task:
-                                                task[fname] = inc_task[fname]
+                                        import_commit.apply_import_field_choices(task, inc_task, c.get("diffFields", []), field_choices)
                                     if inc_id:
                                         task_id_map[inc_id] = target_id
                                     touched_structure_project_ids.add(proj_id)
@@ -399,10 +528,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                             if cs.get("id") == target_id:
                                 inc_sample = incoming_cats_by_id.get(inc_id)
                                 if inc_sample and isinstance(inc_sample, dict):
-                                    for fname in c.get("diffFields", []):
-                                        choice = field_choices.get(fname, "current")
-                                        if choice == "incoming" and fname in inc_sample:
-                                            cs[fname] = inc_sample[fname]
+                                    import_commit.apply_import_field_choices(cs, inc_sample, c.get("diffFields", []), field_choices)
                                 sample_id_map[inc_id] = target_id
                                 stats["samplesMerged"] += 1
                                 break
@@ -429,7 +555,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                 if new_name and ipid in incoming_projects_by_id:
                     inc_proj = incoming_projects_by_id[ipid]
                     inc_proj["name"] = new_name
-                    project = _normalize_project(inc_proj)
+                    project = copy.deepcopy(inc_proj)
                     curr_projects[ipid] = project
                     stats["projectsAdded"] += 1
                     project_id_map[ipid] = ipid
@@ -534,6 +660,11 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
         elif c.get("type") == "task_occupancy_conflict":
             sid = c.get("sampleId")
             if action in ("skip_occupancy", "import_no_occupy", "skip"):
+                if sid and c.get("incomingTaskId"):
+                    reservation_key = (str(c["incomingTaskId"]), str(sid))
+                    skipped_reservations.add(reservation_key)
+                    if c.get("mergeTargetSampleId"):
+                        conditional_occupancy_targets[reservation_key] = str(c["mergeTargetSampleId"])
                 if action == "skip_occupancy" and sid:
                     # 清除导入样机的占用字段
                     for inc_cat in (incoming.get("sampleLibrary") or {}).get("categories") or []:
@@ -632,10 +763,7 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                             if cs.get("id") == target_id:
                                 # 逐字段选择
                                 field_choices = d.get("fieldChoices", {})
-                                for fname in c.get("mergeableFields", []):
-                                    choice = field_choices.get(fname, "current")
-                                    if choice == "incoming" and fname in inc_sample:
-                                        cs[fname] = inc_sample[fname]
+                                import_commit.apply_import_field_choices(cs, inc_sample, c.get("mergeableFields", []), field_choices)
                                 # 追加子数据
                                 sub_data_keys = c.get("autoMergeSubData", [])
                                 for subk in sub_data_keys:
@@ -644,11 +772,9 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
                                         # target sample photos before appending incoming photos.
                                         continue
                                     elif subk == "problemRecords":
-                                        existing_hashes = {_content_hash(pr) for pr in (cs.get("problemRecords") or [])}
-                                        for pr in inc_sample.get("problemRecords") or []:
-                                            if _content_hash(pr) not in existing_hashes:
-                                                cs.setdefault("problemRecords", []).append(copy.deepcopy(pr))
-                                                existing_hashes.add(_content_hash(pr))
+                                        # Stable problem IDs and photo links are merged
+                                        # once by merge_import_sample_subrecords below.
+                                        continue
                                 stats["samplesMerged"] += 1
                                 sample_id_map[inc_id] = target_id
                                 break
@@ -707,77 +833,38 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     current_data["projects"] = list(curr_projects.values())
 
     hydrate_import_target_photos(current_data, incoming, sample_id_map, existing_sample_ids_before_import)
-    merged_photos, _ = _merge_import_sample_subrecords(current_data, incoming, sample_id_map)
-    stats["photosAdded"] += merged_photos
+    file_target_ids = set(sample_id_map.values()) & existing_sample_ids_before_import
+    with closing(ctx.connect_db()) as file_conn:
+        for sid, sample in _sample_index_by_id(current_data).items():
+            if sid in file_target_ids:
+                sample["files"] = sample_files.load_files(file_conn, sid)
+    # Only new photo metadata receives incoming files. Existing photos retain
+    # their own content even when another deployment reused the same photo ID.
+    existing_photo_ids = {
+        (sid, str(photo.get("id") or ""))
+        for sid, sample in _sample_index_by_id(current_data).items()
+        if sid in existing_sample_ids_before_import
+        for photo in [*(sample.get("photos") or []), *(sample.get("files") or [])]
+    }
+    photo_sources = {}
     incoming_samples_by_id = _sample_index_by_id(incoming)
-    incoming_photo_ids_by_target: dict[str, set[str]] = {}
-    for inc_sid, target_sid in sample_id_map.items():
-        inc_sample = incoming_samples_by_id.get(inc_sid)
-        if not inc_sample:
-            continue
-        photo_ids = {
-            str(photo.get("id"))
-            for photo in (inc_sample.get("photos") or [])
-            if photo.get("id")
-        }
-        if photo_ids:
-            incoming_photo_ids_by_target.setdefault(target_sid, set()).update(photo_ids)
-
-    # ── 复制照片资产文件（经 sample_id_map 定位源文件）──
-    # 反向映射：target sample ID → incoming sample ID
-    target_to_incoming_sample: dict[str, str] = {v: k for k, v in sample_id_map.items()}
-    for cat in curr_categories.values():
-        for sample in cat.get("samples") or []:
-            target_sid = sample.get("id", "")
-            incoming_photo_ids = incoming_photo_ids_by_target.get(target_sid, set())
-            # 查找照片在导入包中对应的 incoming 样机 ID
-            inc_sid = target_to_incoming_sample.get(target_sid, target_sid)
-            for photo in sample.get("photos") or []:
-                photo_id = photo.get("id", "")
-                if photo_id not in incoming_photo_ids:
-                    continue
-                manifest_original_key = (str(inc_sid), str(photo_id), "original")
-                manifest_thumb_key = (str(inc_sid), str(photo_id), "thumbnail")
-                # 原图：用 relativePath 获取真实文件名（含扩展名）
-                rel = photo.get("relativePath", "")
-                if rel or manifest_original_key in asset_lookup:
-                    asset_src, fn = import_asset_source(inc_sid, photo, "original", rel)
-                    if asset_src and fn and asset_src.is_file():
-                        dest_dir = SAMPLE_DATA_DIR / target_sid / "photos"
-                        dest_dir.mkdir(parents=True, exist_ok=True)
-                        dest_path = dest_dir / fn
-                        if not dest_path.exists():
-                            shutil.copy2(asset_src, dest_path)
-                            stats["photosAdded"] += 1
-                        # 重写 4 个路径字段，全部基于 target_sid
-                        photo["relativePath"] = f"samples/{target_sid}/photos/{fn}"
-                        photo["url"] = f"/api/samples/{target_sid}/photos/{photo_id}"
-                    else:
-                        # 文件缺失：清除路径引用避免 404
-                        photo["url"] = ""
-                        photo["relativePath"] = ""
-                else:
-                    photo["url"] = ""
-                    photo["relativePath"] = ""
-                # 缩略图：用 thumbRelativePath
-                thumb_rel = photo.get("thumbRelativePath", "")
-                if thumb_rel or manifest_thumb_key in asset_lookup:
-                    thumb_src, thumb_fn = import_asset_source(inc_sid, photo, "thumbnail", thumb_rel)
-                    if thumb_src and thumb_fn and thumb_src.is_file():
-                        dest_dir = SAMPLE_DATA_DIR / target_sid / "photos"
-                        dest_dir.mkdir(parents=True, exist_ok=True)
-                        thumb_dest = dest_dir / thumb_fn
-                        if not thumb_dest.exists():
-                            shutil.copy2(thumb_src, thumb_dest)
-                        # 重写缩略图路径
-                        photo["thumbRelativePath"] = f"samples/{target_sid}/photos/{thumb_fn}"
-                        photo["thumbUrl"] = url_for_asset(target_sid, thumbnail_asset_id(photo_id))
-                    else:
-                        photo["thumbUrl"] = ""
-                        photo["thumbRelativePath"] = ""
-                else:
-                    photo["thumbUrl"] = ""
-                    photo["thumbRelativePath"] = ""
+    for incoming_sid, target_sid in sample_id_map.items():
+        incoming_sample = incoming_samples_by_id.get(incoming_sid) or {}
+        for photo in [*(incoming_sample.get("photos") or []), *(incoming_sample.get("files") or [])]:
+            key = (target_sid, str(photo.get("id") or ""))
+            if key not in existing_photo_ids:
+                photo_sources.setdefault(key, incoming_sid)
+    photo_owners = {pid: sid for sid, pid in photo_sources}
+    new_photo_ids = sorted(photo_owners)
+    with closing(ctx.connect_db()) as asset_conn:
+        for offset in range(0, len(new_photo_ids), 400):
+            batch = new_photo_ids[offset:offset + 400]
+            placeholders = ",".join("?" for _ in batch)
+            for row in asset_conn.execute(f"SELECT id, sample_id FROM sample_assets WHERE id IN ({placeholders})", batch):
+                if photo_owners[row["id"]] != row["sample_id"]:
+                    return {"ok": False, "status": 400, "error_code": "IMPORT_PHOTO_ID_CONFLICT",
+                            "error": f"照片 ID {row['id']} 已属于其他样机，无法覆盖导入"}
+    _merge_import_sample_subrecords(current_data, incoming, sample_id_map)
 
     # ── 重新生成样机数据，同步到 SQLite ──
     # 将 categories dict 转回 list
@@ -791,13 +878,47 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
 
     # ── 统一 ID 重映射：所有交叉引用经映射表重写 ──
     _apply_id_maps(current_data, project_id_map, stage_id_map, task_id_map, sample_id_map)
+    # Occupancy belongs to task.sampleIds. Clearing only a sample's cached
+    # currentTaskId leaves the imported reservation active and always fails the
+    # final conflict check. Keep history as a removed sample, without touching
+    # the main library's pre-existing reservation.
+    samples_by_id = _sample_index_by_id(current_data)
+    for incoming_tid, incoming_sid in skipped_reservations:
+        target_tid = task_id_map.get(incoming_tid)
+        target_sid = sample_id_map.get(incoming_sid, incoming_sid)
+        if not target_tid:
+            continue
+        required_target = conditional_occupancy_targets.get((incoming_tid, incoming_sid))
+        if required_target and target_sid != required_target:
+            continue  # The user imported a new identity instead of merging it.
+        if (target_tid, target_sid) in existing_task_samples:
+            continue  # Merging history must not remove the main task's reservation.
+        for project in current_data.get("projects") or []:
+            for stage in project.get("stages") or []:
+                for task in stage.get("tasks") or []:
+                    if task.get("id") != target_tid or target_sid not in (task.get("sampleIds") or []):
+                        continue
+                    task["sampleIds"] = [sid for sid in task["sampleIds"] if sid != target_sid]
+                    sample = samples_by_id.get(target_sid) or {}
+                    task.setdefault("removedSampleRecords", []).append({
+                        "id": f"removed_{uuid.uuid4().hex}", "sampleId": target_sid,
+                        "sampleNo": sample.get("sampleNo") or sample.get("sn") or target_sid,
+                        "sn": sample.get("sn") or "", "imei": sample.get("imei") or "",
+                        "boardSn": sample.get("boardSn") or "", "removedAt": ctx.now_iso(),
+                        "user": "数据导入", "reason": "导入时跳过冲突占用关系",
+                    })
+                    touched_structure_project_ids.add(str(project.get("id") or ""))
     stats["sampleEventsAdded"] = _merge_import_sample_events(
         current_data, incoming, project_id_map, stage_id_map, task_id_map, sample_id_map
     )
     validation_errors = _validate_import_commit_state(current_data, touched_structure_project_ids)
+    try:
+        chamber_package.validate_state_structure(current_data)
+    except ValueError as exc:
+        validation_errors.append(str(exc))
     if validation_errors:
         _cleanup_preview_temp(preview_id)
-        del _IMPORT_PREVIEWS[preview_id]
+        import_preview_cache.remove_entry(_IMPORT_PREVIEWS, preview_id)
         return {
             "ok": False,
             "error": "导入后数据一致性校验失败：" + "；".join(validation_errors[:3]),
@@ -807,24 +928,29 @@ def commit_import_bundle(ctx: ImportBundleCommitContext, payload: dict) -> dict:
         }
 
     import_remark = f"导入数据包 (deployment={source_manifest.get('sourceDeploymentId','?')})"
-    ok, resp = commit_merged_import_state(
-        ctx,
-        current_data,
-        preview_revision,
-        "import-bundle",
-        import_remark,
-        "数据导入",
-    )
+    try:
+        with staged_import_assets(ctx, current_data, photo_sources, import_asset_source, asset_lookup) as assets:
+            import_commit.rewrite_import_photo_references(current_data, url_for_asset=ctx.url_for_asset,
+                                                         thumbnail_asset_id=ctx.thumbnail_asset_id)
+            ok, resp = commit_merged_import_state(
+                ctx, current_data, preview_revision, "import-bundle", import_remark, "数据导入",
+                imported_sample_ids=set(sample_id_map.values()),
+            )
+            assets["committed"] = ok
+            stats["photosAdded"] = assets["photoCount"]
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "error": str(exc), "status": 400}
 
     if not ok:
         _cleanup_preview_temp(preview_id)
-        del _IMPORT_PREVIEWS[preview_id]
-        return {"ok": False, "error": resp.get("error", "写入失败"), "status": resp.get("status", 500)}
+        import_preview_cache.remove_entry(_IMPORT_PREVIEWS, preview_id)
+        return {"ok": False, **resp, "error": resp.get("error", "写入失败"), "status": resp.get("status", 500)}
 
     _cleanup_preview_temp(preview_id)
-    del _IMPORT_PREVIEWS[preview_id]
+    import_preview_cache.remove_entry(_IMPORT_PREVIEWS, preview_id)
 
     revision = resp.get("revision", 0)
+    stats["sampleEventsAdded"] = resp.get("sampleEventsAdded", stats["sampleEventsAdded"])
     mutation_summary = _build_import_mutation_summary(
         current_data,
         project_id_map,
@@ -867,6 +993,10 @@ def sample_archive_default_decisions(result: dict) -> dict:
 
 
 def commit_sample_archive(ctx: ImportBundleCommitContext, payload: dict) -> dict:
+    return _commit_with_preview_claim(ctx, payload, _commit_sample_archive)
+
+
+def _commit_sample_archive(ctx: ImportBundleCommitContext, payload: dict) -> dict:
     preview_id = payload.get("previewId", "")
     ctx.cleanup_expired_previews()
     entry = ctx.import_previews.get(preview_id)
@@ -891,10 +1021,12 @@ def commit_sample_archive(ctx: ImportBundleCommitContext, payload: dict) -> dict
             "status": 400,
         }
     decisions = payload.get("decisions")
-    if not isinstance(decisions, dict) or not decisions:
+    if decisions is not None and not isinstance(decisions, dict):
+        return {"ok": False, "error": "导入决策格式不正确", "status": 400}
+    if not decisions:
         decisions = sample_archive_default_decisions(result or {})
     next_payload = {
         "previewId": preview_id,
         "decisions": decisions,
     }
-    return commit_import_bundle(ctx, next_payload)
+    return _commit_import_bundle(ctx, next_payload)

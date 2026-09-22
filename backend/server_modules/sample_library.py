@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from server_modules import sample_files, problem_records
+
 import copy
 import json
 import sqlite3
@@ -69,11 +71,19 @@ def sync_sample_library(ctx: SampleLibraryContext, conn: sqlite3.Connection, dat
             sample_id = str(sample.get("id") or f"sample_{uuid.uuid4().hex}")
             sample["id"] = sample_id
             sample["categoryId"] = cat_id
+            if sample.get("problemRecords"):
+                previous = conn.execute("SELECT data_json FROM sample_records WHERE id=?", (sample_id,)).fetchone()
+                if previous:
+                    problem_records.preserve_created_at(sample["problemRecords"], ctx.json_obj(previous["data_json"], {}).get("problemRecords"))
             sample["photos"] = sample_assets.normalize_sample_photos(ctx.asset_context, conn, sample)
+            sample_files.normalize_files(ctx.asset_context, conn, sample)
             active_sample_ids.append(sample_id)
             sample_json = copy.deepcopy(sample)
             sample_json.pop("photos", None)
+            sample_json.pop("files", None)
             sample_json.pop("logs", None)
+            sample_json.pop("testedItemNames", None)
+            sample_json.pop("testHistoryCount", None)
             conn.execute(
                 """
                 INSERT INTO sample_records
@@ -157,7 +167,7 @@ def sync_sample_library(ctx: SampleLibraryContext, conn: sqlite3.Connection, dat
     for log in logs:
         if not isinstance(log, dict):
             continue
-        log = status_normalization.normalize_business_value(log)
+        log = log
         event_id = str(log.get("id") or f"event_{uuid.uuid4().hex}")
         if event_id in seen_events:
             continue
@@ -219,7 +229,6 @@ def load_sample_photos(conn: sqlite3.Connection, sample_id: str) -> list[dict]:
             meta.update({
                 "thumbId": thumb["id"],
                 "thumbUrl": sample_assets.url_for_asset(sample_id, thumb["id"]),
-                "thumbnailUrl": sample_assets.url_for_asset(sample_id, thumb["id"]),
                 "thumbRelativePath": thumb["relative_path"],
                 "thumbType": thumb["mime_type"] or "image/jpeg",
                 "thumbSize": int(thumb["size"] or 0),
@@ -311,6 +320,7 @@ def load_sample_library(ctx: SampleLibraryContext, conn: sqlite3.Connection, *, 
             "borrower": row["borrower"] or sample.get("borrower") or "",
         })
         if include_photos:
+            sample["files"] = sample_files.load_files(conn, row["id"])
             sample["photos"] = load_sample_photos(conn, row["id"])
             sample["photoCount"] = len(sample["photos"])
             sample["photosLoaded"] = True

@@ -210,7 +210,7 @@ app.registerModule("workspace.shared", {
         data-member-value="${Utils.esc(value)}" data-member-role="${Utils.esc(role)}" data-member-search-key="${Utils.esc(searchKey)}">
         <span class="project-member-combobox-name">${Utils.esc(m.name || "-")}</span>
         <span class="project-member-combobox-no">${Utils.esc(m.employeeNo || "-")}</span>
-        ${scope === "all" ? `<span class="project-member-combobox-role">${Utils.esc(compactRoleLabel(role))}</span>` : ""}
+        ${scope === "all" || optionsArg.showRole ? `<span class="project-member-combobox-role">${Utils.esc(compactRoleLabel(role))}</span>` : ""}
       </button>`;
     }).join("");
     const optionGroups = scope === "all"
@@ -252,6 +252,7 @@ app.registerModule("workspace.shared", {
     picker.classList.add("is-open");
     input.setAttribute?.("aria-expanded", "true");
     if (options.reset !== false) this.filterProjectMemberCombobox(input, "");
+    this.positionTaskResultMenu?.(input, menu);
   },
 
   closeProjectMemberComboboxes(exceptInput = null) {
@@ -322,6 +323,7 @@ app.registerModule("workspace.shared", {
     if (!input || !event) return;
     if (this.isImeCompositionEvent?.(event)) return;
     if (event.key === "Escape") {
+      if (input.closest?.(".project-member-picker")?.classList.contains("is-open")) event.preventDefault();
       this.closeProjectMemberComboboxes();
       return;
     }

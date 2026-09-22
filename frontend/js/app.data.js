@@ -27,98 +27,19 @@ app.registerModule("app.data", {
     return p.name && p.employeeNo ? Utils.personText(p.name, p.employeeNo) : raw;
   },
 
-  normalizeStatusText(text) {
-    if (typeof text !== "string" || !text) return text;
-    const replacements = [
-      ["进入测试任务", "测试中"],
-      ["异常完成", "异常终止"],
-      ["待执行", "待下发"],
-      ["待启动", "待下发"],
-      ["已分配", "在位等待"],
-      ["已借出", "取走分析"],
-      ["借出", "取走分析"],
-      ["已归还", "闲置"],
-      ["待维修", "闲置"],
-      ["报废", "闲置"],
-      ["变更退出", "退出测试"],
-      ["未设置", "待确认"],
-      ["失败", "不通过"],
-      ["OK", "无故障"]
-    ];
-    let result = text;
-    replacements.forEach(([oldValue, newValue]) => {
-      result = result.split(oldValue).join(newValue);
-    });
-    result = result.replace(/(?<![无有])故障/g, "有故障");
-    return result.replace(/\b(Pass|PASS|pass|Fail|FAIL|fail|Testing|testing)\b/g, token => ({
-      Pass: "通过",
-      PASS: "通过",
-      pass: "通过",
-      Fail: "不通过",
-      FAIL: "不通过",
-      fail: "不通过",
-      Testing: "进行中",
-      testing: "进行中"
-    }[token] || token));
-  },
-
-  shouldSkipStatusTextNormalization(key, skipKeys = new Set()) {
-    const raw = String(key || "");
-    const lowered = raw.replace(/-/g, "_").toLowerCase();
-    const compact = lowered.replace(/_/g, "");
-    const staticSkip = new Set([
-      "id", "ids", "uuid", "key", "code", "name", "filename", "file_name", "originalname", "original_name",
-      "relativepath", "relative_path", "path", "url", "sampleid", "sampleids", "sample_id", "sample_ids",
-      "taskid", "taskids", "task_id", "task_ids", "projectid", "projectids", "project_id", "project_ids",
-      "stageid", "stageids", "stage_id", "stage_ids", "categoryid", "categoryids", "category_id", "category_ids",
-      "progressid", "progressids", "progress_id", "progress_ids", "assetid", "assetids", "asset_id", "asset_ids",
-      "photoid", "photoids", "photo_id", "photo_ids", "eventid", "eventids", "event_id", "event_ids",
-      "sn", "imei", "boardsn", "board_sn", "sampleno", "sample_no", "serial", "serialno", "serial_no"
-    ]);
-    return skipKeys.has(raw) || skipKeys.has(lowered) || staticSkip.has(compact) || compact.endsWith("id") || compact.endsWith("ids");
-  },
-
-  normalizeBusinessStatusValue(value, skipKeys = new Set(["photos", "name", "fileName", "file_name", "originalName", "original_name", "relativePath", "path", "url"])) {
-    if (Array.isArray(value)) return value.map(item => this.normalizeBusinessStatusValue(item, skipKeys));
-    if (value && typeof value === "object") {
-      Object.keys(value).forEach(key => {
-        if (!this.shouldSkipStatusTextNormalization(key, skipKeys)) value[key] = this.normalizeBusinessStatusValue(value[key], skipKeys);
-      });
-      return value;
-    }
-    return this.normalizeStatusText(value);
-  },
-
   normalizeTaskFlowStatus(input) {
     const isTask = input && typeof input === "object";
-    const status = String((isTask ? input.status : input) || "").trim();
-    if (["异常完成", "异常终止", "失败", "Fail", "FAIL", "fail"].includes(status)) return "异常终止";
-    if (isTask && input.completed && !["异常终止", "异常完成", "失败", "Fail", "FAIL", "fail"].includes(status)) return "正常完成";
-    const map = {
-      "": "待下发",
-      "待下发": "待下发",
-      "待执行": "待下发",
-      "待启动": "待下发",
-      "进行中": "进行中",
-      "Testing": "进行中",
-      "testing": "进行中",
-      "阻塞": "阻塞中",
-      "阻塞中": "阻塞中",
-      "正常完成": "正常完成",
-      "已完成": "正常完成",
-      "完成": "正常完成",
-      "通过": "正常完成",
-      "Pass": "正常完成",
-      "PASS": "正常完成",
-      "pass": "正常完成",
-      "异常完成": "异常终止",
-      "异常终止": "异常终止",
-      "失败": "异常终止",
-      "Fail": "异常终止",
-      "FAIL": "异常终止",
-      "fail": "异常终止"
-    };
-    return map[status] || "待下发";
+    const status = this.currentStatusValue(isTask ? input.status : input,
+      ["待下发", "进行中", "阻塞中", "正常完成", "异常终止"], "待下发");
+    return isTask && input.completed && status !== "异常终止" ? "正常完成" : status;
+  },
+
+  // 状态是协议枚举，普通备注和日志不参与转换。
+  currentStatusValue(value, choices, defaultValue) {
+    const status = String(value || "").trim();
+    if (!status) return defaultValue;
+    if (!choices.includes(status)) throw new Error(`不支持的状态值：${status}`);
+    return status;
   },
 
   normalizeTaskStoredStatus(value) {
@@ -126,53 +47,14 @@ app.registerModule("app.data", {
   },
 
   normalizeTaskResultValue(value) {
-    const raw = String(value || "").trim();
-    const map = {
-      "通过": "通过",
-      "Pass": "通过",
-      "PASS": "通过",
-      "pass": "通过",
-      "OK": "通过",
-      "ok": "通过",
-      "正常": "通过",
-      "不通过": "不通过",
-      "失败": "不通过",
-      "Fail": "不通过",
-      "FAIL": "不通过",
-      "fail": "不通过",
-      "NG": "不通过",
-      "ng": "不通过",
-      "异常": "不通过"
-    };
-    return map[raw] || (["通过", "不通过"].includes(raw) ? raw : "");
+    return this.currentStatusValue(value, ["通过", "不通过"], "");
   },
 
   normalizeSampleQualityValue(value, hasProblem = null) {
     if (hasProblem !== null && typeof hasProblem !== "undefined") return hasProblem ? "有故障" : "无故障";
-    const raw = String(value || "").trim();
-    const map = {
-      "无故障": "无故障",
-      "OK": "无故障",
-      "ok": "无故障",
-      "通过": "无故障",
-      "正常": "无故障",
-      "有故障": "有故障",
-      "故障": "有故障",
-      "Fail": "有故障",
-      "FAIL": "有故障",
-      "fail": "有故障",
-      "失败": "有故障",
-      "不通过": "有故障"
-    };
-    return map[raw] || (["无故障", "有故障"].includes(raw) ? raw : "无故障");
+    return this.currentStatusValue(value, ["无故障", "有故障"], "无故障");
   },
 
-  normalizeDisplayFallbackValue(value) {
-    const raw = String(value || "").trim();
-    if (raw === "变更退出") return "退出测试";
-    if (raw === "未设置") return "待确认";
-    return raw;
-  },
 
   cleanProgressPlanItem(progress) {
     if (!progress || typeof progress !== "object") return progress;
@@ -252,18 +134,11 @@ app.registerModule("app.data", {
 
   normalize() {
     this.data.version = this.version;
-    if (this.data.eventSchema !== "sample_events_v2") {
-      this.data.eventSchema = "sample_events_v2";
-      if (this.data.sampleLibrary) this.data.sampleLibrary.logs = [];
-      this._normalizedChanged = true;
-    }
     if (!this.data.sampleLibrary) this.data.sampleLibrary = { categories: [], logs: [] };
     if (!Array.isArray(this.data.sampleLibrary.categories)) this.data.sampleLibrary.categories = [];
     if (!Array.isArray(this.data.sampleLibrary.logs)) this.data.sampleLibrary.logs = [];
     if (!Array.isArray(this.data.users)) this.data.users = [];
     if (!Array.isArray(this.data.projects)) this.data.projects = [];
-    if ("peoplePool" in this.data) { delete this.data.peoplePool; this._normalizedChanged = true; }
-    if ("locationPool" in this.data) { delete this.data.locationPool; this._normalizedChanged = true; }
     this.data.projects.forEach(p => {
       if (!Array.isArray(p.stages)) p.stages = [];
       if (!Array.isArray(p.members)) p.members = [];
@@ -290,12 +165,6 @@ app.registerModule("app.data", {
         if (typeof m.active === "undefined") { m.active = true; this._normalizedChanged = true; }
         const role = Utils.memberRoleValue(m.role, "tester");
         if (m.role !== role) { m.role = role; this._normalizedChanged = true; }
-        const legacyIdentity = Utils.personIdentityFromText(m.name);
-        if ((!m.employeeNo || !String(m.employeeNo).trim()) && legacyIdentity.name && legacyIdentity.employeeNo) {
-          m.name = legacyIdentity.name;
-          m.employeeNo = legacyIdentity.employeeNo;
-          this._normalizedChanged = true;
-        }
         m.name = String(m.name || "").trim();
         m.employeeNo = Utils.normalizeDigits(m.employeeNo || "");
         const key = Utils.memberIdentityKey(m.name, m.employeeNo);
@@ -327,35 +196,13 @@ app.registerModule("app.data", {
         s.tasks.forEach(t => {
           if (!t.id) t.id = Utils.id("task_");
           if (!Array.isArray(t.sampleIds)) t.sampleIds = [];
-          if (!Array.isArray(t.removedSampleRecords)) {
-            const legacyIds = Array.isArray(t.removedSampleIds) ? t.removedSampleIds : [];
-            t.removedSampleRecords = legacyIds.map(sampleId => ({
-              id: Utils.id("removed_"),
-              sampleId,
-              sampleNo: sampleId,
-              removedAt: "",
-              user: "",
-              reason: "历史退出记录"
-            }));
-            this._normalizedChanged = true;
-          } else {
-            t.removedSampleRecords = t.removedSampleRecords.map(item => {
-              if (typeof item === "string") {
-                this._normalizedChanged = true;
-                return { id: Utils.id("removed_"), sampleId: item, sampleNo: item, removedAt: "", user: "", reason: "历史退出记录" };
-              }
-              if (!item || typeof item !== "object") { this._normalizedChanged = true; return null; }
-              if (!item.id) { item.id = Utils.id("removed_"); this._normalizedChanged = true; }
-              return item;
-            }).filter(item => item && item.sampleId);
-          }
+          if (!Array.isArray(t.removedSampleRecords)) t.removedSampleRecords = [];
           if (!Array.isArray(t.sampleFaultRecords)) t.sampleFaultRecords = [];
           if (!Array.isArray(t.resultUploads)) t.resultUploads = [];
           if (!Array.isArray(t.logs)) t.logs = [];
           t.owner = this.normalizePersonText(t.owner);
           if (typeof t.archived === "undefined") t.archived = false;
           const originalTaskStatus = t.status;
-          this.normalizeBusinessStatusValue(t);
           let normalizedTaskStatus = this.normalizeTaskStoredStatus({ ...t, status: originalTaskStatus });
           if (normalizedTaskStatus !== t.status) this._normalizedChanged = true;
           this.repairTaskStatus(t, this.taskFlowStatus({ ...t, status: normalizedTaskStatus }), { markChanged: true });
@@ -414,7 +261,6 @@ app.registerModule("app.data", {
         });
       });
     });
-    this.data.sampleLibrary.logs = this.normalizeBusinessStatusValue(this.data.sampleLibrary.logs);
     this.data.sampleLibrary.categories.forEach(c => (c.samples || []).forEach(s => {
       if (typeof s.boardSn === "undefined") {
         s.boardSn = "";
@@ -426,7 +272,6 @@ app.registerModule("app.data", {
         delete s.logs;
         this._normalizedChanged = true;
       }
-      this.normalizeBusinessStatusValue(s);
       this.repairSampleStatus(s, s.status || "闲置", { markChanged: true });
       if (typeof s.imei === "undefined") s.imei = "";
       if (typeof s.boardSn === "undefined") s.boardSn = "";
@@ -436,36 +281,7 @@ app.registerModule("app.data", {
         this._normalizedChanged = true;
       }
       if (typeof s.schemeNo === "undefined") s.schemeNo = "";
-      if (typeof s.initialResult === "undefined") s.initialResult = "";
-      if (!Array.isArray(s.initialResults)) {
-        s.initialResults = Utils.parseSampleIssueText(s.initialResult || "");
-        if (s.initialResults.length) this._normalizedChanged = true;
-      }
-      if (!Array.isArray(s.problemRecords)) {
-        s.problemRecords = (s.initialResults || []).map(desc => ({
-          id: Utils.id("problem_"),
-          description: String(desc || "").trim(),
-          source: "初检",
-          taskLabel: ""
-        })).filter(x => x.description && !Utils.isNoSampleIssueText(x.description));
-        if (s.problemRecords.length) this._normalizedChanged = true;
-      } else {
-        const beforeProblemCount = s.problemRecords.length;
-        s.problemRecords = s.problemRecords.map(item => {
-          if (typeof item === "string") {
-            return { id: Utils.id("problem_"), description: item.trim(), source: "初检", taskLabel: "" };
-          }
-          return {
-            id: item.id || Utils.id("problem_"),
-            description: this.normalizeStatusText(String(item.description || item.problem || "").trim()),
-            source: this.normalizeStatusText(String(item.source || "手动补录").trim()),
-            taskLabel: this.normalizeStatusText(String(item.taskLabel || item.task || "").trim())
-          };
-        }).filter(x => x.description && !Utils.isNoSampleIssueText(x.description));
-        if (s.problemRecords.length !== beforeProblemCount) this._normalizedChanged = true;
-      }
-      s.initialResults = s.problemRecords.map(item => item.description);
-      s.initialResult = s.initialResults.join("\n");
+      this.sampleProblemRecords(s);
       if (typeof s.borrower === "undefined") s.borrower = "";
       if (typeof s.borrowDate === "undefined") s.borrowDate = "";
       if (typeof s.importDate === "undefined") s.importDate = "";
@@ -477,12 +293,21 @@ app.registerModule("app.data", {
 
   // ---- 数据访问 ----
   dataSnapshot() {
-    return this.cloneData(this.data);
+    const snapshot = this.cloneData(this.data);
+    this._snapshotEpochs ||= new WeakMap();
+    this._snapshotEpochs.set(snapshot, this._dataSnapshotEpoch || 0);
+    return snapshot;
   },
 
   restoreDataSnapshot(snapshot) {
+    if (!this.isDataSnapshotCurrent(snapshot)) return this.data;
     this.data = this.cloneData(snapshot);
     return this.data;
+  },
+
+  isDataSnapshotCurrent(snapshot) {
+    const epoch = this._snapshotEpochs?.get(snapshot);
+    return epoch === undefined || epoch === (this._dataSnapshotEpoch || 0);
   },
 
   patchViewState(values = {}) {
@@ -911,20 +736,23 @@ app.registerModule("app.data", {
     return (stage?.tasks || []).filter(t => !t.archived);
   },
 
+  normalizeSampleProblemRecord(item) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    return {
+      ...item,
+      ...(Array.isArray(item.photoIds) ? { photoIds: [...new Set(item.photoIds.filter(id => typeof id === "string" && id))] } : {}),
+      id: item.id || Utils.id("problem_"),
+      description: String(item.description || "").trim(),
+      source: String(item.source || "手动补录").trim(),
+      taskLabel: String(item.taskLabel || "").trim()
+    };
+  },
+
   sampleProblemRecords(sample) {
     if (!sample) return [];
     if (!Array.isArray(sample.problemRecords)) sample.problemRecords = [];
-    sample.problemRecords = sample.problemRecords.map(item => {
-      if (typeof item === "string") {
-        return { id: Utils.id("problem_"), description: this.normalizeStatusText(item.trim()), source: "初检", taskLabel: "" };
-      }
-      return {
-        id: item.id || Utils.id("problem_"),
-        description: this.normalizeStatusText(String(item.description || item.problem || "").trim()),
-        source: this.normalizeStatusText(String(item.source || "手动补录").trim()),
-        taskLabel: this.normalizeStatusText(String(item.taskLabel || item.task || "").trim())
-      };
-    }).filter(x => x.description && !Utils.isNoSampleIssueText(x.description));
+    sample.problemRecords = sample.problemRecords.map(item => this.normalizeSampleProblemRecord(item))
+      .filter(item => item?.description && !Utils.isNoSampleIssueText(item.description));
     return sample.problemRecords;
   },
 
@@ -932,6 +760,14 @@ app.registerModule("app.data", {
     if (!sample) return false;
     if (sample.hasProblem === true || sample.hasProblem === 1 || sample.hasProblem === "1") return true;
     return this.sampleProblemRecords(sample).length > 0;
+  },
+
+  replaceSampleProblemRecords(sample, records = []) {
+    if (!sample) return [];
+    sample.problemRecords = records;
+    sample.hasProblem = records.length > 0;
+    if (Object.hasOwn(sample, "effectiveStatus")) sample.effectiveStatus = this.sampleEffectiveStatus(sample);
+    return records;
   },
 
   sampleIsReassembled(sample) {
@@ -943,19 +779,7 @@ app.registerModule("app.data", {
   },
 
   normalizeSampleStatusValue(status) {
-    const raw = String(status || "").trim();
-    const statusMap = {
-      "已分配": "在位等待",
-      "进入测试任务": "测试中",
-      "已归还": "闲置",
-      "借出": "取走分析",
-      "已借出": "取走分析",
-      "待维修": "闲置",
-      "报废": "闲置",
-      "故障": "闲置"
-    };
-    const normalized = statusMap[raw] || raw || "闲置";
-    return this.constants.sampleStatuses.includes(normalized) ? normalized : "闲置";
+    return this.currentStatusValue(status, this.constants.sampleStatuses, "闲置");
   },
 
   repairSampleStatus(sample, nextStatus, ctx = {}) {
@@ -979,15 +803,34 @@ app.registerModule("app.data", {
     return changed;
   },
 
+  sampleTaskLabelParts(ctx = {}) {
+    const project = ctx.project || this.data?.projects?.find(p => p.id === ctx.projectId);
+    const stage = ctx.stage || project?.stages?.find(s => s.id === ctx.stageId);
+    const task = ctx.task || stage?.tasks?.find(t => t.id === ctx.taskId);
+    const progress = stage?.progress?.find(p => p.id === task?.progressId);
+    const skuIndex = ctx.skuIndex || task?.skuIndex || progress?.skuIndex || (task ? 1 : 0);
+    return {
+      projectName: ctx.projectName || project?.name || "",
+      stageName: ctx.stageName || stage?.name || "",
+      schemeName: ctx.schemeName || (skuIndex ? stage?.skuNames?.[skuIndex - 1] || `SKU${skuIndex}` : ""),
+      testItem: ctx.testItem || task?.testItem || progress?.testItem || ""
+    };
+  },
+
   sampleTaskLabelFromCtx(ctx = {}) {
-    const project = ctx.projectName || this.projectName(ctx.projectId);
-    const stage = ctx.stageName || this.stageName(ctx.projectId, ctx.stageId);
-    const item = ctx.testItem || "";
-    return [project, stage, item].filter(v => v && v !== "-").join(" - ");
+    const parts = this.sampleTaskLabelParts(ctx);
+    if (!parts.projectName && !parts.stageName && !parts.testItem) return "";
+    return [parts.projectName, parts.stageName, parts.schemeName || "方案未记录", parts.testItem]
+      .filter(v => v && v !== "-").join(" - ");
+  },
+
+  sampleProblemTaskLabel(record = {}) {
+    // Labels are immutable provenance snapshots, not an old-format migration input.
+    return String(record.taskLabel || "").trim();
   },
 
   addSampleProblem(sample, description, ctx = {}) {
-    const text = this.normalizeStatusText(String(description || "").trim());
+    const text = String(description || "").trim();
     if (!sample || !text) return null;
     const source = String(ctx.problemSource || ctx.source || "测试任务").trim();
     const taskLabel = String(ctx.taskLabel || this.sampleTaskLabelFromCtx(ctx)).trim();
@@ -996,10 +839,10 @@ app.registerModule("app.data", {
       item.description === text && item.source === source && item.taskLabel === taskLabel
     );
     if (exists) return null;
-    const record = { id: Utils.id("problem_"), description: text, source, taskLabel };
+    const record = { id: Utils.id("problem_"), createdAt: Utils.now(), description: text, source, taskLabel,
+      taskLabelFormat: "project-stage-scheme-task", taskId: ctx.taskId || "",
+      projectId: ctx.projectId || "", stageId: ctx.stageId || "" };
     records.push(record);
-    sample.initialResults = records.map(x => x.description);
-    sample.initialResult = sample.initialResults.join("\n");
     return record;
   },
 
@@ -1041,7 +884,7 @@ app.registerModule("app.data", {
     const found = this.findSample(sampleId);
     if (!found) return;
     const s = found.sample, old = this.sampleEffectiveStatus(s);
-    if (old === newStatus && !ctx.forceLog && !ctx.taskId && !ctx.receiver) return;
+    if (old === newStatus && !ctx.forceLog && !ctx.taskId && !ctx.receiver && ctx.borrower === undefined) return;
     const previous = {
       location: String(s.location || "").trim(),
       owner: this.normalizePersonText(s.owner || ""),
@@ -1054,16 +897,23 @@ app.registerModule("app.data", {
     if (isFault && problemDescription) {
       this.addSampleProblem(s, problemDescription, { ...ctx, problemSource: ctx.problemSource || "测试任务" });
     }
-    // 仅当传入了非空去向位置时才覆盖样机当前位置，避免保存草稿/释放等空值清空原位置
-    if (ctx.destLocation !== undefined && String(ctx.destLocation).trim()) {
+    // 档案表单允许主动清空位置；任务释放等空值仍保留原位置。
+    if (ctx.destLocation !== undefined && (ctx.borrower !== undefined || String(ctx.destLocation).trim())) {
       s.location = String(ctx.destLocation).trim();
     }
     const dest = ctx.destination || newStatus;
-    if (dest === "取走分析") {
+    if (ctx.borrower !== undefined) {
+      // Archive edits explicitly own the holder field, including clearing it.
+      // A holder is not the task executor; workflow receivers use the branch below.
+      s.borrower = this.normalizePersonText(ctx.borrower);
+      s.borrowDate = dest === "取走分析" && s.borrower
+        ? (old === "取走分析" && previous.borrower === s.borrower && s.borrowDate ? s.borrowDate : Utils.today())
+        : "";
+    } else if (dest === "取走分析") {
       s.borrower = this.normalizePersonText(ctx.receiver || "");
-      s.borrowDate = ctx.receiverDate || Utils.today();
+      s.borrowDate = s.borrower ? (ctx.receiverDate || Utils.today()) : "";
     } else {
-      // 闲置 / 已退库：统一清空 borrower，不动 owner
+      // 测试中 / 在位等待 / 闲置 / 已退库：清空外借人，不动挂账人。
       s.borrower = "";
       s.borrowDate = "";
     }
@@ -1104,7 +954,19 @@ app.registerModule("app.data", {
       if (this.isTaskCompleted(task)) return;
       if ((task.sampleIds || []).includes(sampleId)) usages.push({ project, stage, task });
     })));
-    return usages;
+    const priority = task => ({ "进行中": 0, "阻塞中": 1 }[this.taskFlowStatus(task)] ?? 2);
+    return usages.sort((a, b) => priority(a.task) - priority(b.task)
+      || String(a.task.planStartDate || a.task.planDate || "9999-12-31").localeCompare(String(b.task.planStartDate || b.task.planDate || "9999-12-31"))
+      || String(a.task.id).localeCompare(String(b.task.id)));
+  },
+
+  recordTaskSampleReservation(sampleId, ctx = {}) {
+    const sample = this.findSample(sampleId)?.sample;
+    if (!sample) return;
+    const status = this.sampleEffectiveStatus(sample);
+    const event = this.createSampleEventLog(sample, status, status, status, ctx);
+    event.eventType = "sample_reservation";
+    this.sampleEventRecords().push(event);
   },
 
   reconcileSampleTaskOccupancy() {

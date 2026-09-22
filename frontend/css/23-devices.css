@@ -1,0 +1,58 @@
+.device-warehouse { display: grid; gap: 20px; color: var(--text) }
+.device-warehouse-head, .device-group-heading, .device-warehouse-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+.device-warehouse-head h2 { margin: 0; font-size: 24px }
+.device-warehouse-head p { margin: 6px 0 0; font-size: 13px }
+.device-group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 18px }
+.device-group-card { display: flex; flex-direction: column; gap: 18px; min-width: 0; padding: 20px; margin: 0 }
+.device-group-heading { align-items: flex-start; flex-wrap: nowrap }
+.device-group-heading h3 { margin: 0; font-size: 18px; line-height: 1.5; overflow-wrap: anywhere }
+.device-group-heading .btn { flex-shrink: 0 }
+.device-group-card dl { display: grid; gap: 10px; margin: 0; font-size: 14px }
+.device-group-card dl div { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 14px }
+.device-group-card dt { color: var(--text); font-weight: 700 }
+.device-group-card dd { margin: 0; overflow-wrap: anywhere }
+.device-group-enter { margin-top: auto; align-self: flex-start; gap: 14px }
+.device-group-add { min-height: 220px; padding: 24px; gap: 10px; margin: 0; font: inherit; color: var(--brand-gold) }
+.device-group-add strong { font-size: 16px }
+.device-group-add > span:last-child { font-size: 13px }
+.device-group-plus { font-size: 34px; line-height: 1 }
+.device-warehouse-message { margin: 0; padding: 40px 24px; text-align: center }
+.device-group-modal { max-width: 560px }
+.device-group-form { display: grid; gap: 8px }
+.device-group-error { color: var(--danger-text); margin: 0; font-size: 13px }
+
+/* Equipment cards share the project/sample card language. */
+.device-card-grid { grid-template-columns: repeat(auto-fill, minmax(min(310px, 100%), 1fr)); align-items: stretch }
+.device-card-grid > .card { margin: 0; min-height: 248px; min-width: 0; box-sizing: border-box; border-radius: 14px }
+.device-entry-card { display: flex; flex-direction: column; gap: 16px; border: 3px solid var(--brand-navy); padding: 18px }
+.device-entry-card:hover { box-shadow: 0 8px 28px rgba(15,23,42,.10) }
+.device-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px }
+.device-card-heading h3 { margin: 0; font-size: 20px; line-height: 1.35; min-width: 0; overflow-wrap: anywhere }
+.device-card-heading .sample-card-edit-btn { position: static; flex-shrink: 0; width: 28px; height: 28px; color: var(--brand-navy) }
+.device-card-meta { display: grid; gap: 8px; margin: 0; font-size: 13px }
+.device-card-meta > div { display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 12px }
+.device-card-meta dt { font-weight: 600 }
+.device-card-meta dd { margin: 0; overflow-wrap: anywhere }
+.device-card-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--brand-gold) }
+.device-card-open { background: var(--accent-bg); color: var(--brand-gold); gap: 8px }
+.device-status { display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid; border-radius: 20px; font-size: 12px; line-height: 1.4; font-weight: 700; white-space: nowrap }
+.device-status.idle { color: var(--pass-text); background: var(--pass-bg); border-color: var(--pass-border) }
+.device-status.active { color: var(--task-blue-text); background: var(--task-blue-bg); border-color: var(--task-blue-border) }
+.device-status.maintenance { color: var(--warn-text); background: var(--warn-bg); border-color: var(--warn-border) }
+.device-status.inactive { color: var(--text); background: var(--surface); border-color: var(--border) }
+.device-add-card { font-family: inherit }
+.device-add-card:disabled { opacity: .6; cursor: not-allowed }
+.device-detail-modal { max-width: 680px }
+.device-form-group { margin: 0 0 18px; font-size: 13px; color: var(--brand-gold); font-weight: 700 }
+.device-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px }
+.device-form-grid .form-group { margin: 0; min-width: 0 }
+.device-form-notes { grid-column: 1 / -1 }
+.device-required { color: var(--danger-text) }
+.device-detail-status { margin-bottom: 16px }
+.device-detail dl { display: grid; gap: 0; margin: 0; font-size: 14px }
+.device-detail dl > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 16px; padding: 10px 0; border-bottom: 1px solid var(--border) }
+.device-detail dt { font-weight: 700 }
+.device-detail dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap }
+@media (max-width: 600px) { .device-form-grid { grid-template-columns: minmax(0, 1fr) } }

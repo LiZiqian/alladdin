@@ -7,12 +7,44 @@ import re
 import shutil
 import traceback
 import uuid
+from contextlib import closing, contextmanager
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from server_modules.http_helpers import STATIC_ASSET_CACHE
+from server_modules import json_validation, device_warehouse, problem_photos, sample_files
 
 
 VERSION_TEMPLATE_TOKEN = "__APP_VERSION__"
+
+
+@contextmanager
+def _read_db_connection(ctx):
+    # Multiple SELECTs in one response must see the same revision and rows.
+    with closing(ctx.connect_db()) as conn:
+        ctx.begin_read_snapshot(conn)
+        yield conn
+
+
+def _read_json_object(handler, ctx, *, allow_empty: bool = False) -> dict:
+    body = handler._read_body(max_bytes=ctx.MAX_UPLOAD_BYTES).decode("utf-8")
+    payload = json_validation.loads((body or "{}") if allow_empty else body)
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    return payload
+
+
+def _cleanup_upload_files(ctx, paths: list[str]) -> None:
+    if not paths:
+        return
+    try:
+        # A commit can succeed before response assembly raises. The file journal
+        # checks live DB references after this transaction settles before unlink.
+        with ctx.write_db_connection():
+            ctx.unlink_asset_relative_paths(paths, warn_label="清理上传失败照片文件")
+    except Exception as exc:
+        # Leave recoverable orphan files if the DB is unavailable; never guess
+        # that a committed upload is unreferenced, or hide the original failure.
+        print(f"[WARN] 清理上传照片文件失败：{exc}")
 
 
 def _content_disposition_attachment(filename: str) -> str:
@@ -53,15 +85,21 @@ def _selection_from_query(query: dict[str, list[str]]) -> dict[str, list[str]]:
         for name in names:
             for value in query.get(name) or []:
                 values.extend(part.strip() for part in str(value or "").split(",") if part.strip())
-        if values:
+        if any(name in query for name in names):
             selection[target_key] = values
     return selection
 
 
 def handle_get(handler, ctx) -> None:
     parsed = urlparse(handler.path)
-    path = unquote(parsed.path)
+    path = parsed.path
     query = parse_qs(parsed.query, keep_blank_values=True)
+
+    if path == "/api/device-warehouse":
+        with _read_db_connection(ctx) as conn:
+            warehouse = device_warehouse.read_warehouse(conn)
+        handler._send_json({"ok": True, "warehouse": warehouse})
+        return
 
     if path == "/api/health":
         handler._send_json({
@@ -118,30 +156,9 @@ def handle_get(handler, ctx) -> None:
                 tmp_path.unlink(missing_ok=True)
         return
 
-    if path == "/api/state":
-        try:
-            reason = ctx.first_query_value(query, "reason", "").strip()
-            if not reason:
-                print(f"[WARN] /api/state called without reason from {handler.client_address[0]}")
-            data, revision, updated_at = ctx.get_state(compact=True)
-            handler._send_json({
-                "ok": True,
-                "revision": revision,
-                "updated_at": updated_at,
-                "data": data,
-                "compat": {
-                    "stateEndpoint": "compact-full-state",
-                    "reason": reason or "legacy-unspecified",
-                    "lowFrequencyOnly": True,
-                },
-            })
-        except Exception as e:
-            handler._send_json({"ok": False, "error": str(e)}, 500)
-        return
-
     if path == "/api/bootstrap":
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 data, revision, updated_at = ctx.compose_bootstrap_state(conn)
             handler._send_json({
                 "ok": True,
@@ -157,7 +174,7 @@ def handle_get(handler, ctx) -> None:
 
     if path == "/api/projects/summary":
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 projects = ctx.list_project_summary(conn)
             handler._send_json({"ok": True, "projects": projects, "count": len(projects)})
         except Exception as e:
@@ -168,7 +185,7 @@ def handle_get(handler, ctx) -> None:
     if project_detail_id:
         try:
             include_tasks = ctx.first_query_value(query, "includeTasks", "") in ("1", "true", "yes")
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 project = ctx.load_project_detail(conn, project_detail_id, include_tasks=include_tasks)
             if not project:
                 handler._send_json({"ok": False, "error": "项目不存在"}, 404)
@@ -180,7 +197,7 @@ def handle_get(handler, ctx) -> None:
 
     if path == "/api/sample-categories":
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 categories = ctx.list_sample_categories_summary(conn)
             handler._send_json({"ok": True, "categories": categories, "count": len(categories)})
         except Exception as e:
@@ -189,7 +206,7 @@ def handle_get(handler, ctx) -> None:
 
     if path == "/api/task-sample-candidates":
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 result = ctx.list_task_sample_candidates_page(conn, query)
             handler._send_json({"ok": True, **result})
         except Exception as e:
@@ -198,7 +215,7 @@ def handle_get(handler, ctx) -> None:
 
     if path == "/api/sample-destroy-impact":
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 result = ctx.list_sample_destroy_impact_scope(conn, query)
             handler._send_json({"ok": True, **result})
         except KeyError as e:
@@ -213,7 +230,7 @@ def handle_get(handler, ctx) -> None:
     if sample_category_detail_id:
         try:
             include_photos = ctx.first_query_value(query, "includePhotos", "") in ("1", "true", "yes")
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 category = ctx.load_sample_category_detail(conn, sample_category_detail_id, include_photos=include_photos)
             if not category:
                 handler._send_json({"ok": False, "error": "样机池不存在"}, 404)
@@ -226,7 +243,7 @@ def handle_get(handler, ctx) -> None:
     stage_tasks_id = handler._stage_tasks_route(path)
     if stage_tasks_id:
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 result = ctx.list_stage_tasks_page(conn, stage_tasks_id, query)
             handler._send_json({"ok": True, **result})
         except KeyError as e:
@@ -238,7 +255,7 @@ def handle_get(handler, ctx) -> None:
     sample_category_id = handler._sample_category_samples_route(path)
     if sample_category_id:
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 result = ctx.list_samples_page(conn, sample_category_id, query)
             handler._send_json({"ok": True, **result})
         except KeyError as e:
@@ -247,11 +264,14 @@ def handle_get(handler, ctx) -> None:
             handler._send_json({"ok": False, "error": str(e)}, 500)
         return
 
+    if sample_files.handle(handler, ctx, "GET", path, query):
+        return
+
     photo_route = handler._sample_photo_route(path)
     if photo_route and photo_route[1] is None:
         sample_id, _ = photo_route
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 photos = ctx.load_sample_photos(conn, sample_id)
             handler._send_json({"ok": True, "sampleId": sample_id, "photos": photos, "photoCount": len(photos)})
         except Exception as e:
@@ -261,7 +281,7 @@ def handle_get(handler, ctx) -> None:
     if photo_route and photo_route[1]:
         sample_id, photo_id = photo_route
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 row = conn.execute(
                     """
                     SELECT relative_path, mime_type
@@ -285,7 +305,7 @@ def handle_get(handler, ctx) -> None:
     event_sample_id = handler._sample_events_route(path)
     if event_sample_id:
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 logs = ctx.load_sample_events(conn, event_sample_id)
             handler._send_json({"ok": True, "sampleId": event_sample_id, "logs": logs, "count": len(logs)})
         except Exception as e:
@@ -295,7 +315,7 @@ def handle_get(handler, ctx) -> None:
     history_sample_id = handler._sample_history_route(path)
     if history_sample_id:
         try:
-            with ctx.connect_db() as conn:
+            with _read_db_connection(ctx) as conn:
                 result = ctx.list_sample_history_page(conn, history_sample_id, query)
             handler._send_json({"ok": True, **result})
         except KeyError as e:
@@ -304,6 +324,12 @@ def handle_get(handler, ctx) -> None:
             handler._send_json({"ok": False, "error": str(e)}, 500)
         return
 
+    # Unknown API paths must not fall through to the static-file allowlist.
+    if path.startswith("/api/"):
+        handler._send_json({"ok": False, "error": "Not Found"}, 404)
+        return
+
+    path = unquote(path)
     if path in ("/", "/index.html"):
         if not ctx.INDEX_PATH.exists():
             handler._send_json({"ok": False, "error": "index.html 不存在"}, 404)
@@ -333,7 +359,7 @@ def handle_get(handler, ctx) -> None:
 
 def handle_post(handler, ctx) -> None:
     parsed = urlparse(handler.path)
-    path = unquote(parsed.path)
+    path = parsed.path
 
     if path == "/api/browser-cache/clear":
         payload = json.dumps({
@@ -363,7 +389,7 @@ def handle_post(handler, ctx) -> None:
 
     if path == "/api/import-bundle/commit":
         try:
-            payload = json.loads(handler._read_body(max_bytes=ctx.MAX_UPLOAD_BYTES).decode("utf-8"))
+            payload = _read_json_object(handler, ctx)
             result = ctx.commit_import_bundle(payload)
             if result.get("status"):
                 handler._send_json(result, result["status"])
@@ -391,7 +417,7 @@ def handle_post(handler, ctx) -> None:
 
     if path == "/api/samples/archive/commit":
         try:
-            payload = json.loads(handler._read_body(max_bytes=ctx.MAX_UPLOAD_BYTES).decode("utf-8"))
+            payload = _read_json_object(handler, ctx)
             result = ctx.commit_sample_archive(payload)
             if result.get("status"):
                 handler._send_json(result, result["status"])
@@ -405,8 +431,8 @@ def handle_post(handler, ctx) -> None:
 
     if path == "/api/sample-identity-check":
         try:
-            payload = json.loads(handler._read_body(max_bytes=ctx.MAX_UPLOAD_BYTES).decode("utf-8") or "{}")
-            with ctx.connect_db() as conn:
+            payload = _read_json_object(handler, ctx, allow_empty=True)
+            with _read_db_connection(ctx) as conn:
                 result = ctx.check_sample_identity_conflicts(conn, payload)
             handler._send_json({"ok": True, **result})
         except ValueError as e:
@@ -415,12 +441,17 @@ def handle_post(handler, ctx) -> None:
             handler._send_json({"ok": False, "error": str(e)}, 500)
         return
 
-    route = handler._sample_photo_route(unquote(parsed.path))
+    if sample_files.handle(handler, ctx, "POST", path):
+        return
+
+    route = handler._sample_photo_route(path)
     if not route or route[1] is not None:
         handler._send_json({"ok": False, "error": "Not Found"}, 404)
         return
 
     sample_id, _ = route
+    written_paths: list[str] = []
+    committed = False
     try:
         fields, files = ctx.parse_multipart(handler.headers, handler._read_body())
         image_files = [f for f in files if f["field"] in ("photos", "photo", "file")]
@@ -433,7 +464,7 @@ def handle_post(handler, ctx) -> None:
             handler._send_json({"ok": False, "error": "没有收到照片文件"}, 400)
             return
 
-        with ctx.connect_db() as conn:
+        with _read_db_connection(ctx) as conn:
             sample_row = conn.execute(
                 "SELECT id FROM sample_records WHERE id = ? AND deleted_at IS NULL",
                 (sample_id,),
@@ -444,7 +475,6 @@ def handle_post(handler, ctx) -> None:
 
         uploaded = []
         asset_records: list[tuple[str, dict]] = []
-        written_paths: list[str] = []
         for idx, file_item in enumerate(image_files):
             uploaded_at = ctx.now_iso()
             meta = ctx.write_sample_asset_file(
@@ -493,21 +523,26 @@ def handle_post(handler, ctx) -> None:
                     handler.client_address[0],
                 )
         if missing_after_write:
-            ctx.unlink_asset_relative_paths(written_paths, warn_label="清理未入库照片文件")
+            _cleanup_upload_files(ctx, written_paths)
             handler._send_json({"ok": False, "error": "样机不存在"}, 404)
             return
+        committed = True
         handler._send_json({"ok": True, **result, "uploaded": uploaded})
     except ValueError as e:
+        if not committed:
+            _cleanup_upload_files(ctx, written_paths)
         handler._send_json({"ok": False, "error": str(e)}, 400)
     except Exception as e:
-        if "written_paths" in locals():
-            ctx.unlink_asset_relative_paths(written_paths, warn_label="清理上传失败照片文件")
+        if not committed:
+            _cleanup_upload_files(ctx, written_paths)
         handler._send_json({"ok": False, "error": str(e)}, 500)
 
 
 def handle_delete(handler, ctx) -> None:
     parsed = urlparse(handler.path)
-    route = handler._sample_photo_route(unquote(parsed.path))
+    if sample_files.handle(handler, ctx, "DELETE", parsed.path):
+        return
+    route = handler._sample_photo_route(parsed.path)
     if not route or not route[1]:
         handler._send_json({"ok": False, "error": "Not Found"}, 404)
         return
@@ -523,6 +558,10 @@ def handle_delete(handler, ctx) -> None:
             ).fetchone()
             if not sample_row:
                 handler._send_json({"ok": False, "error": "样机不存在"}, 404)
+                return
+            reason = problem_photos.photo_reference_reason(conn, sample_id, photo_id)
+            if reason:
+                handler._send_json({"ok": False, "error": reason, "error_code": "PHOTO_IN_USE"}, 409)
                 return
             asset_rows = conn.execute(
                 """
@@ -543,7 +582,7 @@ def handle_delete(handler, ctx) -> None:
                 (ctx.now_iso(), sample_id, photo_id, ctx.thumbnail_asset_id(photo_id)),
             )
             result = ctx.commit_sample_asset_mutation(conn, sample_id, "delete_sample_photo", "删除样机外观照片", handler.client_address[0])
-        ctx.unlink_asset_relative_paths(asset_paths, warn_label="删除照片文件")
+            ctx.unlink_asset_relative_paths(asset_paths, warn_label="删除照片文件")
         handler._send_json({"ok": True, **(result or {})})
     except Exception as e:
         handler._send_json({"ok": False, "error": str(e)}, 500)
@@ -551,7 +590,14 @@ def handle_delete(handler, ctx) -> None:
 
 def handle_patch(handler, ctx) -> None:
     parsed = urlparse(handler.path)
-    path = unquote(parsed.path)
+    path = parsed.path
+    if path == "/api/device-warehouse":
+        try:
+            ok, result = device_warehouse.save_warehouse(ctx, _read_json_object(handler, ctx), handler.client_address[0])
+            handler._send_json({"ok": ok, **result}, 200 if ok else int(result.get("status", 400)))
+        except ValueError as error:
+            handler._send_json({"ok": False, "error": str(error)}, 400)
+        return
     photo_route = handler._sample_photo_route(path)
     if photo_route and photo_route[1]:
         _handle_photo_rename_patch(handler, ctx, photo_route)
@@ -568,7 +614,7 @@ def handle_patch(handler, ctx) -> None:
         return
 
     try:
-        payload = json.loads(handler._read_body(max_bytes=ctx.MAX_UPLOAD_BYTES).decode("utf-8"))
+        payload = _read_json_object(handler, ctx)
         if project_id:
             payload["projectId"] = project_id
             ok, result = ctx.commit_project_mutation(payload, handler.client_address[0])
@@ -604,7 +650,7 @@ def handle_patch(handler, ctx) -> None:
 def _handle_photo_rename_patch(handler, ctx, photo_route) -> None:
     sample_id, photo_id = photo_route
     try:
-        payload = json.loads(handler._read_body(max_bytes=ctx.MAX_UPLOAD_BYTES).decode("utf-8") or "{}")
+        payload = _read_json_object(handler, ctx, allow_empty=True)
         name = str(payload.get("name") or "").strip()
         if not name:
             handler._send_json({"ok": False, "error": "照片名称不能为空"}, 400)
@@ -659,34 +705,8 @@ def _handle_photo_rename_patch(handler, ctx, photo_route) -> None:
         handler._send_json({"ok": True, "revision": new_revision, "updated_at": ts, "sampleId": sample_id, "photos": photos})
     except json.JSONDecodeError:
         handler._send_json({"ok": False, "error": "请求体不是有效 JSON"}, 400)
-    except Exception as e:
-        traceback.print_exc()
-        handler._send_json({"ok": False, "error": str(e)}, 500)
-
-
-def handle_put(handler, ctx) -> None:
-    parsed = urlparse(handler.path)
-    if parsed.path != "/api/state":
-        handler._send_json({"ok": False, "error": "Not Found"}, 404)
-        return
-
-    try:
-        payload = json.loads(handler._read_body(max_bytes=ctx.MAX_UPLOAD_BYTES).decode("utf-8"))
-        expected_revision = payload.get("revision")
-        data = payload.get("data")
-        base_data = payload.get("baseData")
-        remark = str(payload.get("remark") or "")
-        user = str(payload.get("user") or "")
-
-        ok, result = ctx.save_state(data, expected_revision, handler.client_address[0], remark=remark, user=user, base_data=base_data)
-        if not ok:
-            handler._send_json({"ok": False, **result}, int(result.get("status", 400)))
-            return
-
-        handler._send_json({"ok": True, **result})
-    except json.JSONDecodeError:
-        handler._send_json({"ok": False, "error": "请求体不是有效 JSON"}, 400)
     except ValueError as e:
         handler._send_json({"ok": False, "error": str(e)}, 400)
     except Exception as e:
+        traceback.print_exc()
         handler._send_json({"ok": False, "error": str(e)}, 500)

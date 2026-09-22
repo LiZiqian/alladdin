@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import copy
-import json
+import hashlib
 import shutil
 import tempfile
 import time
 import uuid
 import zipfile
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from server_modules import chamber_package, import_defaults, import_diff, import_preview_cache, migration_scope, status_normalization, zip_security
+from server_modules import chamber_package, import_diff, import_preview_cache, json_validation, migration_scope, status_normalization, zip_security
 
 
 @dataclass(frozen=True)
@@ -122,21 +123,33 @@ def _sample_archive_filename(category: dict | None, sample: dict, sample_id: str
 
 def _sample_archive_history(ctx: BundlePreviewContext, sample_id: str) -> list[dict]:
     history: list[dict] = []
-    with ctx.connect_db() as conn:
-        page = 1
-        while True:
-            result = ctx.list_sample_history_page(conn, sample_id, {"page": [str(page)], "pageSize": ["50"]})
-            items = result.get("items") or []
-            history.extend(items)
-            if page >= int(result.get("totalPages") or 1):
-                break
-            page += 1
+    with closing(ctx.connect_db()) as conn:
+        started = not conn.in_transaction
+        if started:
+            conn.execute("BEGIN")
+        try:
+            page = 1
+            while True:
+                result = ctx.list_sample_history_page(conn, sample_id, {"page": [str(page)], "pageSize": ["50"]})
+                items = result.get("items") or []
+                history.extend(items)
+                if page >= int(result.get("totalPages") or 1):
+                    break
+                page += 1
+        finally:
+            if started:
+                conn.commit()
     return history
 
 
-def _external_history_events(sample_id: str, history: list[dict], *, deployment_id: str, exported_at: str) -> list[dict]:
+def _external_history_events(sample_id: str, history: list[dict], *, deployment_id: str, exported_at: str, source_revision: int = 0) -> list[dict]:
     events: list[dict] = []
     for idx, row in enumerate(history, start=1):
+        task = row.get("task")
+        if not isinstance(task, dict):
+            # Log-only history is already carried in sample/events.json. A
+            # second synthetic event would duplicate it at every archive hop.
+            continue
         key = str(row.get("key") or idx)
         event_id = f"external_history_{sample_id}_{chamber_package.sha256_bytes(key.encode('utf-8'))[:16]}"
         problems = row.get("problems") if isinstance(row.get("problems"), list) else []
@@ -147,11 +160,16 @@ def _external_history_events(sample_id: str, history: list[dict], *, deployment_
             "type": "external_history",
             "eventType": "external_history",
             "sourceDeploymentId": deployment_id,
+            "sourceRevision": source_revision,
             "sourceSampleId": sample_id,
+            "sourceTaskId": str(task.get("id") or key),
+            "sourceProjectId": str(task.get("projectId") or ""),
+            "sourceStageId": str(task.get("stageId") or ""),
             "projectName": str(row.get("projectName") or ""),
             "stageName": str(row.get("stageName") or ""),
             "testItem": str(row.get("testItem") or ""),
             "taskStatus": str(row.get("status") or ""),
+            "taskSampleCount": int(row.get("taskSampleCount") or 0),
             "result": str(row.get("result") or ""),
             "faultMarked": bool(row.get("faultMarked")),
             "problemDescription": "；".join(str(item) for item in problems if str(item or "").strip()),
@@ -193,7 +211,7 @@ def prepare_export_bundle_parts(
     """Build ChamberData v2 export payloads shared by byte/file exports."""
     data, revision, _ = ctx.get_state()
     export_data = import_diff.strip_view_state(data)
-    if not migration_scope.selection_is_empty(selection):
+    if selection:
         export_data = migration_scope.filter_state_by_selection(export_data, selection)
     deployment_id = ctx.load_deployment_id()
     exported_at = ctx.now_iso()
@@ -212,6 +230,19 @@ def prepare_export_bundle_parts(
         package_kind=package_kind,
         scope=resolved_scope,
     )
+    missing_assets = [asset for asset in package["assetIndex"]["assets"] if not asset.get("exists")]
+    if missing_assets:
+        # Preserve genuinely missing historical files, but do not describe a
+        # concurrently deleted photo as a missing asset in an otherwise valid ZIP.
+        with closing(ctx.connect_db()) as conn:
+            for asset in missing_assets:
+                active = conn.execute(
+                    "SELECT 1 FROM sample_assets WHERE sample_id = ? AND relative_path = ? AND deleted_at IS NULL LIMIT 1",
+                    (str(asset.get("entityId") or ""), str(asset.get("sourceRelativePath") or "")),
+                ).fetchone()
+                if not active:
+                    raise ValueError("导出期间照片文件已变化或无法读取，请重试导出")
+    chamber_package.validate_domain_documents(package["manifest"], package["domains"], package["assetIndex"])
     payloads = chamber_package.package_payloads(package, pretty=True, extra_payloads=extra_payloads)
     checksums = {path: text_sha256(text) for path, text in payloads.items()}
     payloads["checksums.json"] = ctx.json_dumps(checksums, pretty=True)
@@ -232,22 +263,20 @@ def write_export_bundle_zip(ctx: BundlePreviewContext, zf: zipfile.ZipFile, expo
         rel = str(asset.get("sourceRelativePath") or "")
         zip_path = str(asset.get("zipPath") or "")
         if not rel or not zip_path:
-            continue
+            raise ValueError("导出照片路径无效，请重新导出")
         try:
             source_path = ctx.path_inside_data(rel)
-            if source_path.is_file():
-                zf.write(source_path, zip_path)
+            digest = hashlib.sha256()
+            size = 0
+            with source_path.open("rb") as source, zf.open(zip_path, "w", force_zip64=True) as target:
+                while chunk := source.read(1024 * 1024):
+                    target.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+            if size != asset.get("bytes") or digest.hexdigest() != asset.get("sha256"):
+                raise ValueError("照片内容与导出快照不一致")
         except (ValueError, OSError, RuntimeError) as e:
-            print(f"[EXPORT] 跳过资产 {asset.get('assetId')}: {e}")
-
-
-def build_export_bundle(ctx: BundlePreviewContext) -> tuple[bytes, str]:
-    """生成完整导出包 zip，返回 (bytes, filename)。测试和低频工具保留该兼容接口。"""
-    tmp_path, filename = build_export_bundle_file(ctx)
-    try:
-        return tmp_path.read_bytes(), filename
-    finally:
-        tmp_path.unlink(missing_ok=True)
+            raise ValueError("导出期间照片文件已变化或无法读取，请重试导出") from e
 
 
 def build_export_bundle_file(ctx: BundlePreviewContext, *, selection: dict | None = None) -> tuple[Path, str]:
@@ -274,10 +303,16 @@ def build_sample_archive_file(ctx: BundlePreviewContext, sample_id: str) -> tupl
         raise KeyError("样机不存在")
     selection = {"sampleIds": [sample_id]}
     history = _sample_archive_history(ctx, sample_id)
+    # State and paged history each use a read snapshot. Reject a write between
+    # those snapshots instead of labeling newer history with an older revision.
+    with closing(ctx.connect_db()) as conn:
+        revision_row = conn.execute("SELECT revision FROM app_state WHERE id = 1").fetchone()
+    if revision_row is None or int(revision_row["revision"]) != _revision:
+        raise ValueError("导出期间平台数据已变化，请重试导出样机档案")
     deployment_id = ctx.load_deployment_id()
     exported_at = ctx.now_iso()
     filtered = migration_scope.filter_state_by_selection(export_data, selection)
-    sample_events = _external_history_events(sample_id, history, deployment_id=deployment_id, exported_at=exported_at)
+    sample_events = _external_history_events(sample_id, history, deployment_id=deployment_id, exported_at=exported_at, source_revision=_revision)
     existing_event_ids = {
         str(log.get("id") or "")
         for log in (filtered.get("sampleLibrary") or {}).get("logs") or []
@@ -336,6 +371,8 @@ def _target_archive_category(current_data: dict, target_category_id: str) -> dic
                 "name": str(category.get("name") or "外部导入样机"),
                 "description": str(category.get("description") or ""),
             }
+    if target_category_id:
+        raise ValueError("目标样机池已不存在，请刷新后重新选择导入位置")
     return {
         "id": "cat_external_imported_samples",
         "name": "外部导入样机",
@@ -343,7 +380,7 @@ def _target_archive_category(current_data: dict, target_category_id: str) -> dic
     }
 
 
-def _prepare_sample_archive_import_state(incoming_state: dict, current_data: dict, target_category_id: str) -> dict:
+def _prepare_sample_archive_import_state(incoming_state: dict, current_data: dict, target_category_id: str, *, source_deployment_id: str = "") -> dict:
     prepared = copy.deepcopy(incoming_state)
     target = _target_archive_category(current_data, target_category_id)
     samples = []
@@ -378,6 +415,8 @@ def _prepare_sample_archive_import_state(incoming_state: dict, current_data: dic
     for log in (prepared.get("sampleLibrary") or {}).get("logs") or []:
         if not isinstance(log, dict):
             continue
+        if not log.get("sourceDeploymentId"):
+            log["sourceDeploymentId"] = source_deployment_id
         source_fields = {
             "projectId": "sourceProjectId",
             "stageId": "sourceStageId",
@@ -421,60 +460,54 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
         for item in files:
             item["content"] = b""
 
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zip_security.safe_extract_zip(zf, tmp_dir)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zip_security.safe_extract_zip(zf, tmp_dir)
+                extracted_bytes = sum(entry.file_size for entry in zf.infolist() if not entry.is_dir())
+        except zipfile.BadZipFile as error:
+            raise ValueError("文件不是有效的数据包或已损坏，请重新导出并选择有效的 ZIP 数据包。") from error
 
         tmp_path = Path(tmp_dir)
 
         manifest_path = tmp_path / "manifest.json"
         if not manifest_path.is_file():
             raise ValueError("导入包缺少 manifest.json")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json_validation.loads(manifest_path.read_text(encoding="utf-8"))
+        chamber_package.validate_manifest(manifest)
 
-        asset_index = None
-        if chamber_package.is_chamberdata_manifest(manifest):
-            checksums = None
-            checksums_path = tmp_path / chamber_package.CHECKSUMS_PATH
-            if checksums_path.is_file():
-                if checksums_path.stat().st_size > ctx.import_preview_max_state_bytes:
-                    raise ValueError(f"导入包 {chamber_package.CHECKSUMS_PATH} 过大，超过 {ctx.import_preview_max_state_bytes} bytes 上限")
-                checksums = json.loads(checksums_path.read_text(encoding="utf-8"))
-            chamber_package.verify_checksums(tmp_path, checksums)
+        checksums = None
+        checksums_path = tmp_path / chamber_package.CHECKSUMS_PATH
+        if checksums_path.is_file():
+            if checksums_path.stat().st_size > ctx.import_preview_max_state_bytes:
+                raise ValueError(f"导入包 {chamber_package.CHECKSUMS_PATH} 过大，超过 {ctx.import_preview_max_state_bytes} bytes 上限")
+            checksums = json_validation.loads(checksums_path.read_text(encoding="utf-8"))
+        chamber_package.verify_checksums(tmp_path, checksums)
 
-            def _read_package_json(rel_path: str):
-                path = tmp_path / rel_path
-                if not path.is_file():
-                    raise ValueError(f"导入包缺少 {rel_path}")
-                if path.stat().st_size > ctx.import_preview_max_state_bytes:
-                    raise ValueError(f"导入包 {rel_path} 过大，超过 {ctx.import_preview_max_state_bytes} bytes 上限")
-                return json.loads(path.read_text(encoding="utf-8"))
+        def _read_package_json(rel_path: str):
+            path = tmp_path / rel_path
+            if not path.is_file():
+                raise ValueError(f"导入包缺少 {rel_path}")
+            if path.stat().st_size > ctx.import_preview_max_state_bytes:
+                raise ValueError(f"导入包 {rel_path} 过大，超过 {ctx.import_preview_max_state_bytes} bytes 上限")
+            return json_validation.loads(path.read_text(encoding="utf-8"))
 
-            domains = chamber_package.read_domain_documents(_read_package_json)
-            asset_index = chamber_package.read_asset_index(_read_package_json)
-            chamber_package.validate_domain_documents(manifest, domains, asset_index)
-            incoming_state = chamber_package.state_from_domain_documents(manifest, domains)
-            state_bytes = sum((tmp_path / rel).stat().st_size for rel in chamber_package.DOMAIN_PATHS.values())
-            state_bytes += (tmp_path / chamber_package.ASSET_INDEX_PATH).stat().st_size
-            if checksums_path.is_file():
-                state_bytes += checksums_path.stat().st_size
-        else:
-            state_path = tmp_path / "state.json"
-            if not state_path.is_file():
-                raise ValueError("导入包缺少 state.json")
-            state_bytes = state_path.stat().st_size
-            if state_bytes > ctx.import_preview_max_state_bytes:
-                raise ValueError(f"导入包 state.json 过大 ({state_bytes} bytes)，超过 {ctx.import_preview_max_state_bytes} bytes 上限")
-            incoming_state = json.loads(state_path.read_text(encoding="utf-8"))
-        incoming_state = import_defaults.normalize_import_state(
-            incoming_state,
-            source_format=str(manifest.get("format") or manifest.get("protocol") or ""),
-        )
+        domains = chamber_package.read_domain_documents(_read_package_json)
+        asset_index = chamber_package.read_asset_index(_read_package_json)
+        chamber_package.validate_domain_documents(manifest, domains, asset_index)
+        incoming_state = chamber_package.state_from_domain_documents(manifest, domains)
+        state_bytes = sum((tmp_path / rel).stat().st_size for rel in chamber_package.DOMAIN_PATHS.values())
+        state_bytes += (tmp_path / chamber_package.ASSET_INDEX_PATH).stat().st_size
+        if checksums_path.is_file():
+            state_bytes += checksums_path.stat().st_size
+        incoming_state = status_normalization.normalize_state_payload(incoming_state)
+        chamber_package.validate_state_structure(incoming_state)
 
         current_data, current_revision, _ = ctx.get_state(compact=True)
         package_kind = str(manifest.get("packageKind") or "full")
         target_category_id = str(fields.get("targetCategoryId") or "")
         if package_kind == "sample-archive":
-            incoming_state = _prepare_sample_archive_import_state(incoming_state, current_data, target_category_id)
+            incoming_state = _prepare_sample_archive_import_state(incoming_state, current_data, target_category_id,
+                source_deployment_id=str(manifest.get("sourceDeploymentId") or ""))
 
         result = import_diff.diff_import_bundle(current_data, incoming_state, manifest, tmp_path, asset_index=asset_index)
         result["selectionTree"] = migration_scope.build_selection_tree(incoming_state)
@@ -486,7 +519,7 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
         result["previewId"] = preview_id_value
         payload_path = store_import_preview_payload(ctx, tmp_path, incoming_state, result)
         payload_bytes = payload_path.stat().st_size
-        ctx.import_previews[preview_id_value] = {
+        import_preview_cache.put_entry(ctx.import_previews, preview_id_value, {
             "_ts": time.time(),
             "_tmp_dir": str(tmp_path),
             "_payload_path": str(payload_path),
@@ -494,8 +527,9 @@ def analyze_import_bundle(ctx: BundlePreviewContext, headers, raw_body: bytes) -
             "_zip_bytes": zip_bytes,
             "_state_bytes": state_bytes,
             "_payload_bytes": payload_bytes,
-            "_cache_bytes": zip_bytes + payload_bytes,
-        }
+            "_extracted_bytes": extracted_bytes,
+            "_cache_bytes": zip_bytes + extracted_bytes + payload_bytes,
+        })
         cleanup_expired_previews(ctx)
         if preview_id_value not in ctx.import_previews:
             raise ValueError("导入预览缓存已超过服务器上限，请稍后重试")

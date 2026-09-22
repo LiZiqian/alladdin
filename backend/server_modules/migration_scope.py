@@ -42,18 +42,20 @@ def selection_is_empty(selection: object | None) -> bool:
 
 def task_sample_ids(task: dict) -> set[str]:
     ids = {str(item or "").strip() for item in (task.get("sampleIds") or []) if str(item or "").strip()}
-    for row in task.get("removedSampleRecords") or []:
-        if isinstance(row, dict) and row.get("sampleId"):
-            ids.add(str(row.get("sampleId")))
-    for row in task.get("sampleFaultRecords") or []:
-        if isinstance(row, dict) and row.get("sampleId"):
-            ids.add(str(row.get("sampleId")))
-    for upload in task.get("resultUploads") or []:
-        if not isinstance(upload, dict):
-            continue
-        for sample_ref in upload.get("samples") or []:
-            if isinstance(sample_ref, dict) and sample_ref.get("sampleId"):
-                ids.add(str(sample_ref.get("sampleId")))
+    pending = [task.get(key) for key in ("removedSampleRecords", "sampleFaultRecords", "resultUploads",
+                                       "resultDraft", "logs", "issueRecord")]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            for key in ("sampleId", "sid"):
+                if isinstance(value.get(key), str) and value[key]:
+                    ids.add(value[key])
+            pending.extend(child for child in value.values() if isinstance(child, (dict, list)))
+        elif isinstance(value, list):
+            pending.extend(value)
+    snapshots = task.get("sampleSnapshots")
+    if isinstance(snapshots, dict):
+        ids.update(str(sid) for sid in snapshots if sid)
     return ids
 
 
@@ -73,6 +75,8 @@ def filter_state_by_selection(state: dict, selection: object | None) -> dict:
     samples so imported task history does not point at missing sample records.
     """
     if selection_is_empty(selection):
+        if isinstance(selection, dict) and any(alias in selection for aliases in SELECTION_KEYS.values() for alias in aliases):
+            raise ValueError("请至少选择一项导入或导出数据")
         return copy.deepcopy(state)
 
     selected = normalize_selection(selection)
@@ -166,6 +170,7 @@ def build_selection_tree(state: dict) -> dict:
             "id": str(project.get("id") or ""),
             "label": str(project.get("name") or project.get("code") or project.get("id") or "未命名项目"),
             "stages": [],
+            "defaultSampleCategoryId": str(project.get("defaultSampleCategoryId") or ""),
         }
         for stage in project.get("stages") or []:
             if not isinstance(stage, dict):
@@ -185,6 +190,7 @@ def build_selection_tree(state: dict) -> dict:
                     "label": label or str(task.get("id") or "未命名任务"),
                     "stageId": stage_node["id"],
                     "projectId": project_node["id"],
+                    "sampleIds": sorted(task_sample_ids(task)),
                 })
             project_node["stages"].append(stage_node)
         projects.append(project_node)

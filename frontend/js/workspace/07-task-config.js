@@ -74,9 +74,9 @@ app.registerModule("workspace.taskConfig", {
       alert("当前阶段测试池为空。请先在「配置测试用例集」的测试策略配置中新增测试项。");
       return;
     }
-    const taskCountByProgress = new Map();
-    (stage.tasks || []).forEach(t => {
-      if (!t.progressId) return;
+    const taskCountByProgress = new Map(Object.entries(stage.progressTaskCounts || {}));
+    if (!stage.progressTaskCounts) (stage.tasks || []).forEach(t => {
+      if (!t.progressId || t.archived || t.deletedAt) return;
       taskCountByProgress.set(t.progressId, (taskCountByProgress.get(t.progressId) || 0) + 1);
     });
     const rows = pool.map((p, idx) => {
@@ -92,7 +92,7 @@ app.registerModule("workspace.taskConfig", {
           <td><input class="task-pool-count" data-index="${idx}" type="number" min="1" step="1" value="1" data-app-action="task-pool-selection" data-app-events="input"></td>
         </tr>`;
     }).join("");
-    this.showModal("新增任务", `
+    const modalId = this.showModal("新增任务", `
       <div class="path">从当前阶段测试池选择测试项生成真实任务。可重复新增，新增后默认均为"待下发"。</div>
       <div class="task-pool-toolbar">
         <button type="button" class="btn btn-sm btn-outline" data-app-action="task-pool-check-all" data-value="1">全选</button>
@@ -137,7 +137,10 @@ app.registerModule("workspace.taskConfig", {
       Utils.toast(`已新增 ${newTasks.length} 个待下发任务。`);
       return false;
     });
-    setTimeout(() => this.updateTaskPoolSelectionCount(), 0);
+    setTimeout(() => {
+      if (modalId != null && this._currentModalId !== modalId) return;
+      this.updateTaskPoolSelectionCount();
+    }, 0);
   },
 
   setTaskPoolChecked(checked) {
@@ -197,12 +200,19 @@ app.registerModule("workspace.taskConfig", {
     if (t && this.taskFlowStatus(t) !== "待下发") { alert("只有未下发任务可以分配或重新分配样机。"); return; }
     const selectedIds = t?.sampleIds || [];
     const sampleCards = this.buildTaskSamplePickerHtml(selectedIds, "assignSamplePick", "assignProgress", "assignSampleLimitHint", t?.id || "");
-    this.showModal(t?.sampleIds?.length ? "重新分配样机" : "分配样机", `
+    const modalId = this.showModal(t?.sampleIds?.length ? "重新分配样机" : "分配样机", `
       <input type="hidden" id="assignProgress" value="${Utils.esc(progress.id)}">
       <div class="path">计划任务：${Utils.esc(this.getProgressDisplayName(s, progress))}</div>
       <div id="assignSampleLimitHint" class="sample-limit-hint"></div>
       <div class="form-group"><label class="req">选择样机</label><div class="dispatch-sample-select">${sampleCards}</div></div>
     `, async () => {
+      // A failed save can replace the local state snapshot while this modal stays open.
+      const p = this.findProjectRecord(projectId);
+      const s = p?.stages.find(x => x.id === stageId);
+      let t = taskId ? s?.tasks.find(x => x.id === taskId) : null;
+      const progress = (s?.progress || []).find(x => x.id === progressId) || this.resolveTaskProgress(s, t, progressId).progress;
+      if (!p || !s || !progress) return true;
+      if (t && this.taskFlowStatus(t) !== "待下发") { alert("只有未下发任务可以分配或重新分配样机。"); return true; }
       const operator = t?.owner || "管理员";
       const sampleIds = this.getSelectedTaskSampleIds("assignSamplePick");
       const check = this.validateTaskSampleSelection(progress, sampleIds, "样机分配");
@@ -213,8 +223,12 @@ app.registerModule("workspace.taskConfig", {
         Utils.toast("未检测到变更");
         return false;
       }
+      const epoch = this._dataSnapshotEpoch || 0;
       if (typeof this.prepareTaskActionSamples === "function"
         && !await this.prepareTaskActionSamples(t || { id: `plan:${progress.id}`, sampleSnapshots: {} }, [...new Set([...oldSampleIds, ...sampleIds])], "保存样机分配")) return true;
+      if ((this._dataSnapshotEpoch || 0) !== epoch || this.findProjectRecord(projectId) !== p
+        || p.stages.find(stage => stage.id === stageId) !== s
+        || (t && (s.tasks.find(task => task.id === taskId) !== t || this.taskFlowStatus(t) !== "待下发"))) return true;
       const mutationSnapshot = this.taskMutationSnapshot();
       const wasNew = !t;
       t = t || this.ensurePlanTask(s, progress);
@@ -224,11 +238,9 @@ app.registerModule("workspace.taskConfig", {
       t.requiredSampleCount = check.required;
       if (!t.status) this.repairTaskStatus(t, "待下发");
       removed.forEach(id => {
-        if (!this.isSampleUsedByAnotherOpenTask(id, t.id)) {
-          this.changeSampleStatus(id, "闲置", { user: operator, source: "任务样机重新分配", reason: "未下发任务调整样机", projectId: p.id, stageId: s.id, taskId: t.id, testItem: t.testItem });
-        }
+        this.recordTaskSampleReservation(id, { user: operator, source: "取消样机预约", reason: "未下发任务调整样机", projectId: p.id, stageId: s.id, taskId: t.id, testItem: t.testItem });
       });
-      added.forEach(id => this.changeSampleStatus(id, "在位等待", { user: operator, source: "任务样机分配", reason: "未下发任务分配样机", projectId: p.id, stageId: s.id, taskId: t.id, testItem: t.testItem }));
+      added.forEach(id => this.recordTaskSampleReservation(id, { user: operator, source: "预约任务样机", reason: `计划 ${t.planStartDate || '未设置'} ~ ${t.planEndDate || '未设置'}`, projectId: p.id, stageId: s.id, taskId: t.id, testItem: t.testItem }));
       this.addTaskLog(t, oldSampleIds.length ? "重新分配样机" : "分配样机", { user: operator, reason: "未下发任务样机配置", detail: `样机：${sampleIds.map(id => this.findSample(id)?.sample.sampleNo || id).join(", ")}` });
       const saved = await this.commitTaskMutation(p, s, t, {
         action: oldSampleIds.length ? "reassign_task_samples" : "assign_task_samples",
@@ -238,13 +250,14 @@ app.registerModule("workspace.taskConfig", {
         sampleIdsForMutation: [...new Set([...oldSampleIds, ...sampleIds])]
       });
       if (!saved) {
-        this.restoreFailedTaskMutation(mutationSnapshot);
-        return false;
+        this.restoreFailedTaskMutation(mutationSnapshot, { render: false });
+        return true;
       }
       Utils.toast(oldSampleIds.length ? "样机已重新分配" : "样机已分配");
       return false;
     }, "确认", { className: "assign-sample-modal" });
     setTimeout(() => {
+      if (modalId != null && this._currentModalId !== modalId) return;
       this.initTaskSamplePicker("assignSamplePick");
       this.updateTaskSampleLimitUI('assignProgress', 'assignSamplePick', 'assignSampleLimitHint');
     }, 0);
@@ -265,7 +278,7 @@ app.registerModule("workspace.taskConfig", {
       ? ""
       : `<div class="field-error" data-task-member-missing="1" style="display:block;margin-top:6px">
           ⚠ 项目测试人员名单为空，无法选择执行人。
-          <button type="button" class="btn btn-sm" style="margin-left:8px"
+          <button type="button" class="btn btn-sm btn-add" style="margin-left:8px"
             data-app-action="task-config-member-add">立即新增人员</button>
         </div>`;
     this.showModal("设置计划时间", `
@@ -280,6 +293,12 @@ app.registerModule("workspace.taskConfig", {
         <div class="form-group"><label class="req" style="color:var(--muted);font-weight:700">计划终止时间<span class="req-star">*</span></label><input type="date" id="planEndDate" value="${Utils.esc(planEndDate)}"></div>
       </div>
     `, async () => {
+      const p = this.findProjectRecord(projectId);
+      const s = p?.stages.find(x => x.id === stageId);
+      let t = taskId ? s?.tasks.find(x => x.id === taskId) : null;
+      const progress = (s?.progress || []).find(x => x.id === progressId) || this.resolveTaskProgress(s, t, progressId).progress;
+      if (!p || !s || !progress) return true;
+      if (t && this.taskFlowStatus(t) !== "待下发") { alert("只有未下发任务可以修改计划时间。"); return true; }
       const owner = document.getElementById("planOwner").value.trim();
       const start = document.getElementById("planStartDate").value;
       const end = document.getElementById("planEndDate").value;
@@ -316,8 +335,8 @@ app.registerModule("workspace.taskConfig", {
         sampleIdsForMutation: []
       });
       if (!saved) {
-        this.restoreFailedTaskMutation(mutationSnapshot);
-        return false;
+        this.restoreFailedTaskMutation(mutationSnapshot, { render: false });
+        return true;
       }
       Utils.toast("计划配置已保存");
       return false;
@@ -356,7 +375,7 @@ app.registerModule("workspace.taskConfig", {
     if (!p || !s || !progress) return;
     if (t && this.taskFlowStatus(t) !== "待下发") { alert("只有未下发任务可以修改配置。"); return; }
     const html = this.taskConfigPanelHtml(p, s, progress, t, initialTab);
-    this.showModal("任务配置", html,
+    const modalId = this.showModal("任务配置", html,
       () => this.saveTaskConfigAll(projectId, stageId, progressId, taskId),
       "保存并关闭",
       {
@@ -374,6 +393,7 @@ app.registerModule("workspace.taskConfig", {
     );
     // 标题栏替换为左右布局
     setTimeout(() => {
+      if (modalId != null && this._currentModalId !== modalId) return;
       const titleEl = document.getElementById("modalTitle");
       if (titleEl) {
         titleEl.textContent = "";
@@ -382,6 +402,7 @@ app.registerModule("workspace.taskConfig", {
     }, 0);
     // 若默认进入样机配置页，初始化数量提示
     setTimeout(() => {
+      if (modalId != null && this._currentModalId !== modalId) return;
       this.initTaskSamplePicker("tcSamplePick");
       if (initialTab === "sample") this.updateTaskSampleLimitUI("tcSampleProgress", "tcSamplePick", "tcSampleLimitHint");
     }, 0);
@@ -419,7 +440,7 @@ app.registerModule("workspace.taskConfig", {
       ? ""
       : `<div class="field-error" data-task-member-missing="1" style="display:block;margin-top:6px">
           ⚠ 项目测试人员名单为空，无法选择执行人。
-          <button type="button" class="btn btn-sm" style="margin-left:8px"
+          <button type="button" class="btn btn-sm btn-add" style="margin-left:8px"
             data-app-action="task-config-member-add">立即新增人员</button>
         </div>`;
     return `
@@ -438,14 +459,17 @@ app.registerModule("workspace.taskConfig", {
   taskSampleConfigPanelHtml(project, stage, progress, task) {
     const t = task;
     const selectedIds = t?.sampleIds || [];
-    const sampleCards = this.buildTaskSamplePickerHtml(selectedIds, "tcSamplePick", "tcSampleProgress", "tcSampleLimitHint", t?.id || "");
+    const selectedHeaderHtml = `<div class="task-sample-label-row task-sample-label-row-compact">
+      <label>任务样机数：</label>
+      <div id="tcSampleLimitHint" class="sample-limit-hint sample-limit-global" title="当前已选 / 任务要求样机数"></div>
+      ${this.taskSampleScheduleHintHtml()}
+    </div>`;
+    const sampleCards = this.buildTaskSamplePickerHtml(selectedIds, "tcSamplePick", "tcSampleProgress", "tcSampleLimitHint", t?.id || "", {
+      planStartInputId: "tcPlanStartDate", planEndInputId: "tcPlanEndDate", showScheduleHint: false, selectedHeaderHtml
+    });
     return `
       <input type="hidden" id="tcSampleProgress" value="${Utils.esc(progress.id)}">
       <div class="form-group task-sample-config-group">
-        <div class="task-sample-label-row task-sample-label-row-compact">
-          <label>任务样机数：</label>
-          <div id="tcSampleLimitHint" class="sample-limit-hint sample-limit-global" title="当前已选 / 任务要求样机数"></div>
-        </div>
         <div class="dispatch-sample-select task-config-sample-scroll">${sampleCards}</div>
       </div>
 `;
@@ -476,6 +500,7 @@ app.registerModule("workspace.taskConfig", {
     let t = taskId ? s?.tasks.find(x => x.id === taskId) : null;
     const progress = (s?.progress || []).find(x => x.id === progressId) || this.resolveTaskProgress(s, t, progressId).progress;
     if (!p || !s || !progress) return true;
+    if (t && this.taskFlowStatus(t) !== "待下发") { alert("任务状态已变化，请关闭后刷新。"); return true; }
     // 读取 plan 字段
     const owner = document.getElementById("tcPlanOwner")?.value.trim() || "";
     const start = document.getElementById("tcPlanStartDate")?.value || "";
@@ -495,19 +520,8 @@ app.registerModule("workspace.taskConfig", {
     if (start > end) { this.markTaskPlanConfigInvalid(document.getElementById("tcPlanEndDate"), "计划终止时间不能早于计划开始时间"); return true; }
     // 验证 sample — 文字提示 + 自动切到样机 Tab，不弹 alert，不标红计数胶囊
     if (!check.ok) {
-      const labelRow = document.querySelector(".task-sample-label-row-compact");
-      const exist = labelRow?.parentElement?.querySelector(".field-error");
-      if (exist) exist.remove();
-      if (labelRow) {
-        if (typeof this.insertFieldErrorAfter === "function") {
-          this.insertFieldErrorAfter(labelRow, check.msg);
-        } else {
-          const node = document.createElement("div");
-          node.className = "field-error";
-          node.textContent = check.msg;
-          labelRow.parentElement?.insertBefore(node, labelRow.nextSibling || null);
-        }
-      }
+      const pickerState = this.taskSamplePickerState("tcSamplePick");
+      if (pickerState) pickerState.selectionError = check.msg;
       this.switchTaskConfigTab("sample");
       return true;
     }
@@ -517,8 +531,12 @@ app.registerModule("workspace.taskConfig", {
       return false;
     }
     const samplesBeforeSave = [...(t?.sampleIds || [])];
+    const epoch = this._dataSnapshotEpoch || 0;
     if (typeof this.prepareTaskActionSamples === "function"
       && !await this.prepareTaskActionSamples(t || { id: `plan:${progress.id}`, sampleSnapshots: {} }, [...new Set([...samplesBeforeSave, ...sampleIds])], "保存任务配置")) return true;
+    if ((this._dataSnapshotEpoch || 0) !== epoch || this.findProjectRecord(projectId) !== p
+      || p.stages.find(stage => stage.id === stageId) !== s
+      || (t && (s.tasks.find(task => task.id === taskId) !== t || this.taskFlowStatus(t) !== "待下发"))) return true;
     const mutationSnapshot = this.taskMutationSnapshot();
     // ensure（task 已存在，仅防御）
     const wasNew = !t;
@@ -544,11 +562,9 @@ app.registerModule("workspace.taskConfig", {
       t.sampleIds = sampleIds;
       t.requiredSampleCount = check.required;
       removed.forEach(id => {
-        if (!this.isSampleUsedByAnotherOpenTask(id, t.id)) {
-          this.changeSampleStatus(id, "闲置", { user: operator, source: "任务样机重新分配", reason: "未下发任务调整样机", projectId: p.id, stageId: s.id, taskId: t.id, testItem: t.testItem });
-        }
+        this.recordTaskSampleReservation(id, { user: operator, source: "取消样机预约", reason: "未下发任务调整样机", projectId: p.id, stageId: s.id, taskId: t.id, testItem: t.testItem });
       });
-      added.forEach(id => this.changeSampleStatus(id, "在位等待", { user: operator, source: "任务样机分配", reason: "未下发任务分配样机", projectId: p.id, stageId: s.id, taskId: t.id, testItem: t.testItem }));
+      added.forEach(id => this.recordTaskSampleReservation(id, { user: operator, source: "预约任务样机", reason: `计划 ${start} ~ ${end}`, projectId: p.id, stageId: s.id, taskId: t.id, testItem: t.testItem }));
     }
     // 状态 + 日志
     if (!t.status) this.repairTaskStatus(t, "待下发");
@@ -571,8 +587,9 @@ app.registerModule("workspace.taskConfig", {
       sampleIdsForMutation: sampleChanged ? [...new Set([...oldSampleIds, ...sampleIds])] : []
     });
     if (!saved) {
-      this.restoreFailedTaskMutation(mutationSnapshot);
-      return false;
+      this.restoreFailedTaskMutation(mutationSnapshot, { render: false });
+      this.loadTaskSamplePickerPage("tcSamplePick");
+      return true;
     }
     if (planChanged && sampleChanged) Utils.toast("任务配置已保存");
     else if (planChanged) Utils.toast("计划配置已保存");
@@ -581,7 +598,11 @@ app.registerModule("workspace.taskConfig", {
   },
 
   markTaskPlanConfigInvalid(el, message) {
-    const showPlan = () => this.switchTaskConfigTab("plan");
+    const modalId = this._currentModalId;
+    const showPlan = () => {
+      if (modalId != null && this._currentModalId !== modalId) return;
+      this.switchTaskConfigTab("plan");
+    };
     showPlan();
     this.markFieldInvalid(el, message);
     el?.focus?.({ preventScroll: true });
@@ -634,6 +655,7 @@ app.registerModule("workspace.taskConfig", {
       panel.setAttribute("aria-hidden", "false");
     }
     if (tab === "sample") {
+      this.loadTaskSamplePickerPage("tcSamplePick");
       this.updateTaskSampleLimitUI("tcSampleProgress", "tcSamplePick", "tcSampleLimitHint");
     }
   },

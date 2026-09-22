@@ -1,0 +1,27 @@
+.problem-photo-link {
+  border: 0;
+  background: transparent;
+  color: var(--brand-gold);
+  padding: 3px 0;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.problem-photo-modal { width: min(820px, 94vw); }
+.problem-photo-modal .modal-header { border-bottom: 3px solid var(--brand-navy); }
+.problem-photo-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.problem-photo-toolbar span { color: var(--muted); font-size: 12px; }
+.problem-photo-modal h4 { font-size: 14px; color: var(--brand-navy); margin: 18px 0 10px; }
+.problem-photo-others { margin-top: 18px; }
+.problem-photo-others > summary { font-size: 14px; font-weight: 700; color: var(--brand-navy); cursor: pointer; }
+.problem-photo-others[open] > summary { margin-bottom: 10px; }
+.problem-photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+.problem-photo-grid > .path { grid-column: 1 / -1; }
+.problem-photo-card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.problem-photo-preview { width: 100%; height: 120px; padding: 0; border: 0; border-radius: 4px; background: var(--surface); cursor: zoom-in; color: var(--muted); }
+.problem-photo-preview img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.problem-photo-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--brand-navy); }
+.task-result-photo-item { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; }
+.task-result-photo-remove { width: 26px; height: 26px; flex: 0 0 26px; border: 0; border-radius: 50%; color: var(--danger-text); background: var(--danger-bg); font-size: 20px; line-height: 1; cursor: pointer; }
+.problem-photo-link:focus-visible, .task-result-photo-remove:focus-visible, .problem-photo-preview:focus-visible, .problem-photo-others > summary:focus-visible { outline: 2px solid var(--brand-navy); outline-offset: 2px; }

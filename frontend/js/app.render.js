@@ -72,37 +72,31 @@ app.registerModule("app.render", {
     logoHeading.className = "home-logo-heading";
     const logo = document.createElement("img");
     logo.className = "home-logo";
-    logo.src = "/css/assets/aladdin-logo.png";
+    logo.src = "/css/assets/aladdin-logo.png?v=150443a32837";
     logo.alt = "阿拉丁 ALADDIN";
-    logo.width = 2172;
-    logo.height = 724;
+    logo.width = 2169;
+    logo.height = 725;
     logoHeading.append(logo);
 
     const title = document.createElement("p");
     title.className = "home-title";
     title.append(document.createTextNode("终端硬件测试数字治理平台 "));
-    title.append(this.textEl("span", "V7"));
-    brand.append(logoHeading, title);
+    title.append(this.textEl("span", "V7", "home-version"));
+    brand.append(logoHeading);
 
     const grid = document.createElement("div");
     grid.className = "home-entry-grid";
     grid.append(
       this.homeEntryCard({ module: "projects", className: "project-entry", icon: "📁", name: "项目管理", meta: `${projectCount} 个项目` }),
       this.homeEntryCard({ module: "samples", className: "sample-entry", icon: "📦", name: "样机档案池", meta: `${samplePoolCount} 个样机池 · ${sampleCount} 台样机` }),
-      this.homeEntryCard({ module: "devices", icon: "🔬", name: "测试设备仓库", meta: "敬请期待...", style: "opacity:0.7" })
+      this.homeEntryCard({ module: "devices", icon: "🔬", name: "测试设备仓库", meta: "按地域、部门管理" })
     );
 
-    shell.append(brand, grid, this.textEl("p", "从执行走向治理", "home-slogan"), this.homeCacheToolNode());
+    const signature = document.createElement("footer");
+    signature.className = "home-signature";
+    signature.append(title, this.textEl("p", "从执行走向治理", "home-slogan"));
+    shell.append(brand, grid, signature, this.homeCacheToolNode());
     content.replaceChildren(shell);
-  },
-  renderDevices() {
-    const content = document.getElementById("content");
-    if (!content) return;
-    const empty = document.createElement("div");
-    empty.className = "sample-archive-empty";
-    empty.style.minHeight = "calc(100vh - 160px)";
-    empty.append(this.textEl("b", "测试设备仓库"), this.textEl("span", "敬请期待..."));
-    content.replaceChildren(empty);
   },
 
   renderPreserveScroll() {
@@ -147,8 +141,8 @@ app.registerModule("app.render", {
     // 数据工具（侧栏底部）
     const navTools = document.getElementById("navTools");
     if (navTools) navTools.replaceChildren(
-      this.navToolNode("bundle-export", "⬇", "导出完整数据包"),
-      this.navToolNode("bundle-import", "⬆", "导入数据包")
+      this.navToolNode("bundle-export", "download", "导出完整数据包"),
+      this.navToolNode("bundle-import", "upload", "导入数据包")
     );
 
     this.applySidebarState();
@@ -216,7 +210,9 @@ app.registerModule("app.render", {
     node.setAttribute("role", "button");
     node.setAttribute("aria-label", label);
     node.tabIndex = 0;
-    node.append(this.textEl("span", icon, "nav-tool-icon"), this.textEl("span", label, "nav-tool-label"));
+    const iconNode = this.textEl("span", "", "nav-tool-icon");
+    iconNode.innerHTML = Utils.iconHtml(icon);
+    node.append(iconNode, this.textEl("span", label, "nav-tool-label"));
     return node;
   },
 
@@ -265,6 +261,10 @@ app.registerModule("app.render", {
     } else if (module === "samples") {
       parts.push({ label: "样机档案池", module: "samples" });
       if (cat) parts.push({ label: cat.name, module: "" });
+    } else if (module === "devices") {
+      parts.push({ label: "测试设备仓库", module: "devices" });
+      const group = this.currentDeviceGroup?.();
+      if (group) parts.push({ label: `${group.region}－${group.department}`, module: "" });
     }
     return parts;
   },
@@ -293,19 +293,29 @@ app.registerModule("app.render", {
       this.prepareStageStrategyNavigation();
     }
     this.navigateModuleState(module);
+    if (module === "devices") {
+      this.view.selectedDeviceGroupId = null;
+      this.loadDeviceWarehouse();
+    }
     this.render();
   },
 
   // ---- 侧栏 ----
   toggleSidebar() {
     this.toggleSidebarCollapsed();
-    localStorage.setItem("digital_governance_sidebar_collapsed", this.sidebarCollapsed() ? "1" : "0");
-    this.applySidebarState();
+    try {
+      localStorage.setItem("digital_governance_sidebar_collapsed", this.sidebarCollapsed() ? "1" : "0");
+    } catch (_) { /* Browser storage can be disabled; retain the current session state. */ }
+    this.applySidebarState({ readPersisted: false });
   },
 
-  applySidebarState() {
-    const persisted = localStorage.getItem("digital_governance_sidebar_collapsed");
-    if (persisted !== null) this.setSidebarCollapsed(persisted === "1");
+  applySidebarState({ readPersisted = true } = {}) {
+    if (readPersisted) {
+      try {
+        const persisted = localStorage.getItem("digital_governance_sidebar_collapsed");
+        if (persisted !== null) this.setSidebarCollapsed(persisted === "1");
+      } catch (_) { /* Rendering must also work when browser storage is unavailable. */ }
+    }
     const sidebar = document.getElementById("sidebar");
     const toggle = document.getElementById("sidebarToggle");
     if (!sidebar) return;
@@ -313,6 +323,8 @@ app.registerModule("app.render", {
     if (toggle) {
       toggle.innerText = this.sidebarCollapsed() ? "▶" : "◀";
       toggle.title = this.sidebarCollapsed() ? "展开左侧栏" : "收起左侧栏";
+      toggle.setAttribute?.("aria-expanded", this.sidebarCollapsed() ? "false" : "true");
+      toggle.setAttribute?.("aria-label", toggle.title);
     }
   },
 

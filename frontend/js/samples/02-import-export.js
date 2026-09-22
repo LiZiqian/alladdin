@@ -19,23 +19,10 @@ app.registerModule("samples.importExport", {
 
         const category = this.sampleCategoryRecords().find(x => x.id === catId);
         if (!category) return;
-        if (!Array.isArray(category.samples)) category.samples = [];
-
-        const snapshot = this.dataSnapshot();
+        const epoch = this._dataSnapshotEpoch || 0;
         let imported = 0, skippedDup = 0, skippedGlobal = 0;
         const importedSamples = [];
-        const localDupIndexes = new Set();
-        const seenIdentifiers = new Map();
-        result.rows.forEach((row, idx) => {
-          if (this.sampleIsReassembled(row)) return;
-          for (const ident of this.sampleIdentifierSet(row)) {
-            if (seenIdentifiers.has(ident)) {
-              localDupIndexes.add(idx);
-              return;
-            }
-            seenIdentifiers.set(ident, idx);
-          }
-        });
+        const seenIdentifiers = new Set();
         let serverConflicts = new Map();
         try {
           const check = await this.checkSampleIdentityConflicts(
@@ -49,6 +36,10 @@ app.registerModule("samples.importExport", {
             })),
             { categoryId: catId }
           );
+          if ((this._dataSnapshotEpoch || 0) !== epoch || this.sampleCategoryRecords().find(x => x.id === catId) !== category) {
+            Utils.toast("平台数据已刷新，请重新选择文件导入。");
+            return;
+          }
           serverConflicts = new Map((check.results || [])
             .filter(item => item?.hasConflict && item.conflict)
             .map(item => [Number(item.index), item.conflict]));
@@ -59,13 +50,15 @@ app.registerModule("samples.importExport", {
         result.rows.forEach((row, idx) => {
           // 用 IMEI 或 SN 作为样机编号
           const sampleNo = row.sn || row.imei || row.boardSn || this.nextSampleNo(category, row.stage || "CSV", idx);
-          if (localDupIndexes.has(idx)) { skippedDup++; return; }
           const serverDup = serverConflicts.get(idx);
           if (serverDup) {
             if (serverDup.scope === "category") skippedDup++;
             else skippedGlobal++;
             return;
           }
+          const identifiers = this.sampleIsReassembled(row) ? [] : [...this.sampleIdentifierSet(row)];
+          if (identifiers.some(ident => seenIdentifiers.has(ident))) { skippedDup++; return; }
+          identifiers.forEach(ident => seenIdentifiers.add(ident));
           const location = String(row.location || "").trim();
           const initialResults = Utils.parseSampleIssueText(row.initialResult);
           const normalizedStatus = this.normalizeSampleStatusValue(row.status);
@@ -77,9 +70,7 @@ app.registerModule("samples.importExport", {
             standard: row.standard,
             platform: row.platform || "",
             schemeNo: row.schemeNo,
-            initialResult: row.initialResult,
-            initialResults,
-            problemRecords: initialResults.map(desc => ({ id: Utils.id("problem_"), description: desc, source: "初检", taskLabel: "" })),
+            problemRecords: initialResults.map(desc => ({ id: Utils.id("problem_"), createdAt: Utils.now(), description: desc, source: "初检", taskLabel: "" })),
             status: this.constants.sampleStatuses.includes(normalizedStatus) ? normalizedStatus : "闲置",
             location,
             tag: row.tag,
@@ -90,7 +81,6 @@ app.registerModule("samples.importExport", {
             importDate: row.importDate,
             sourceType: isXlsx ? "xlsx_import" : "csv_import"
           });
-          category.samples.push(sample);
           importedSamples.push(sample);
           imported++;
         });
@@ -103,10 +93,7 @@ app.registerModule("samples.importExport", {
             createSamples: true,
             samples: importedSamples
           });
-          if (!saved) {
-            this.restoreDataSnapshot(snapshot);
-            return;
-          }
+          if (!saved) return;
         }
         const warn = result.invalidPersonCount
           ? `；其中 ${result.invalidPersonCount} 个挂账人或持有人字段格式不合法，已按空处理`

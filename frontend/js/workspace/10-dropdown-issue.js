@@ -105,10 +105,13 @@ app.registerModule("workspace.dropdownIssue", {
       main.className = "case-main";
       main.textContent = option.item || "";
       node.append(main);
-      if (!selectedCategory) {
+      const details = selectedCategory ? [] : [option.category || ""];
+      const baselineCount = Utils.parsePositiveInt(option.baselineCount);
+      if (baselineCount !== null) details.push(`基线 ${baselineCount} 台`);
+      if (details.length) {
         const sub = document.createElement("div");
         sub.className = "case-sub";
-        sub.textContent = option.category || "";
+        sub.textContent = details.join(" · ");
         node.append(sub);
       }
     }
@@ -159,7 +162,7 @@ app.registerModule("workspace.dropdownIssue", {
         ev.preventDefault(); ev.stopPropagation();
         const idx = Number(el.dataset.caseOptionIndex);
         const opt = this._caseDropdownOptions?.[idx]; if (!opt) return;
-        this.selectCaseSuggestion(state.rowIdx, state.field, opt.category, opt.item || '');
+        this.selectCaseSuggestion(state.rowIdx, state.field, opt.category, opt.item || '', opt.baselineCount);
       });
       box.append(el);
     });
@@ -169,7 +172,7 @@ app.registerModule("workspace.dropdownIssue", {
     if (dd) dd.classList.remove('show');
     this._caseDropdownState = null;
   },
-  selectCaseSuggestion(rowIdx, field, category, item) {
+  selectCaseSuggestion(rowIdx, field, category, item, baselineCount = null) {
     const s = this.currentStage();
     const r = s?.strategy?.[rowIdx]; if (!r) return;
     if (field === 'category') {
@@ -182,6 +185,17 @@ app.registerModule("workspace.dropdownIssue", {
       const itemInput = tr?.querySelector('input[data-field="item"]');
       if (catInput) catInput.value = category;
       if (itemInput) itemInput.value = item;
+      const count = Utils.parsePositiveInt(baselineCount);
+      if (count !== null) {
+        r.sampleSize = count;
+        const sampleInput = tr?.querySelector('input[data-field="sampleSize"]');
+        if (sampleInput) {
+          sampleInput.value = String(count);
+          sampleInput.classList.remove('invalid');
+        }
+      }
+      // 同步进展后再保存，避免显示了新数量但下发任务仍使用旧数量。
+      this.autoSyncProgress?.({ persist: false });
     }
     this.scheduleStageStrategySave?.(450, "update_strategy", "选择测试用例");
     this.closeCaseDropdown();
@@ -219,7 +233,7 @@ app.registerModule("workspace.dropdownIssue", {
     if (!tid) {
       return `<span class="path">-</span>`;
     }
-    if (!hasDts && !hasIssue) {
+    if (!hasDts && !hasIssue && !r.issueNote) {
       return `<span class="path task-issue-record-empty" role="button" tabindex="0" data-app-action="task-issue-record" data-project-id="${Utils.esc(pid)}" data-stage-id="${Utils.esc(sid)}" data-task-id="${Utils.esc(tid)}">点击录入</span>`;
     }
     const taskId = task?.id || "";
@@ -227,15 +241,15 @@ app.registerModule("workspace.dropdownIssue", {
     return [
       hasDts ? `<div class="task-issue-record-line"><span class="task-issue-record-label">单号：</span> <b>${Utils.esc(r.dtsNo)}</b></div>` : "",
 hasIssue ? `<div class="task-issue-record-line"><span class="task-issue-record-label">是否重复：</span> ${r.isIssue === "否" ? `<span class="task-issue-repeat-no">${Utils.esc(r.isIssue)}</span>` : Utils.esc(r.isIssue)}</div>` : "",
-      `<div class="task-issue-record-line"><span class="task-issue-record-label">确认备注：</span> ${noteVal || "-"}</div>`
+      `<div class="task-issue-record-line"><span class="task-issue-record-label">确认备注：</span> ${noteVal || "-"}</div>`,
+      `<button type="button" class="btn btn-sm btn-outline" data-app-action="task-issue-record" data-project-id="${Utils.esc(pid)}" data-stage-id="${Utils.esc(sid)}" data-task-id="${Utils.esc(tid)}">编辑问题单</button>`
     ].join("");
   },
 
   openTaskIssueRecordModal(projectId, stageId, taskId) {
     const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
     if (!t) return;
-    if (!t.issueRecord) t.issueRecord = { dtsNo: "", isIssue: "", issueNote: "" };
-    const r = t.issueRecord;
+    const r = t.issueRecord || { dtsNo: "", isIssue: "", issueNote: "" };
     this.showModal("问题单录入", `
       <div class="form-group">
         <label>DTS单号</label>
@@ -254,6 +268,8 @@ hasIssue ? `<div class="task-issue-record-line"><span class="task-issue-record-l
         <textarea id="issueRecordNote" rows="4" placeholder="填写问题确认说明">${Utils.esc(r.issueNote || "")}</textarea>
       </div>
     `, async () => {
+      const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
+      if (!t) { alert("任务已不存在，请关闭后刷新。"); return true; }
       const snapshot = this.taskMutationSnapshot();
       t.issueRecord = {
         dtsNo: document.getElementById("issueRecordDtsNo").value.trim(),
@@ -267,8 +283,8 @@ hasIssue ? `<div class="task-issue-record-line"><span class="task-issue-record-l
         sampleIdsForMutation: [],
       });
       if (!saved) {
-        this.restoreFailedIssueMutation(snapshot);
-        return false;
+        this.restoreFailedIssueMutation(snapshot, { render: false });
+        return true;
       }
       return false;
     }, "保存");

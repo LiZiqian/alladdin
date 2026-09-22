@@ -3,6 +3,18 @@
    ======================================== */
 
 const Utils = {
+  /** Shared solid action icons; names and SVG paths are fixed, never user content. */
+  iconHtml(name) {
+    const paths = {
+      copy: "M4 3h12v2H6v12H4V3Zm4 4h12v14H8V7Zm2 2v10h8V9h-8Z",
+      trash: "M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 11H7L6 9Zm3 2 .5 7H11l-.5-7H9Zm4.5 0-.5 7h1.5l.5-7h-1.5Z",
+      download: "M10 3h4v8h4l-6 6-6-6h4V3ZM4 16h3v4h10v-4h3v7H4v-7Z",
+      upload: "m12 2 6 6h-4v9h-4V8H6l6-6ZM4 16h3v4h10v-4h3v7H4v-7Z"
+    };
+    if (!Object.prototype.hasOwnProperty.call(paths, name)) return "";
+    return `<svg class="action-icon action-icon-${name}" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="${paths[name]}" fill-rule="evenodd"/></svg>`;
+  },
+
   /** HTML转义 */
   esc(v) {
     return String(v ?? "").replace(/[&<>"']/g, m => ({
@@ -18,8 +30,21 @@ const Utils = {
   /** ISO时间 */
   now() { return new Date().toISOString(); },
 
+  /** 展示时间使用本机时区并注明偏移；原始 ISO 时间仍用于存储和排序。 */
+  dateTimeLabel(value) {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    const pad = n => String(n).padStart(2, "0");
+    const offset = -date.getTimezoneOffset();
+    return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} (UTC${offset >= 0 ? "+" : "-"}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)})`;
+  },
+
   /** 今天日期 yyyy-MM-dd */
-  today() { return new Date().toISOString().split("T")[0]; },
+  today() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  },
 
   /** Toast提示 */
   toast(msg) {
@@ -39,7 +64,7 @@ const Utils = {
   /** 人员去重用：姓名 + 工号。纯数字工号比较时忽略前导 0。 */
   normalizeEmployeeNoKey(v) {
     const no = Utils.normalizeDigits(v || "").trim();
-    if (/^\d+$/.test(no)) return String(Number(no));
+    if (/^\d+$/.test(no)) return no.replace(/^0+(?=\d)/, "");
     return no.toLowerCase();
   },
 
@@ -104,26 +129,49 @@ const Utils = {
   /** JSON字符串安全处理 */
   jsArg(v) { return JSON.stringify(String(v ?? "")); },
 
-  /** CSV行解析 */
-  parseCsvLine(line) {
-    const out = []; let cur = "", inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i], next = line[i + 1];
-      if (ch === '"' && inQuotes && next === '"') { cur += '"'; i++; continue; }
-      if (ch === '"') { inQuotes = !inQuotes; continue; }
-      if (ch === ',' && !inQuotes) { out.push(cur); cur = ""; continue; }
-      cur += ch;
+  /** 完整 CSV 解析：引号内换行属于字段，格式错误不能静默拆成其它记录。 */
+  parseCsv(text) {
+    const input = String(text ?? "").replace(/^\uFEFF/, "");
+    const rows = [];
+    let row = [], field = "", quoted = false, closed = false;
+    const finishField = () => { row.push(field); field = ""; closed = false; };
+    for (let i = 0; i < input.length; i++) {
+      const ch = input[i];
+      if (quoted) {
+        if (ch === '"') {
+          if (input[i + 1] === '"') { field += '"'; i++; }
+          else { quoted = false; closed = true; }
+        } else field += ch;
+        continue;
+      }
+      if (ch === ',') { finishField(); continue; }
+      if (ch === '\r' || ch === '\n') {
+        if (ch === '\r' && input[i + 1] === '\n') i++;
+        finishField(); rows.push(row); row = [];
+        continue;
+      }
+      if (closed) {
+        if (ch === ' ' || ch === '\t') continue;
+        throw new Error("CSV 引号结束后只能是逗号或换行");
+      }
+      if (ch === '"') {
+        if (field.trim()) throw new Error("CSV 字段中的引号必须使用双引号转义");
+        field = ""; quoted = true;
+      } else field += ch;
     }
-    out.push(cur);
-    return out.map(x => x.trim());
+    if (quoted) throw new Error("CSV 字段的引号未闭合");
+    if (row.length || field || closed || (input && !/[\r\n]$/.test(input))) {
+      finishField(); rows.push(row);
+    }
+    return rows;
   },
+
 
   /** 解析测试用例CSV */
   parseTestCaseCsv(text) {
-    const lines = String(text || "").replace(/^﻿/, "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    const lines = Utils.parseCsv(text).filter(row => row.some(value => value.trim()));
     const rows = [];
-    lines.forEach((line, idx) => {
-      const cols = Utils.parseCsvLine(line);
+    lines.forEach((cols, idx) => {
       if (cols.length < 2) return;
       const category = (cols[0] || "").trim();
       const item = (cols[1] || "").trim();
@@ -134,9 +182,11 @@ const Utils = {
     return rows;
   },
 
-  /** 解析项目人员CSV：支持旧版单列 "姓名/工号"，以及新版 "姓名/工号,人员类型" */
+  /** 解析项目人员CSV：格式为 "姓名/工号,人员类型" */
   parseProjectMembersCsv(text) {
-    const lines = String(text || "").replace(/^﻿/, "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    let lines;
+    try { lines = Utils.parseCsv(text).filter(row => row.some(value => value.trim())); }
+    catch (e) { return { error: e.message, rows: [] }; }
     if (!lines.length) return { error: "CSV文件没有可读取的数据", rows: [] };
 
     const rows = [];
@@ -144,16 +194,19 @@ const Utils = {
     let skipped = 0;
 
     for (let i = 0; i < lines.length; i++) {
-      const cols = Utils.parseCsvLine(lines[i]);
+      const cols = lines[i];
       if (cols.every(c => !c.trim())) continue;
       const first = String(cols[0] || "").trim();
       const second = String(cols[1] || "").trim();
       if (i === 0 && Utils.normalizeImportHeader(first) === Utils.normalizeImportHeader("姓名/工号")) continue;
-      if (cols.length > 2) { skipped++; continue; }
+      if (cols.length !== 2) { skipped++; continue; }
       const parsed = Utils.parsePersonField(first);
       if (!parsed.ok) { skipped++; continue; }
       const { name, employeeNo } = parsed;
-      const role = Utils.memberRoleValue(second || "tester");
+      // CSV uses the current template's explicit categories; typos cannot grant a role.
+      const role = { "测试人员": "tester", "开发人员": "developer", "其他人员": "other",
+        tester: "tester", developer: "developer", other: "other" }[second];
+      if (!role) { skipped++; continue; }
 
       const key = Utils.memberIdentityKey(name, employeeNo);
       if (seen.has(key)) { skipped++; continue; }
@@ -286,16 +339,21 @@ const Utils = {
     const header = rowsMatrix[0];
     const colMap = {};
     const aliases = Utils.sampleImportAliases();
+    const duplicateColumns = [];
 
     header.forEach((h, i) => {
       const hLower = Utils.normalizeImportHeader(h);
       for (const [key, names] of Object.entries(aliases)) {
         if (names.some(n => hLower === Utils.normalizeImportHeader(n))) {
+          if (colMap[key] !== undefined) duplicateColumns.push(`${key}（第${colMap[key] + 1}、${i + 1}列）`);
           colMap[key] = i;
           break;
         }
       }
     });
+    if (duplicateColumns.length) {
+      return { error: `${sourceName}存在重复字段列：${duplicateColumns.join("、")}，请每个字段只保留一列`, rows: [] };
+    }
 
     // 检查必填列
     const hasAtLeastOneId = colMap['IMEI'] !== undefined || colMap['SN'] !== undefined || colMap['主板SN'] !== undefined;
@@ -325,7 +383,6 @@ const Utils = {
       const borrowerParsed = Utils.parsePersonField(borrowerField);
       const borrowerText = borrowerParsed.ok ? Utils.personText(borrowerParsed.name, borrowerParsed.employeeNo) : "";
       if (borrowerField && !borrowerParsed.ok) invalidPersonCount++;
-      const legacyScheme = get('方案');
       const exportedConfig = get('配置/制式');
       const exportedSkuName = get('SKU/版本');
 
@@ -333,9 +390,9 @@ const Utils = {
         importDate: Utils.parseSampleDateField(get('带入时间')),
         borrowDate: Utils.parseSampleDateField(get('借用时间')),
         stage: get('阶段') || 'Unknown',
-        standard: exportedConfig || legacyScheme || '',
+        standard: exportedConfig || get('方案') || '',
         platform: get('型号/方案') || '',
-        skuName: exportedSkuName || legacyScheme || exportedConfig || '',
+        skuName: exportedSkuName || '',
         schemeNo: get('方案编号') || '',
         initialResult: Utils.parseSampleIssueText(get('初检问题')).join("\n"),
         imei: imei,
@@ -356,9 +413,8 @@ const Utils = {
 
   /** 解析样机导入CSV */
   parseSampleImportCsv(text) {
-    const lines = String(text || "").replace(/^﻿/, "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-    const matrix = lines.map(line => Utils.parseCsvLine(line));
-    return Utils.parseSampleImportMatrix(matrix, "CSV文件");
+    try { return Utils.parseSampleImportMatrix(Utils.parseCsv(text), "CSV文件"); }
+    catch (e) { return { error: e.message || String(e), rows: [] }; }
   },
 
   async parseSampleImportXlsx(buffer) {
@@ -366,9 +422,8 @@ const Utils = {
       const files = await Utils.unzipXlsxFiles(buffer);
       const sharedStrings = Utils.parseXlsxSharedStrings(files["xl/sharedStrings.xml"] || "");
       const styles = Utils.parseXlsxDateStyles(files["xl/styles.xml"] || "");
-      const sheetPath = Object.keys(files).find(x => /^xl\/worksheets\/sheet\d+\.xml$/i.test(x));
-      if (!sheetPath) return { error: "XLSX中没有找到工作表", rows: [] };
-      const matrix = Utils.parseXlsxSheet(files[sheetPath], sharedStrings, styles);
+      const sheet = Utils.firstXlsxWorksheet(files);
+      const matrix = Utils.parseXlsxSheet(files[sheet.path], sharedStrings, styles, { date1904: sheet.date1904 });
       return Utils.parseSampleImportMatrix(matrix, "XLSX模板");
     } catch (e) {
       return { error: e.message || String(e), rows: [] };
@@ -377,61 +432,143 @@ const Utils = {
 
   async unzipXlsxFiles(buffer) {
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    const maxFileBytes = 64 * 1024 * 1024, maxTotalBytes = 128 * 1024 * 1024;
+    if (bytes.length > maxFileBytes) throw new Error("XLSX文件超过64MB上限，请拆分后导入");
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     let eocd = -1;
     for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 66000); i--) {
-      if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+      if (view.getUint32(i, true) === 0x06054b50 && i + 22 + view.getUint16(i + 20, true) === bytes.length) { eocd = i; break; }
     }
     if (eocd < 0) throw new Error("不是有效的XLSX文件");
     const total = view.getUint16(eocd + 10, true);
     let ptr = view.getUint32(eocd + 16, true);
+    const directoryEnd = ptr + view.getUint32(eocd + 12, true);
+    const directoryStart = ptr;
+    if (view.getUint16(eocd + 4, true) || view.getUint16(eocd + 6, true)
+      || total !== view.getUint16(eocd + 8, true) || total > 20000 || directoryEnd > eocd) {
+      throw new Error("XLSX目录结构损坏或使用了不支持的分卷/ZIP64格式");
+    }
     const decoder = new TextDecoder("utf-8");
-    const files = {};
+    const files = Object.create(null);
+    const names = new Set();
+    let totalBytes = 0;
 
     for (let i = 0; i < total; i++) {
-      if (view.getUint32(ptr, true) !== 0x02014b50) throw new Error("XLSX目录结构损坏");
+      if (ptr + 46 > directoryEnd || view.getUint32(ptr, true) !== 0x02014b50) throw new Error("XLSX目录结构损坏");
+      const flags = view.getUint16(ptr + 8, true);
       const method = view.getUint16(ptr + 10, true);
+      const checksum = view.getUint32(ptr + 16, true);
       const compressedSize = view.getUint32(ptr + 20, true);
+      const uncompressedSize = view.getUint32(ptr + 24, true);
       const fileNameLen = view.getUint16(ptr + 28, true);
       const extraLen = view.getUint16(ptr + 30, true);
       const commentLen = view.getUint16(ptr + 32, true);
       const localOffset = view.getUint32(ptr + 42, true);
+      if (ptr + 46 + fileNameLen + extraLen + commentLen > directoryEnd || flags & 1
+        || view.getUint16(ptr + 34, true) || localOffset + 30 > directoryStart
+        || compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) {
+        throw new Error("XLSX目录越界、文件已加密或使用ZIP64格式");
+      }
       const nameBytes = bytes.slice(ptr + 46, ptr + 46 + fileNameLen);
       const fileName = decoder.decode(nameBytes);
+      const nameKey = fileName.toLowerCase();
+      if (!fileName || fileName.includes("\\") || /[\x00-\x1f:]/.test(fileName)
+        || fileName.replace(/\/$/, "").split("/").some(part => !part || part === "." || part === "..") || names.has(nameKey)) {
+        throw new Error("XLSX包含重复或无效的内部文件路径");
+      }
+      names.add(nameKey);
 
       if (view.getUint32(localOffset, true) !== 0x04034b50) throw new Error("XLSX文件头损坏");
       const localNameLen = view.getUint16(localOffset + 26, true);
       const localExtraLen = view.getUint16(localOffset + 28, true);
       const dataStart = localOffset + 30 + localNameLen + localExtraLen;
+      if (dataStart + compressedSize > directoryStart || view.getUint16(localOffset + 8, true) !== method
+        || view.getUint16(localOffset + 6, true) !== flags
+        || (!(flags & 8) && (view.getUint32(localOffset + 14, true) !== checksum
+          || view.getUint32(localOffset + 18, true) !== compressedSize || view.getUint32(localOffset + 22, true) !== uncompressedSize))
+        || decoder.decode(bytes.subarray(localOffset + 30, localOffset + 30 + localNameLen)) !== fileName) {
+        throw new Error("XLSX文件头与目录不一致或数据越界");
+      }
+      ptr += 46 + fileNameLen + extraLen + commentLen;
+      if (!/\.(xml|rels)$/i.test(fileName)) continue;
+      if (uncompressedSize > maxFileBytes || totalBytes + uncompressedSize > maxTotalBytes) {
+        throw new Error("XLSX解压内容过大，请拆分后导入");
+      }
       const compressed = bytes.slice(dataStart, dataStart + compressedSize);
       let dataBytes;
       if (method === 0) {
         dataBytes = compressed;
       } else if (method === 8) {
-        dataBytes = await Utils.inflateRawBytes(compressed);
+        dataBytes = await Utils.inflateRawBytes(compressed, uncompressedSize);
       } else {
-        dataBytes = null;
+        throw new Error("XLSX使用了不支持的压缩方式");
       }
-      if (dataBytes && /\.(xml|rels)$/i.test(fileName)) files[fileName] = decoder.decode(dataBytes);
-      ptr += 46 + fileNameLen + extraLen + commentLen;
+      if (dataBytes.length !== uncompressedSize || Utils.xlsxCrc32(dataBytes) !== checksum) throw new Error("XLSX内容校验失败，文件可能已损坏");
+      totalBytes += dataBytes.length;
+      files[fileName] = decoder.decode(dataBytes);
     }
+    if (ptr !== directoryEnd) throw new Error("XLSX目录长度不一致");
     return files;
   },
 
-  async inflateRawBytes(compressed) {
-    const root = typeof globalThis !== "undefined" ? globalThis : window;
-    const NativeDecompressionStream = root.DecompressionStream || root.window?.DecompressionStream;
-    if (NativeDecompressionStream && root.Blob && root.Response) {
-      const stream = new root.Blob([compressed]).stream().pipeThrough(new NativeDecompressionStream("deflate-raw"));
-      return new Uint8Array(await new root.Response(stream).arrayBuffer());
+  xlsxCrc32(bytes) {
+    if (!Utils._xlsxCrcTable) {
+      Utils._xlsxCrcTable = Uint32Array.from({ length: 256 }, (_, index) => {
+        let value = index;
+        for (let bit = 0; bit < 8; bit++) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+        return value >>> 0;
+      });
     }
-    return Utils.inflateRawBytesFallback(compressed);
+    let crc = 0xffffffff;
+    for (const byte of bytes) crc = Utils._xlsxCrcTable[(crc ^ byte) & 255] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
   },
 
-  inflateRawBytesFallback(compressed) {
+  async inflateRawBytes(compressed, maxOutputBytes = 64 * 1024 * 1024) {
+    const root = typeof globalThis !== "undefined" ? globalThis : window;
+    const NativeDecompressionStream = root.DecompressionStream || root.window?.DecompressionStream;
+    let decompressor;
+    if (NativeDecompressionStream && root.Blob) {
+      try { decompressor = new NativeDecompressionStream("deflate-raw"); }
+      catch (_) { /* Older browsers implement the API without deflate-raw. */ }
+    }
+    if (decompressor) {
+      const reader = new root.Blob([compressed]).stream().pipeThrough(decompressor).getReader();
+      const chunks = [];
+      let length = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          length += value.length;
+          if (length > maxOutputBytes) {
+            await reader.cancel();
+            throw new Error("XLSX解压内容超过声明大小或安全上限");
+          }
+          chunks.push(value);
+        }
+      } finally { reader.releaseLock(); }
+      const result = new Uint8Array(length);
+      let offset = 0;
+      chunks.forEach(chunk => { result.set(chunk, offset); offset += chunk.length; });
+      return result;
+    }
+    return Utils.inflateRawBytesFallback(compressed, maxOutputBytes);
+  },
+
+  inflateRawBytesFallback(compressed, maxOutputBytes = 64 * 1024 * 1024) {
     const input = compressed instanceof Uint8Array ? compressed : new Uint8Array(compressed);
     let bitPos = 0;
-    const output = [];
+    let output = new Uint8Array(Math.min(16384, maxOutputBytes));
+    let outputLength = 0;
+    const append = value => {
+      if (outputLength >= maxOutputBytes) throw new Error("XLSX解压内容超过声明大小或安全上限");
+      if (outputLength === output.length) {
+        const next = new Uint8Array(Math.min(Math.max(1, output.length * 2), maxOutputBytes));
+        next.set(output); output = next;
+      }
+      output[outputLength++] = value;
+    };
     const lengthBase = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
     const lengthExtra = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
     const distBase = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577];
@@ -463,6 +600,7 @@ const Utils = {
       let code = 0;
       for (let bits = 1; bits <= maxBits; bits++) {
         code = (code + counts[bits - 1]) << 1;
+        if (code + counts[bits] > (1 << bits)) throw new Error("XLSX压缩编码树损坏");
         nextCode[bits] = code;
       }
       lengths.forEach((len, symbol) => {
@@ -494,6 +632,7 @@ const Utils = {
       const hlit = readBits(5) + 257;
       const hdist = readBits(5) + 1;
       const hclen = readBits(4) + 4;
+      if (hlit > 286) throw new Error("XLSX压缩编码树损坏");
       const order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
       const codeLengths = Array(19).fill(0);
       for (let i = 0; i < hclen; i++) codeLengths[order[i]] = readBits(3);
@@ -504,6 +643,7 @@ const Utils = {
         if (symbol <= 15) {
           lengths.push(symbol);
         } else if (symbol === 16) {
+          if (!lengths.length) throw new Error("XLSX压缩重复编码损坏");
           const repeat = readBits(2) + 3;
           const prev = lengths[lengths.length - 1] || 0;
           for (let i = 0; i < repeat; i++) lengths.push(prev);
@@ -514,7 +654,9 @@ const Utils = {
           const repeat = readBits(7) + 11;
           for (let i = 0; i < repeat; i++) lengths.push(0);
         }
+        if (lengths.length > hlit + hdist) throw new Error("XLSX压缩重复编码越界");
       }
+      if (!lengths[256]) throw new Error("XLSX压缩数据缺少结束编码");
       return {
         literalTree: buildHuffman(lengths.slice(0, hlit)),
         distanceTree: buildHuffman(lengths.slice(hlit, hlit + hdist))
@@ -524,7 +666,7 @@ const Utils = {
       while (true) {
         const symbol = decodeSymbol(literalTree);
         if (symbol < 256) {
-          output.push(symbol);
+          append(symbol);
         } else if (symbol === 256) {
           return;
         } else if (symbol <= 285) {
@@ -534,8 +676,8 @@ const Utils = {
           const distSymbol = decodeSymbol(distanceTree);
           if (distSymbol >= distBase.length) throw new Error("XLSX压缩距离损坏");
           const distance = distBase[distSymbol] + readBits(distExtra[distSymbol]);
-          if (!distance || distance > output.length) throw new Error("XLSX压缩距离损坏");
-          for (let i = 0; i < length; i++) output.push(output[output.length - distance]);
+          if (!distance || distance > outputLength) throw new Error("XLSX压缩距离损坏");
+          for (let i = 0; i < length; i++) append(output[outputLength - distance]);
         } else {
           throw new Error("XLSX压缩长度损坏");
         }
@@ -551,7 +693,7 @@ const Utils = {
         const len = readBits(16);
         const nlen = readBits(16);
         if (((len ^ 0xffff) & 0xffff) !== nlen) throw new Error("XLSX未压缩块损坏");
-        for (let i = 0; i < len; i++) output.push(readBits(8));
+        for (let i = 0; i < len; i++) append(readBits(8));
       } else if (type === 1) {
         const trees = fixedTrees();
         inflateCompressedBlock(trees.literalTree, trees.distanceTree);
@@ -562,27 +704,91 @@ const Utils = {
         throw new Error("XLSX压缩块类型不支持");
       }
     }
-    return new Uint8Array(output);
+    return output.slice(0, outputLength);
+  },
+
+  parseXlsxXml(xml) {
+    if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Error("XLSX包含不支持的XML实体声明");
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length) throw new Error("XLSX的XML内容已损坏");
+    return doc;
+  },
+
+  xlsxElements(node, name) {
+    return Array.from(node.getElementsByTagNameNS("*", name));
+  },
+
+  firstXlsxWorksheet(files) {
+    const workbookXml = files["xl/workbook.xml"];
+    const relationshipsXml = files["xl/_rels/workbook.xml.rels"];
+    if (!workbookXml && !relationshipsXml) {
+      const path = Object.keys(files).filter(name => /^xl\/worksheets\/[^/]+\.xml$/i.test(name))
+        .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))[0];
+      if (!path) throw new Error("XLSX中没有找到工作表");
+      return { path, date1904: false };
+    }
+    if (!workbookXml || !relationshipsXml) throw new Error("XLSX缺少工作簿或工作表关系文件");
+    const workbook = Utils.parseXlsxXml(workbookXml);
+    const relationships = Utils.xlsxElements(Utils.parseXlsxXml(relationshipsXml), "Relationship");
+    const date1904 = /^(1|true)$/i.test(Utils.xlsxElements(workbook, "workbookPr")[0]?.getAttribute("date1904") || "");
+    const sheets = Utils.xlsxElements(workbook, "sheet");
+    const ordered = [...sheets.filter(sheet => !/^(hidden|veryHidden)$/.test(sheet.getAttribute("state") || "")),
+      ...sheets.filter(sheet => /^(hidden|veryHidden)$/.test(sheet.getAttribute("state") || ""))];
+    for (const sheet of ordered) {
+      const id = sheet.getAttribute("r:id") || Array.from(sheet.attributes).find(attr => attr.localName === "id")?.value;
+      const relationship = relationships.find(item => item.getAttribute("Id") === id);
+      if (!relationship) throw new Error("XLSX工作表关系缺失");
+      if (!/\/worksheet$/.test(relationship.getAttribute("Type") || "")) continue;
+      if (relationship.getAttribute("TargetMode") === "External") throw new Error("XLSX不能导入外部工作表");
+      const target = relationship.getAttribute("Target") || "";
+      if (!target || target.includes("\\") || /[:?#\x00-\x1f]/.test(target)) throw new Error("XLSX工作表路径无效");
+      const segments = target.startsWith("/") ? [] : ["xl"];
+      for (const segment of target.split("/")) {
+        if (!segment || segment === ".") continue;
+        if (segment === "..") {
+          if (!segments.length) throw new Error("XLSX工作表路径越界");
+          segments.pop();
+        } else segments.push(segment);
+      }
+      let path = segments.join("/");
+      if (!Object.hasOwn(files, path)) {
+        try { path = decodeURIComponent(path); } catch (_) { throw new Error("XLSX工作表路径无效"); }
+      }
+      if (!Object.hasOwn(files, path)) throw new Error("XLSX工作表文件缺失");
+      return { path, date1904 };
+    }
+    throw new Error("XLSX中没有找到工作表");
+  },
+
+  xlsxRichText(node) {
+    return Utils.xlsxElements(node, "t").filter(text => {
+      for (let parent = text.parentNode; parent && parent !== node; parent = parent.parentNode) {
+        if (parent.localName === "rPh") return false;
+      }
+      return true;
+    }).map(text => text.textContent || "").join("");
   },
 
   parseXlsxSharedStrings(xml) {
     if (!xml) return [];
-    const doc = new DOMParser().parseFromString(xml, "application/xml");
-    return Array.from(doc.getElementsByTagName("si")).map(si => si.textContent || "");
+    const doc = Utils.parseXlsxXml(xml);
+    return Utils.xlsxElements(doc, "si").map(si => Utils.xlsxRichText(si));
   },
 
   parseXlsxDateStyles(xml) {
     const dateStyleIndexes = new Set();
     if (!xml) return dateStyleIndexes;
-    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const doc = Utils.parseXlsxXml(xml);
     const customDateIds = new Set();
-    Array.from(doc.getElementsByTagName("numFmt")).forEach(fmt => {
+    Utils.xlsxElements(doc, "numFmt").forEach(fmt => {
       const id = fmt.getAttribute("numFmtId");
-      const code = fmt.getAttribute("formatCode") || "";
-      if (/[ymdhHsS年月日]/.test(code)) customDateIds.add(id);
+      const code = (fmt.getAttribute("formatCode") || "").replace(/"[^"]*"|\\.|\[[^\]]*\]|_.|\*./g, "");
+      if (/[yd年月日]/i.test(code) || (/m/i.test(code) && !/[hs]/i.test(code))) customDateIds.add(id);
     });
-    const builtInDateIds = new Set(["14", "15", "16", "17", "18", "19", "20", "21", "22", "45", "46", "47"]);
-    const xfs = doc.getElementsByTagName("cellXfs")[0]?.getElementsByTagName("xf") || [];
+    const builtInDateIds = new Set([14, 15, 16, 17, 22, 27, 28, 29, 30, 31, 34, 35, 36, 50, 51, 52, 53, 54, 57, 58].map(String));
+    const cellXfs = Utils.xlsxElements(doc, "cellXfs")[0];
+    const xfs = cellXfs ? Utils.xlsxElements(cellXfs, "xf") : [];
+    dateStyleIndexes.styleCount = xfs.length;
     Array.from(xfs).forEach((xf, idx) => {
       const numFmtId = xf.getAttribute("numFmtId");
       if (builtInDateIds.has(numFmtId) || customDateIds.has(numFmtId)) dateStyleIndexes.add(String(idx));
@@ -590,27 +796,52 @@ const Utils = {
     return dateStyleIndexes;
   },
 
-  parseXlsxSheet(xml, sharedStrings, dateStyleIndexes) {
-    const doc = new DOMParser().parseFromString(xml, "application/xml");
+  parseXlsxSheet(xml, sharedStrings = [], dateStyleIndexes = new Set(), { date1904 = false } = {}) {
+    const doc = Utils.parseXlsxXml(xml);
     const out = [];
-    Array.from(doc.getElementsByTagName("row")).forEach(row => {
+    const seenRows = new Set();
+    let previousRow = 0;
+    const sheetRows = Utils.xlsxElements(doc, "row").map(row => {
+      const rawIndex = row.getAttribute("r");
+      const index = rawIndex ? Number(rawIndex) : previousRow + 1;
+      if (!Number.isInteger(index) || index < 1 || index > 1048576 || seenRows.has(index)) throw new Error("XLSX行号无效或重复");
+      seenRows.add(index); previousRow = index;
+      return { row, index };
+    }).sort((a, b) => a.index - b.index);
+    sheetRows.forEach(({ row, index }) => {
       const values = [];
-      Array.from(row.getElementsByTagName("c")).forEach(cell => {
+      let nextColumn = 0;
+      Utils.xlsxElements(row, "c").forEach(cell => {
         const ref = cell.getAttribute("r") || "";
-        const colLetters = ref.replace(/\d+/g, "");
-        let col = 0;
-        for (const ch of colLetters) col = col * 26 + ch.charCodeAt(0) - 64;
-        col = Math.max(0, col - 1);
+        let col = nextColumn;
+        if (ref) {
+          const match = ref.match(/^([A-Za-z]{1,3})([1-9]\d*)$/);
+          if (!match || Number(match[2]) !== index) throw new Error(`XLSX单元格引用无效：${ref}`);
+          col = 0;
+          for (const ch of match[1].toUpperCase()) col = col * 26 + ch.charCodeAt(0) - 64;
+          col--;
+        }
+        if (col < 0 || col >= 16384 || Object.hasOwn(values, col)) throw new Error(`XLSX单元格列号无效或重复：${ref}`);
+        nextColumn = col + 1;
         const type = cell.getAttribute("t");
         const style = cell.getAttribute("s");
-        const v = cell.getElementsByTagName("v")[0]?.textContent || "";
+        const valueNode = Utils.xlsxElements(cell, "v")[0];
+        const v = valueNode?.textContent || "";
+        if (Utils.xlsxElements(cell, "f").length && (!valueNode || (!v && type !== "str"))) {
+          throw new Error(`XLSX单元格${ref || index}的公式没有计算结果，请用Excel重新计算并保存后导入`);
+        }
+        if (type === "e") throw new Error(`XLSX单元格${ref || index}包含错误值${v}，请修正后导入`);
+        if (style && (!/^\d+$/.test(style) || (Number.isInteger(dateStyleIndexes.styleCount) && Number(style) >= dateStyleIndexes.styleCount))) {
+          throw new Error(`XLSX单元格${ref || index}的样式引用无效`);
+        }
         let value = "";
         if (type === "s") {
-          value = sharedStrings[Number(v)] || "";
+          if (!/^\d+$/.test(v) || Number(v) >= sharedStrings.length) throw new Error(`XLSX单元格${ref || index}的文本引用无效`);
+          value = sharedStrings[Number(v)];
         } else if (type === "inlineStr") {
-          value = cell.textContent || "";
+          value = Utils.xlsxRichText(cell);
         } else if (dateStyleIndexes.has(style) && v && !Number.isNaN(Number(v))) {
-          value = Utils.excelSerialToDate(Number(v));
+          value = Utils.excelSerialToDate(Number(v), date1904);
         } else {
           value = v;
         }
@@ -621,8 +852,12 @@ const Utils = {
     return out;
   },
 
-  excelSerialToDate(serial) {
-    const d = new Date(Math.round((serial - 25569) * 86400 * 1000));
+  excelSerialToDate(serial, date1904 = false) {
+    if (!Number.isFinite(serial) || serial < 0 || serial >= 2958466 - (date1904 ? 1462 : 0)) throw new Error("XLSX日期序列超出有效范围");
+    const days = Math.floor(serial);
+    if (!date1904 && days === 60) throw new Error("XLSX日期为不存在的1900-02-29，请修正后导入");
+    const epoch = date1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 31);
+    const d = new Date(epoch + (days - (!date1904 && days > 60 ? 1 : 0)) * 86400000);
     const pad = n => String(n).padStart(2, "0");
     return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
   },

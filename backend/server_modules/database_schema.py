@@ -1,4 +1,4 @@
-"""SQLite schema definition and structural migrations."""
+"""Current SQLite schema. Unsupported historical layouts are rejected without migration."""
 
 from __future__ import annotations
 
@@ -8,14 +8,9 @@ import sqlite3
 STRUCTURAL_SCHEMA_ID = "structural_schema_v1"
 
 
-def ensure_table_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    if column not in existing:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-
-
 def ensure_static_schema(conn: sqlite3.Connection) -> None:
-    """Create tables, indexes, and structural compatibility columns."""
+    """Create the current schema on a fresh database; validate existing storage first."""
+    assert_current_schema(conn)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute(
         """
@@ -87,10 +82,6 @@ def ensure_static_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    ensure_table_column(conn, "sample_records", "has_problem", "INTEGER NOT NULL DEFAULT 0")
-    ensure_table_column(conn, "sample_records", "effective_status", "TEXT")
-    ensure_table_column(conn, "sample_records", "board_sn", "TEXT")
-    ensure_table_column(conn, "sample_records", "is_reassembled", "INTEGER NOT NULL DEFAULT 0")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_records_category ON sample_records(category_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_records_sn ON sample_records(sn)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_records_imei ON sample_records(imei)")
@@ -124,6 +115,8 @@ def ensure_static_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_assets_sample ON sample_assets(sample_id, kind, deleted_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_assets_path ON sample_assets(relative_path COLLATE NOCASE)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sample_assets_filename ON sample_assets(file_name COLLATE NOCASE)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS sample_events (
@@ -197,7 +190,6 @@ def ensure_static_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    ensure_table_column(conn, "project_tasks", "flow_status", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_stage ON project_tasks(stage_id, deleted_at, status)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_progress ON project_tasks(progress_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_project ON project_tasks(project_id, deleted_at)")
@@ -208,6 +200,14 @@ def ensure_static_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_stage_flow_created ON project_tasks(stage_id, deleted_at, flow_status, created_at, id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_stage_sku_created ON project_tasks(stage_id, deleted_at, sku_index, created_at, id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_project_tasks_project_created ON project_tasks(project_id, deleted_at, created_at, id)")
+    # Match task_queries.task_visibility_sql(): archived history remains stored,
+    # while workspace counts/pages avoid parsing every task's JSON on each read.
+    document = "CASE WHEN json_valid(data_json) THEN data_json ELSE '{}' END"
+    visible_task = f"deleted_at IS NULL AND COALESCE(json_extract({document}, '$.archived'), 0) = 0 AND COALESCE(json_extract({document}, '$.deletedAt'), '') = ''"
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_project_tasks_visible_project ON project_tasks(project_id) WHERE {visible_task}")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_project_tasks_visible_stage_created ON project_tasks(stage_id, deleted_at, created_at, id, flow_status, owner, sku_index) WHERE {visible_task}")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_project_tasks_visible_stage_flow ON project_tasks(stage_id, deleted_at, flow_status, created_at, id) WHERE {visible_task}")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_project_tasks_visible_stage_owner ON project_tasks(stage_id, deleted_at, owner) WHERE {visible_task}")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS project_task_samples (
@@ -247,3 +247,35 @@ def ensure_static_schema(conn: sqlite3.Connection) -> None:
         "INSERT OR IGNORE INTO schema_migrations (id) VALUES (?)",
         (STRUCTURAL_SCHEMA_ID,),
     )
+
+
+def assert_current_schema(conn: sqlite3.Connection) -> None:
+    """启动前只读检查：拒绝旧库，不能通过补列/回填悄悄改写用户数据。
+
+    外置表和查询列是当前存储合同；空数据库由 ensure_static_schema 创建。
+    schema_migrations 中的历史记录不再驱动任何升级代码。
+    """
+    import json
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not tables:
+        return
+    required = {
+        'app_state': {'data_json', 'revision', 'updated_at'},
+        'project_records': {'data_json'},
+        'project_stages': {'data_json'},
+        'project_tasks': {'flow_status', 'data_json'},
+        'project_task_samples': {'task_id', 'sample_id'},
+        'sample_records': {'has_problem', 'effective_status', 'board_sn', 'is_reassembled'},
+        'sample_categories': {'data_json'},
+        'sample_assets': {'relative_path'},
+        'sample_events': {'data_json'},
+    }
+    for table, columns in required.items():
+        actual = {row[1] for row in conn.execute(f'PRAGMA table_info({table})')}
+        if not columns <= actual:
+            raise ValueError(f'不支持旧数据库结构：{table} 缺少现行字段；请使用当前格式数据库。')
+    row = conn.execute('SELECT data_json FROM app_state WHERE id=1').fetchone()
+    if row:
+        stored = json.loads(row[0])
+        if not stored.get('projectsExternalized') or not (stored.get('sampleLibrary') or {}).get('externalized'):
+            raise ValueError('不支持内嵌全量状态的旧数据库；请使用当前外置表格式。')

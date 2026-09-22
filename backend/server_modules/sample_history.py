@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from server_modules import sample_assets, status_normalization, task_queries
+from server_modules import sample_assets, status_normalization, task_queries, problem_photos
 
 
 def json_obj(text: str | None, fallback: object | None = None):
@@ -47,7 +47,6 @@ def load_sample_photos(conn: sqlite3.Connection, sample_id: str) -> list[dict]:
             meta.update({
                 "thumbId": thumb["id"],
                 "thumbUrl": sample_assets.url_for_asset(sample_id, thumb["id"]),
-                "thumbnailUrl": sample_assets.url_for_asset(sample_id, thumb["id"]),
                 "thumbRelativePath": thumb["relative_path"],
                 "thumbType": thumb["mime_type"] or "image/jpeg",
                 "thumbSize": int(thumb["size"] or 0),
@@ -64,7 +63,10 @@ def sample_task_result_photos(task: dict, sample_id: str, photos_by_id: dict[str
         for item in upload.get("samples") or []:
             if not isinstance(item, dict) or str(item.get("sampleId") or item.get("sid") or "") != str(sample_id):
                 continue
-            for ref in item.get("photos") or []:
+            refs = list(item.get("photos") or [])
+            existing_ids = {ref.get("id") for ref in refs if isinstance(ref, dict)}
+            refs.extend({"id": pid} for pid in sorted(problem_photos.problem_photo_ids(item.get("problemRecords"))) if pid not in existing_ids)
+            for ref in refs:
                 if not isinstance(ref, dict) or not ref.get("id"):
                     continue
                 full = photos_by_id.get(str(ref.get("id") or ""), {})
@@ -72,8 +74,7 @@ def sample_task_result_photos(task: dict, sample_id: str, photos_by_id: dict[str
                     "id": str(ref.get("id") or ""),
                     "name": str(ref.get("name") or full.get("name") or "结果图片"),
                     "url": str(ref.get("url") or full.get("url") or ""),
-                    "thumbUrl": str(ref.get("thumbUrl") or ref.get("thumbnailUrl") or full.get("thumbUrl") or full.get("thumbnailUrl") or ""),
-                    "thumbnailUrl": str(ref.get("thumbnailUrl") or ref.get("thumbUrl") or full.get("thumbnailUrl") or full.get("thumbUrl") or ""),
+                    "thumbUrl": str(ref.get("thumbUrl") or full.get("thumbUrl") or ""),
                     "uploadedAt": str(ref.get("uploadedAt") or full.get("uploadedAt") or upload.get("time") or ""),
                     "result": status_normalization.normalize_task_result_value(upload.get("result")) or str(upload.get("result") or ""),
                     "user": str(upload.get("user") or ""),
@@ -104,7 +105,8 @@ def sample_history_row_for(sample_id: str, item: dict, photos_by_id: dict[str, d
         sample_ids.update(str(x.get("sampleId") or "") for x in task.get("removedSampleRecords") or [] if isinstance(x, dict) and x.get("sampleId"))
         task_sample_count = len(sample_ids)
         sample_fault_records = [x for x in task.get("sampleFaultRecords") or [] if isinstance(x, dict) and str(x.get("sampleId") or "") == str(sample_id)]
-        fault_marked = any(log.get("faultMarked") or status_normalization.normalize_sample_quality_value(log.get("flowStatus")) == "有故障" for log in logs)
+        # flowStatus records usage (e.g. 闲置); quality has its own faultMarked field.
+        fault_marked = any(log.get("faultMarked") for log in logs)
         fault_marked = fault_marked or bool((task.get("sampleFaults") or {}).get(sample_id, {}).get("fault"))
         fault_marked = fault_marked or any(x.get("fault") or x.get("problem") for x in sample_fault_records)
         problems = []
@@ -119,14 +121,24 @@ def sample_history_row_for(sample_id: str, item: dict, photos_by_id: dict[str, d
         result_photos = sample_task_result_photos(task, sample_id, photos_by_id)
         status = task_queries.task_flow_status(task)
     else:
+        # A native task's current fields outrank its old events. Its archive
+        # summary preserves that authority even when a date-only result date
+        # sorts before a timestamped event from the same day.
+        summaries = [log for log in reversed(logs) if log.get("externalHistory") is True
+                     and (log.get("type") == "external_history" or log.get("eventType") == "external_history")]
+        # Imported updates have collision-safe event IDs, whose lexical order
+        # does not indicate freshness. Source revisions remain stable over hops.
+        summary = max(summaries, key=lambda log: log["sourceRevision"]
+                      if type(log.get("sourceRevision")) is int else -1, default=None)
         result = "-"
         for log in reversed(logs):
             result = status_normalization.normalize_task_result_value(log.get("result")) or str(log.get("result") or result or "-")
             if result and result != "-":
                 break
         date = str((logs[-1].get("time") if logs else "") or "-")
-        task_sample_count = 0
-        fault_marked = any(log.get("faultMarked") or status_normalization.normalize_sample_quality_value(log.get("flowStatus")) == "有故障" for log in logs)
+        task_sample_count = next((int(log["taskSampleCount"]) for log in reversed(logs)
+                                  if type(log.get("taskSampleCount")) is int and log["taskSampleCount"] >= 0), 0)
+        fault_marked = any(log.get("faultMarked") for log in logs)
         problems = []
         for log in logs:
             text = str(log.get("problemDescription") or "").strip()
@@ -138,7 +150,15 @@ def sample_history_row_for(sample_id: str, item: dict, photos_by_id: dict[str, d
             for photo in (log.get("resultPhotos") or [])
             if isinstance(photo, dict)
         ]
-        status = str((logs[-1].get("taskStatus") if logs else "") or "历史记录")
+        status = next((str(log["taskStatus"]) for log in reversed(logs) if log.get("taskStatus")), "历史记录")
+        if summary is not None:
+            # Archive summaries are display values and may use '-' for no result.
+            # They are not task mutation payloads and must not be translated.
+            result = str(summary.get("result") or "-")
+            date = str(summary.get("time") or "-")
+            status = str(summary.get("taskStatus") or status)
+            if type(summary.get("taskSampleCount")) is int and summary["taskSampleCount"] >= 0:
+                task_sample_count = summary["taskSampleCount"]
 
     return {
         "key": str(item.get("key") or (task or {}).get("id") or ""),
@@ -156,6 +176,39 @@ def sample_history_row_for(sample_id: str, item: dict, photos_by_id: dict[str, d
         "resultPhotos": result_photos,
         "sortTime": str((task or {}).get("completedAt") or (task or {}).get("resultDate") or (task or {}).get("startDate") or (logs[-1].get("time") if logs else "") or ""),
     }
+
+
+def sample_history_event_key(row, log: dict) -> str:
+    task_id = str(row["task_id"] or log.get("taskId") or "")
+    if task_id:
+        return task_id
+    if log.get("sourceDeploymentId") and log.get("sourceTaskId"):
+        return "external_" + json.dumps([str(log["sourceDeploymentId"]), str(log["sourceTaskId"])], ensure_ascii=False)
+    return f"log_{row['id']}"
+
+
+def attach_sample_history_counts(conn: sqlite3.Connection, samples: list[dict]) -> None:
+    """Count the same groups as the history page, in batches without photos/tasks payloads."""
+    ids = list(dict.fromkeys(str(sample["id"]) for sample in samples if sample.get("id")))
+    keys = {sid: set() for sid in ids}
+    for offset in range(0, len(ids), 400):
+        batch = ids[offset:offset + 400]
+        placeholders = ",".join("?" for _ in batch)
+        for row in conn.execute(
+            f"SELECT sample_id, id, task_id, data_json FROM sample_events WHERE sample_id IN ({placeholders})", batch
+        ):
+            log = json_obj(row["data_json"], None)
+            if isinstance(log, dict):
+                keys[row["sample_id"]].add(sample_history_event_key(row, log))
+        for row in conn.execute(
+            f"""SELECT links.sample_id, links.task_id FROM project_task_samples links
+                JOIN project_tasks tasks ON tasks.id = links.task_id
+                WHERE links.sample_id IN ({placeholders})""", batch
+        ):
+            if row["task_id"]:
+                keys[row["sample_id"]].add(str(row["task_id"]))
+    for sample in samples:
+        sample["testHistoryCount"] = len(keys.get(str(sample.get("id") or ""), ()))
 
 
 def list_sample_history_page(conn: sqlite3.Connection, sample_id: str, query: dict[str, list[str]]) -> dict:
@@ -186,7 +239,7 @@ def list_sample_history_page(conn: sqlite3.Connection, sample_id: str, query: di
         if not isinstance(log, dict):
             continue
         task_id = str(row["task_id"] or log.get("taskId") or "")
-        key = task_id or f"log_{row['id']}"
+        key = sample_history_event_key(row, log)
         if task_id:
             task_ids.add(task_id)
         item = rows_by_key.setdefault(key, {

@@ -4,7 +4,7 @@ import copy
 import json
 from pathlib import Path
 
-from server_modules import chamber_package, sample_queries
+from server_modules import chamber_package, sample_queries, task_reservations
 
 
 IMPORT_DIFF_SYSTEM_SKIP_KEYS = {
@@ -40,28 +40,7 @@ def strip_view_state(data: dict) -> dict:
     clean = copy.deepcopy(data)
     clean.pop("currentProjectId", None)
     clean.pop("currentStageId", None)
-    clean.pop("peoplePool", None)
-    clean.pop("locationPool", None)
     return clean
-
-
-def normalize_project(data: dict) -> dict:
-    """确保项目数据结构完整"""
-    data = copy.deepcopy(data)
-    data.setdefault("members", [])
-    data.setdefault("locations", [])
-    for stage in data.get("stages") or []:
-        stage.setdefault("skuNames", [])
-        stage.setdefault("bom", [])
-        stage.setdefault("strategy", [])
-        stage.setdefault("progress", [])
-        for task in stage.get("tasks") or []:
-            task.setdefault("sampleIds", [])
-            task.setdefault("logs", [])
-            task.setdefault("removedSampleRecords", [])
-            task.setdefault("sampleFaultRecords", [])
-            task.setdefault("resultUploads", [])
-    return data
 
 
 def diff_fields(current_item: dict, incoming_item: dict, skip_keys: set | None = None) -> set:
@@ -79,7 +58,25 @@ def diff_fields(current_item: dict, incoming_item: dict, skip_keys: set | None =
     return diffs
 
 
-def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: Path, *, asset_index: dict | None = None) -> dict:
+def conflict_identity(conflict: dict) -> tuple:
+    """Identify a conflict independently of its position in the preview list."""
+    return tuple(str(conflict.get(key) or "") for key in (
+        "type", "entity", "currentId", "incomingId", "sampleId", "currentTaskId", "incomingTaskId",
+    ))
+
+
+def retain_preview_conflict_ids(result: dict, preview: dict) -> None:
+    # A selected subset can remove earlier conflicts. Never let its new sequence
+    # numbers apply a decision that the user made for a different record.
+    original_ids = {conflict_identity(item): item["conflictId"] for item in preview.get("conflicts") or []}
+    for item in result.get("conflicts") or []:
+        original_id = original_ids.get(conflict_identity(item))
+        if original_id is None:
+            raise ValueError("导入范围的冲突已变化，请重新选择文件预览")
+        item["conflictId"] = original_id
+
+
+def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: Path, *, asset_index: dict) -> dict:
     """对比主库与导入数据，生成 autoApply / conflicts / blockers"""
     auto_apply: list[dict] = []
     conflicts: list[dict] = []
@@ -100,22 +97,14 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
             sample_copy["_categoryName"] = cat.get("name", "")
             curr_samples.append(sample_copy)
     curr_samples_by_id = {s["id"]: s for s in curr_samples}
-    curr_samples_by_sn = {}
-    curr_samples_by_imei = {}
-    curr_samples_by_board_sn = {}
+    curr_samples_by_identity = {}
     for sample in curr_samples:
         sn = (sample.get("sn") or "").strip()
         imei = (sample.get("imei") or "").strip()
         board_sn = (sample.get("boardSn") or "").strip()
         sample_no = (sample.get("sampleNo") or "").strip()
-        if sn:
-            curr_samples_by_sn.setdefault(sn, []).append(sample)
-        if imei:
-            curr_samples_by_imei.setdefault(imei, []).append(sample)
-        if board_sn:
-            curr_samples_by_board_sn.setdefault(board_sn, []).append(sample)
-        if sample_no and not sn:
-            curr_samples_by_sn.setdefault(sample_no, []).append(sample)
+        for value in {sn.lower(), imei.lower(), board_sn.lower()} - {""}:
+            curr_samples_by_identity.setdefault(value, []).append(sample)
 
     missing_photo_assets: list[str] = []
     corrupt_photo_assets: list[str] = []
@@ -137,7 +126,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
     for cat in (incoming.get("sampleLibrary") or {}).get("categories") or []:
         for sample in cat.get("samples") or []:
             sample_id = sample.get("id", "")
-            for photo in sample.get("photos") or []:
+            for photo in [*(sample.get("photos") or []), *(sample.get("files") or [])]:
                 photo_id = photo.get("id", "")
                 rel = photo.get("relativePath", "")
                 if rel:
@@ -145,17 +134,14 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                     asset = asset_lookup.get(key)
                     checked_manifest_assets.add(key)
                     asset_path = asset_path_from_index(asset)
-                    if asset_path is None:
-                        filename = Path(rel).name
-                        asset_path = tmp_path / "assets" / "samples" / str(sample_id) / "photos" / filename
-                    if not asset_path.is_file():
+                    if asset_path is None or not asset_path.is_file():
                         missing_photo_assets.append(photo_id)
                     elif asset and asset.get("sha256"):
                         actual_hash = chamber_package.sha256_file(asset_path)
                         if actual_hash != str(asset.get("sha256") or ""):
                             corrupt_photo_assets.append(photo_id)
                 thumb_rel = photo.get("thumbRelativePath", "")
-                if thumb_rel and asset_index is not None:
+                if thumb_rel:
                     key = (str(sample_id), str(photo_id), "thumbnail")
                     asset = asset_lookup.get(key)
                     checked_manifest_assets.add(key)
@@ -167,18 +153,17 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                         if actual_hash != str(asset.get("sha256") or ""):
                             corrupt_photo_assets.append(f"{photo_id}::thumbnail")
 
-    if asset_index is not None:
-        for key, asset in asset_lookup.items():
-            if key[0] not in incoming_sample_ids_for_assets:
-                continue
-            if key in checked_manifest_assets or not asset.get("exists"):
-                continue
-            asset_path = asset_path_from_index(asset)
-            asset_id = str(asset.get("metadataId") or asset.get("assetId") or "")
-            if not asset_path or not asset_path.is_file():
-                missing_photo_assets.append(asset_id)
-            elif asset.get("sha256") and chamber_package.sha256_file(asset_path) != str(asset.get("sha256") or ""):
-                corrupt_photo_assets.append(asset_id)
+    for key, asset in asset_lookup.items():
+        if key[0] not in incoming_sample_ids_for_assets:
+            continue
+        if key in checked_manifest_assets or not asset.get("exists"):
+            continue
+        asset_path = asset_path_from_index(asset)
+        asset_id = str(asset.get("metadataId") or asset.get("assetId") or "")
+        if not asset_path or not asset_path.is_file():
+            missing_photo_assets.append(asset_id)
+        elif asset.get("sha256") and chamber_package.sha256_file(asset_path) != str(asset.get("sha256") or ""):
+            corrupt_photo_assets.append(asset_id)
 
     blockers = []
     if missing_photo_assets:
@@ -265,7 +250,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
     def blocking_sample_identity_match(index: dict, value: str, incoming_sample: dict, incoming_id: str) -> dict | None:
         if not value:
             return None
-        for current_sample in index.get(value, []) or []:
+        for current_sample in index.get(value.lower(), []) or []:
             if current_sample.get("id") == incoming_id:
                 continue
             if sample_queries.sample_is_reassembled(incoming_sample) or sample_queries.sample_is_reassembled(current_sample):
@@ -287,7 +272,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
             "incoming": {key: sample.get(key) for key in mergeable if current_sample.get(key) != sample.get(key)},
             "allowedActions": ["merge_into_existing", "import_as_new_with_identity_edit", "skip"],
             "mergeableFields": mergeable,
-            "autoMergeSubData": ["photos", "problemRecords"],
+            "autoMergeSubData": ["photos", "files", "problemRecords"],
             "preferredMergeTarget": current_sample["id"],
         })
 
@@ -301,7 +286,7 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
 
             if sample_id and sample_id in curr_samples_by_id:
                 current_sample = curr_samples_by_id[sample_id]
-                field_diffs = diff_fields(current_sample, sample, skip_keys={"photos", "logs", "problemRecords", "_categoryName"})
+                field_diffs = diff_fields(current_sample, sample, skip_keys={"photos", "files", "logs", "problemRecords", "_categoryName"})
                 if field_diffs:
                     conflicts.append({
                         "conflictId": next_conflict_id(),
@@ -319,9 +304,9 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                 continue
 
             identity_checks = [
-                ("sn", sn, f"SN: {sn}", curr_samples_by_sn),
-                ("imei", imei, f"IMEI: {imei}", curr_samples_by_imei),
-                ("boardSn", board_sn, f"主板SN: {board_sn}", curr_samples_by_board_sn),
+                ("sn", sn, f"SN: {sn}", curr_samples_by_identity),
+                ("imei", imei, f"IMEI: {imei}", curr_samples_by_identity),
+                ("boardSn", board_sn, f"主板SN: {board_sn}", curr_samples_by_identity),
             ]
             identity_conflicted = False
             for match_by, value, label, index in identity_checks:
@@ -341,21 +326,35 @@ def diff_import_bundle(current: dict, incoming: dict, manifest: dict, tmp_path: 
                 "categoryName": category_name,
             })
 
+    identity_targets = {item["incomingId"]: item["currentId"] for item in conflicts
+                        if item["type"] == "sample_identity_conflict"}
+    current_reservations: dict[str, list[dict]] = {}
+    for project in current.get("projects") or []:
+        for stage in project.get("stages") or []:
+            for task in stage.get("tasks") or []:
+                if task_reservations.is_open(task):
+                    for sample_id in set(task.get("sampleIds") or []):
+                        current_reservations.setdefault(sample_id, []).append(task)
+
     for project in incoming.get("projects") or []:
         for stage in project.get("stages") or []:
             for task in stage.get("tasks") or []:
-                if task.get("status") in ("进行中", "阻塞中"):
-                    for sample_id in task.get("sampleIds") or []:
-                        if sample_id in curr_samples_by_id:
-                            current_sample = curr_samples_by_id[sample_id]
-                            if current_sample.get("currentTaskId") and current_sample["currentTaskId"] != task.get("id"):
+                if task_reservations.is_open(task):
+                    for sample_id in set(task.get("sampleIds") or []):
+                        target_sample_id = identity_targets.get(sample_id, sample_id)
+                        if target_sample_id in curr_samples_by_id:
+                            current_sample = curr_samples_by_id[target_sample_id]
+                            other_tasks = [other for other in current_reservations.get(target_sample_id, [])
+                                           if other.get("id") != task.get("id") and task_reservations.conflict_reason(task, other)]
+                            if other_tasks:
                                 conflicts.append({
                                     "conflictId": next_conflict_id(),
                                     "type": "task_occupancy_conflict",
                                     "entity": "sample",
                                     "sampleId": sample_id,
+                                    "mergeTargetSampleId": target_sample_id if target_sample_id != sample_id else "",
                                     "label": entity_label_for_conflict("sample", current_sample),
-                                    "currentTaskId": current_sample["currentTaskId"],
+                                    "currentTaskId": other_tasks[0].get("id"),
                                     "incomingTaskId": task.get("id"),
                                     "incomingTaskLabel": entity_label_for_conflict("task", task),
                                     "allowedActions": ["skip_occupancy", "import_no_occupy"],
@@ -431,11 +430,10 @@ def diff_stages(curr_proj: dict, incoming_proj: dict, curr_proj_id: str, inc_pro
                 task_label = f"{task.get('category','')}-{task.get('testItem','')}"
                 if task_id and task_id in curr_tasks:
                     current_task = curr_tasks[task_id]
-                    field_diffs = diff_fields(
-                        current_task,
-                        task,
-                        skip_keys={"logs", "sampleIds", "removedSampleRecords", "sampleFaultRecords", "resultUploads", "resultDraft"},
-                    )
+                    # Task assignments, drafts and result history are business
+                    # data too. Hiding them here silently discarded incoming
+                    # updates to an existing task even after a successful import.
+                    field_diffs = diff_fields(current_task, task)
                     if field_diffs:
                         conflicts.append({
                             "conflictId": next_id(),

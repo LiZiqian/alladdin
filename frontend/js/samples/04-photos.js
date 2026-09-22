@@ -6,7 +6,7 @@
 app.registerModule("samples.photos", {
 
   photoThumbUrl(photo) {
-    return photo?.thumbUrl || photo?.thumbnailUrl || photo?.url || photo?.dataUrl || "";
+    return photo?.thumbUrl || photo?.url || "";
   },
 
   async createPhotoThumbnail(file, { maxSize = 360, quality = 0.72 } = {}) {
@@ -61,17 +61,17 @@ app.registerModule("samples.photos", {
     const photos = Array.isArray(sample?.photos) ? sample.photos : [];
     if (sample?.photosLoaded !== true && Number(sample?.photoCount || 0) > 0) {
       return `<div class="sample-photo-grid">
-        <div class="sample-photo-card sample-photo-add" data-app-action="sample-photo-upload" data-id="${Utils.esc(sample.id)}">
+        <div class="sample-photo-card sample-photo-add" role="button" tabindex="0" data-app-action="sample-photo-upload" data-id="${Utils.esc(sample.id)}">
           <div class="add-card-plus" style="font-size:28px;margin-bottom:6px">+</div>
-          <div class="add-card-label">上传图片</div>
+          <div class="add-card-label">添加图片</div>
         </div>
         <div class="empty" style="grid-column:1 / -1">正在加载 ${Number(sample.photoCount || 0)} 张图片...</div>
       </div>`;
     }
     return `<div class="sample-photo-grid">
-      <div class="sample-photo-card sample-photo-add" data-app-action="sample-photo-upload" data-id="${Utils.esc(sample.id)}">
+      <div class="sample-photo-card sample-photo-add" role="button" tabindex="0" data-app-action="sample-photo-upload" data-id="${Utils.esc(sample.id)}">
         <div class="add-card-plus" style="font-size:28px;margin-bottom:6px">+</div>
-        <div class="add-card-label">上传图片</div>
+        <div class="add-card-label">添加图片</div>
       </div>
       ${photos.length ? photos.map(photo => `
         <div class="sample-photo-card">
@@ -79,7 +79,7 @@ app.registerModule("samples.photos", {
             <button type="button" class="sample-photo-thumb" data-app-action="sample-photo-preview" data-id="${Utils.esc(sample.id)}" data-photo-id="${Utils.esc(photo.id)}" title="查看大图">
               <img src="${Utils.esc(this.photoThumbUrl(photo))}" alt="${Utils.esc(photo.name || "图片数据")}">
             </button>
-            <button type="button" class="sample-photo-delete-btn" data-app-action="sample-photo-delete" data-id="${Utils.esc(sample.id)}" data-photo-id="${Utils.esc(photo.id)}" data-stop-propagation="1" title="删除照片">🗑</button>
+            <button type="button" class="sample-photo-delete-btn" data-app-action="sample-photo-delete" data-id="${Utils.esc(sample.id)}" data-photo-id="${Utils.esc(photo.id)}" data-stop-propagation="1" title="删除照片">${Utils.iconHtml("trash")}</button>
           </div>
           <div class="sample-photo-meta">
             <div class="sample-photo-name-row">
@@ -92,19 +92,32 @@ app.registerModule("samples.photos", {
   },
 
   async previewSamplePhoto(sampleId, photoId) {
+    const dialogRequest = this.beginDialogRequest?.();
+    const request = this._samplePhotoPreviewSequence = (this._samplePhotoPreviewSequence || 0) + 1;
+    const modalId = this._currentModalId;
+    const viewKey = JSON.stringify(this.view || {});
     let sample = this.findSample(sampleId)?.sample;
     if (sample && sample.photosLoaded !== true) {
-      sample = await this.ensureSampleDetailsLoaded(sampleId, { photos: true, events: false, renderPanels: true });
+      try {
+        sample = await this.ensureSampleDetailsLoaded(sampleId, { photos: true, events: false, renderPanels: true });
+      } catch (e) {
+        if (request === this._samplePhotoPreviewSequence && modalId === this._currentModalId
+          && this.isDialogRequestCurrent?.(dialogRequest) !== false) alert("照片加载失败：" + (e.message || e));
+        return;
+      }
     }
+    if (request !== this._samplePhotoPreviewSequence || modalId !== this._currentModalId || viewKey !== JSON.stringify(this.view || {})) return;
+    if (this.isDialogRequestCurrent?.(dialogRequest) === false) return;
     const photo = (sample?.photos || []).find(x => x.id === photoId);
     if (!photo) return;
-    const src = photo.url || photo.dataUrl || "";
+    const src = photo.url || "";
     if (!src) return;
     const existing = document.querySelector(".sample-photo-preview-mask");
     if (existing) existing.remove();
     document.body.append(this.samplePhotoPreviewNode(photo, src));
     // 鼠标滚轮缩放 + 左键拖动平移
     const mask = document.querySelector(".sample-photo-preview-mask");
+    mask?.querySelector(".sample-photo-preview-head button")?.focus();
     const img = mask?.querySelector(".sample-photo-preview-body img");
     if (img) {
       let scale = 1, tx = 0, ty = 0, dragging = false, startX = 0, startY = 0;
@@ -143,19 +156,25 @@ app.registerModule("samples.photos", {
         img.style.cursor = "grabbing";
         e.preventDefault();
       });
-      window.addEventListener("mousemove", (e) => {
+      const movePreview = (e) => {
         if (!dragging) return;
         tx = e.clientX - startX; ty = e.clientY - startY;
         clampTranslate();
         updateTransform();
-      });
-      window.addEventListener("mouseup", () => {
+      };
+      const releasePreview = () => {
         if (!dragging) return;
         dragging = false;
         img.style.cursor = scale > 1 ? "grab" : "zoom-in";
-      });
+      };
+      window.addEventListener("mousemove", movePreview);
+      window.addEventListener("mouseup", releasePreview);
       const observer = new MutationObserver(() => {
-        if (!document.body.contains(mask)) observer.disconnect();
+        if (!document.body.contains(mask)) {
+          window.removeEventListener("mousemove", movePreview);
+          window.removeEventListener("mouseup", releasePreview);
+          observer.disconnect();
+        }
       });
       observer.observe(document.body, { childList: true });
     }
@@ -167,6 +186,9 @@ app.registerModule("samples.photos", {
     mask.className = "sample-photo-preview-mask";
     mask.dataset.appAction = "sample-photo-preview-close";
     mask.dataset.selfOnly = "1";
+    mask.role = "dialog";
+    mask.ariaModal = "true";
+    mask.ariaLabel = name;
 
     const preview = document.createElement("div");
     preview.className = "sample-photo-preview";
@@ -235,25 +257,19 @@ app.registerModule("samples.photos", {
     input.addEventListener("change", async () => {
       const files = [...(input.files || [])];
       if (!files.length) return;
+      const modalId = this._currentModalId;
+      this.setModalBusy(modalId, true);
       try {
         if (found.sample?.photosLoaded !== true && typeof this.ensureSampleDetailsLoaded === "function") {
           await this.ensureSampleDetailsLoaded(sampleId, { photos: true, events: false, renderPanels: true });
         }
-        if (!(await this.prepareBeforeDirectMutation("上传样机外观照片前同步"))) return;
-        const form = new FormData();
-        await this.appendPhotoUploadFiles(form, files);
-        form.append("revision", String(this.serverRevision || 0));
-        form.append("remark", "上传样机外观照片");
-        const res = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/photos`, {
-          method: "POST",
-          body: form
-        });
-        const obj = await res.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
-        if (!res.ok || !obj.ok) throw new Error(obj.error || ("HTTP " + res.status));
-        this.applySamplePhotosMutationResult(sampleId, obj, { renderPanel: true, statusText: "已保存" });
-        Utils.toast(`已上传 ${files.length} 张外观照片。`);
+        const uploaded = await this.uploadSamplePhotoFiles(sampleId, files);
+        this.refreshSampleArchivePanels(sampleId);
+        Utils.toast(`已添加 ${uploaded.length} 张图片。`);
       } catch (e) {
         alert("照片上传失败：" + (e.message || e));
+      } finally {
+        this.setModalBusy(modalId, false);
       }
     }, { once: true });
     input.click();
@@ -288,7 +304,10 @@ app.registerModule("samples.photos", {
       const found = this.findSample(sampleId);
       const photo = found?.sample?.photos?.find(x => x.id === photoId);
       if (found && photo) {
+        let release = null;
         try {
+          release = await this.beginServerMutation();
+          if (!release) return;
           this.updateServerStatus("同步中");
           const resp = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/photos/${encodeURIComponent(photoId)}`, {
             method: "PATCH",
@@ -303,6 +322,8 @@ app.registerModule("samples.photos", {
           alert("照片重命名失败：" + (e.message || e));
           this.finishPhotoRename(nameRow, sampleId, photoId, originalName);
           return;
+        } finally {
+          release?.();
         }
       }
       this.finishPhotoRename(nameRow, sampleId, photoId, photo ? newName : originalName);
@@ -315,6 +336,7 @@ app.registerModule("samples.photos", {
     };
 
     input.addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === "Enter") { e.preventDefault(); commit(); }
       if (e.key === "Escape") { e.preventDefault(); cancel(); }
     });
@@ -331,15 +353,27 @@ app.registerModule("samples.photos", {
   deleteSamplePhoto(sampleId, photoId) {
     const found = this.findSample(sampleId);
     if (!found || !Array.isArray(found.sample.photos)) return;
+    const shell = document.querySelector(".sample-archive-shell");
+    const records = shell?.dataset.sampleDetailId === sampleId
+      ? this.archiveProblemRows(shell).map(row => this.problemRecordFromElement(row)) : this.sampleProblemRecords(found.sample);
+    if (records.some(record => this.problemPhotoIds(record).includes(photoId))) {
+      Utils.toast("此图片已关联问题，请先到问题表移除关联并保存样机详情。");
+      return;
+    }
     this.showConfirm("确认删除这张外观照片？", async () => {
+      let release = null;
       try {
         if (!(await this.prepareBeforeDirectMutation("删除样机外观照片前同步"))) return;
+        release = await this.beginServerMutation();
+        if (!release) return;
         const res = await fetch(`/api/samples/${encodeURIComponent(sampleId)}/photos/${encodeURIComponent(photoId)}`, { method: "DELETE" });
         const obj = await res.json().catch(() => ({ ok: false, error: "服务器返回不是 JSON" }));
         if (!res.ok || !obj.ok) throw new Error(obj.error || ("HTTP " + res.status));
         this.applySamplePhotosMutationResult(sampleId, obj, { renderPanel: true, statusText: "已保存" });
       } catch (e) {
         alert("删除照片失败：" + (e.message || e));
+      } finally {
+        release?.();
       }
     }, { title: "删除照片", okText: "删除", okClass: "btn btn-danger" });
   },

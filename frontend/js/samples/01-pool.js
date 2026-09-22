@@ -1,8 +1,7 @@
-/* ========================================
-   TestChamber V7 - Sample pool cards, CRUD, destroy impact
-   Split from the previous monolithic module.
-   ======================================== */
-
+/* 样机池列表与卡片视图、池信息编辑。
+ * 分页读取见 pool-pagination.js，销毁见 pool-destruction.js，
+ * 新增样机见 sample-create.js。DOM、样式类名和事件动作保持稳定。
+ */
 app.registerModule("samples.pool", {
 
   samplePagerNode(page, totalPages, total, pageSize, { loading = false } = {}) {
@@ -15,7 +14,7 @@ app.registerModule("samples.pool", {
 
     const summary = document.createElement("span");
     summary.className = "path";
-    summary.textContent = `显示 ${start}-${end} / ${total} 台`;
+    summary.textContent = `筛选结果 ${total} 台，本页显示 ${start}-${end} 台`;
     row.append(summary);
 
     const pageBtn = (label, target, disabled = false) => {
@@ -61,265 +60,6 @@ app.registerModule("samples.pool", {
     return pager;
   },
 
-  setSamplePage(page) {
-    this.setSamplePoolPageState(page);
-    const cat = this.currentSampleCategory();
-    if (cat && this.isCurrentSampleCategoryPage(cat.id)) this.refreshSamplePageRegion(cat);
-    else this.renderSamples();
-  },
-
-  setSamplePageSize(size) {
-    this.setSamplePoolPageSizeState(size, 100);
-    this.renderSamples();
-  },
-
-  updateSamplePoolFilter(name, value, { render = true } = {}) {
-    if (!this.setSamplePoolFilterState(name, value, { resetPage: render })) return;
-    if (render) {
-      this.renderSamples();
-    }
-  },
-
-  clearSamplePoolFilters() {
-    this.resetSamplePoolFiltersState();
-    this.renderSamples();
-  },
-
-  samplePageQueryParams(cat) {
-    const state = this.samplePoolPageState(100);
-    const params = {
-      page: state.page,
-      pageSize: state.pageSize
-    };
-    Object.entries(state.filters).forEach(([key, value]) => {
-      const text = String(value || "").trim();
-      if (text) params[key] = text;
-    });
-    params.categoryId = cat?.id || "";
-    return params;
-  },
-
-  samplePageCacheKey(cat, params) {
-    return JSON.stringify({ categoryId: cat?.id || "", ...params });
-  },
-
-  samplePageFilterKey(cat, params) {
-    const copy = { ...(params || {}) };
-    delete copy.page;
-    return JSON.stringify({ categoryId: cat?.id || "", ...copy });
-  },
-
-  samplePageCacheStore() {
-    if (!(this._samplePageCaches instanceof Map)) this._samplePageCaches = new Map();
-    return this._samplePageCaches;
-  },
-
-  samplePageMetaStore() {
-    if (!(this._samplePageMetaCaches instanceof Map)) this._samplePageMetaCaches = new Map();
-    return this._samplePageMetaCaches;
-  },
-
-  samplePageLoadingSet() {
-    if (!(this._samplePageLoadingKeys instanceof Set)) this._samplePageLoadingKeys = new Set();
-    return this._samplePageLoadingKeys;
-  },
-
-  getSamplePageCache(key) {
-    return this.samplePageCacheStore().get(key) || (this._samplePageCache?.key === key ? this._samplePageCache : null);
-  },
-
-  setSamplePageCache(entry) {
-    if (!entry?.key) return;
-    const store = this.samplePageCacheStore();
-    store.set(entry.key, entry);
-    while (store.size > 24) store.delete(store.keys().next().value);
-    this._samplePageCache = entry;
-  },
-
-  setSamplePageMeta(filterKey, entry) {
-    if (!filterKey || !entry) return;
-    const store = this.samplePageMetaStore();
-    store.set(filterKey, {
-      categoryId: entry.categoryId,
-      total: Number(entry.total || 0),
-      totalPages: Number(entry.totalPages || 1),
-      pageSize: Number(entry.pageSize || 100),
-      stats: entry.stats || {},
-      category: entry.category || {}
-    });
-    while (store.size > 24) store.delete(store.keys().next().value);
-  },
-
-  storeSamplePageResult(cat, key, params, result = {}) {
-    const items = result.items || [];
-    const hadLocalUnsavedChanges = this.hasLocalUnsavedChanges?.() === true;
-    const byId = new Map((cat.samples || []).map(sample => [String(sample.id || ""), sample]));
-    const baselineItems = [];
-    items.forEach(sample => {
-      if (!sample?.id) return;
-      const existing = byId.get(String(sample.id));
-      if (existing) {
-        Object.assign(existing, sample);
-        if (!hadLocalUnsavedChanges) this.sampleProblemRecords?.(existing);
-        baselineItems.push({ source: sample, merged: existing });
-      } else {
-        if (!Array.isArray(cat.samples)) cat.samples = [];
-        if (!hadLocalUnsavedChanges) this.sampleProblemRecords?.(sample);
-        cat.samples.push(sample);
-        baselineItems.push({ source: sample, merged: sample });
-      }
-    });
-    Object.assign(cat, result.category || {});
-    cat.sampleCount = result.stats?.totalInCategory ?? result.total ?? cat.sampleCount;
-    cat.statusCounts = result.stats?.statusCounts || cat.statusCounts || {};
-    cat.problemCounts = result.stats?.problemCounts || cat.problemCounts || {};
-    this.syncHydratedCategoryBaseline?.({
-      id: cat.id,
-      ...(result.category || {}),
-      sampleCount: result.stats?.totalInCategory ?? result.total ?? cat.sampleCount,
-      statusCounts: result.stats?.statusCounts || cat.statusCounts || {},
-      problemCounts: result.stats?.problemCounts || cat.problemCounts || {},
-    });
-    baselineItems.forEach(({ source, merged }) => {
-      this.syncHydratedSampleBaseline?.(cat.id, hadLocalUnsavedChanges ? source : merged);
-    });
-    const entry = { key, filterKey: this.samplePageFilterKey(cat, params), categoryId: cat.id, ...result, items };
-    this.setSamplePageCache(entry);
-    this.setSamplePageMeta(entry.filterKey, entry);
-    return entry;
-  },
-
-  storeSamplePageError(cat, key, params, message) {
-    const entry = {
-      key,
-      filterKey: this.samplePageFilterKey(cat, params),
-      categoryId: cat.id,
-      error: message,
-      items: [],
-      page: params.page,
-      pageSize: params.pageSize,
-      total: 0,
-      totalPages: 1
-    };
-    this.setSamplePageCache(entry);
-    return entry;
-  },
-
-  async refreshCurrentSamplePage(cat) {
-    if (!cat?.id || typeof this.fetchSamplePage !== "function") return false;
-    const params = this.samplePageQueryParams(cat);
-    const key = this.samplePageCacheKey(cat, params);
-    const loadingSet = this.samplePageLoadingSet();
-    loadingSet.add(key);
-    this._samplePageLoadingKey = key;
-    try {
-      const result = await this.fetchSamplePage(cat.id, params);
-      loadingSet.delete(key);
-      if (this._samplePageLoadingKey === key) this._samplePageLoadingKey = "";
-      const entry = this.storeSamplePageResult(cat, key, params, result);
-      if (this.isCurrentSampleCategoryPage(cat.id)) {
-        this.refreshSamplePageRegion(cat);
-        this.prefetchAdjacentSamplePages(cat, entry, params);
-      }
-      return true;
-    } catch (e) {
-      loadingSet.delete(key);
-      if (this._samplePageLoadingKey === key) this._samplePageLoadingKey = "";
-      this.storeSamplePageError(cat, key, params, e.message);
-      console.error("样机分页刷新失败：", e);
-      if (this.isCurrentSampleCategoryPage(cat.id)) this.refreshSamplePageRegion(cat);
-      return false;
-    }
-  },
-
-  loadSampleCategorySummary() {
-    if (this._sampleCategorySummaryLoaded || this._sampleCategorySummaryLoading) return;
-    this._sampleCategorySummaryLoading = true;
-    this.fetchSampleCategoriesSummary()
-      .then(categories => {
-        this._sampleCategorySummaryLoading = false;
-        const categoryRecords = this.sampleCategoryRecords();
-        const byId = new Map(categoryRecords.map(cat => [String(cat.id || ""), cat]));
-        categories.forEach(summary => {
-          const cat = byId.get(String(summary.id || ""));
-          if (cat) Object.assign(cat, summary);
-          else categoryRecords.push({ ...summary, samples: [] });
-          this.syncHydratedCategoryBaseline?.(summary);
-        });
-        this._sampleCategorySummaryLoaded = true;
-        if (this.viewModule() === "samples" && !this.selectedCategoryId()) this.renderSamples();
-      })
-      .catch(e => {
-        this._sampleCategorySummaryLoading = false;
-        console.error("样机池摘要加载失败：", e);
-      });
-  },
-
-  loadSamplePage(cat, key, params, { prefetch = false } = {}) {
-    if (!cat?.id || this.getSamplePageCache(key)) return;
-    const loadingSet = this.samplePageLoadingSet();
-    if (loadingSet.has(key)) return;
-    loadingSet.add(key);
-    this._samplePageLoadingKey = key;
-    this.fetchSamplePage(cat.id, params)
-      .then(result => {
-        loadingSet.delete(key);
-        if (this._samplePageLoadingKey === key) this._samplePageLoadingKey = "";
-        const entry = this.storeSamplePageResult(cat, key, params, result);
-        if (!prefetch && this.isCurrentSampleCategoryPage(cat.id)) {
-          this.refreshSamplePageRegion(cat);
-          this.prefetchAdjacentSamplePages(cat, entry, params);
-        }
-      })
-      .catch(e => {
-        loadingSet.delete(key);
-        if (this._samplePageLoadingKey === key) this._samplePageLoadingKey = "";
-        this.storeSamplePageError(cat, key, params, e.message);
-        console.error("样机分页加载失败：", e);
-        if (!prefetch && this.isCurrentSampleCategoryPage(cat.id)) this.refreshSamplePageRegion(cat);
-      });
-  },
-
-  prefetchAdjacentSamplePages(cat, entry, params) {
-    if (this._samplePagePrefetchDisabled || !entry || entry.error) return;
-    const page = Number.parseInt(entry.page || params.page, 10) || 1;
-    const totalPages = Number.parseInt(entry.totalPages || 1, 10) || 1;
-    const candidates = [page + 1, page - 1].filter(p => p >= 1 && p <= totalPages);
-    if (!candidates.length) return;
-    const run = () => candidates.forEach(targetPage => {
-      const nextParams = { ...params, page: targetPage };
-      const key = this.samplePageCacheKey(cat, nextParams);
-      if (!this.getSamplePageCache(key) && !this.samplePageLoadingSet().has(key)) {
-        this.loadSamplePage(cat, key, nextParams, { prefetch: true });
-      }
-    });
-    if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
-      window.requestIdleCallback(run, { timeout: 600 });
-    } else if (typeof setTimeout === "function") {
-      setTimeout(run, 80);
-    } else {
-      run();
-    }
-  },
-
-  samplePageState(cat, { startLoad = true } = {}) {
-    const params = this.samplePageQueryParams(cat);
-    const key = this.samplePageCacheKey(cat, params);
-    const filterKey = this.samplePageFilterKey(cat, params);
-    const cached = this.getSamplePageCache(key);
-    const meta = cached || this.samplePageMetaStore().get(filterKey) || null;
-    if (!cached && startLoad) this.loadSamplePage(cat, key, params);
-    const loading = !cached && this.samplePageLoadingSet().has(key);
-    const pageSize = Number.parseInt(cached?.pageSize || meta?.pageSize || params.pageSize, 10) || params.pageSize;
-    const fallbackTotal = Number(cat.sampleCount ?? (Array.isArray(cat.samples) ? cat.samples.length : 0)) || 0;
-    const total = Number(cached?.total ?? meta?.total ?? fallbackTotal) || 0;
-    const totalPages = Number(cached?.totalPages ?? meta?.totalPages ?? Math.max(1, Math.ceil(total / pageSize))) || 1;
-    const rawPage = Number.parseInt(cached?.page || params.page, 10) || 1;
-    const page = Math.min(Math.max(1, rawPage), totalPages);
-    this.setSamplePoolPageState(page);
-    return { cat, params, key, filterKey, cached, meta, loading, page, pageSize, total, totalPages, items: cached?.items || [] };
-  },
-
   samplePoolCountText(cat, state) {
     const totalInCategory = state.cached?.stats?.totalInCategory
       ?? state.meta?.stats?.totalInCategory
@@ -327,7 +67,7 @@ app.registerModule("samples.pool", {
       ?? (cat.samples || []).length;
     return state.loading && !state.cached
       ? `加载第 ${state.page} 页 / ${totalInCategory} 台`
-      : `显示 ${state.total} / ${totalInCategory} 台`;
+      : `筛选结果 ${state.total} 台 / 池内共 ${totalInCategory} 台`;
   },
 
   appendHtmlFragment(target, html) {
@@ -345,6 +85,8 @@ app.registerModule("samples.pool", {
     card.className = "card add-card";
     card.dataset.appAction = "sample-add";
     card.dataset.id = cat.id || "";
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
     const plus = document.createElement("div");
     plus.className = "add-card-plus";
     plus.textContent = "+";
@@ -367,7 +109,14 @@ app.registerModule("samples.pool", {
     if (state.loading && !state.cached) {
       nodes.push(this.sampleEmptyHintNode(`正在加载第 ${state.page} 页样机...`, "sample-page-loading"));
     } else if (state.cached?.error) {
-      nodes.push(this.sampleEmptyHintNode(`样机分页加载失败：${state.cached.error}`));
+      const error = this.sampleEmptyHintNode(`样机分页加载失败：${state.cached.error}`);
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "btn btn-sm btn-outline";
+      retry.textContent = "重试";
+      retry.dataset.appAction = "sample-page-retry";
+      error.append(retry);
+      nodes.push(error);
     } else if (state.items.length) {
       state.items.forEach(sample => {
         const holder = document.createDocumentFragment ? document.createDocumentFragment() : document.createElement("div");
@@ -375,12 +124,17 @@ app.registerModule("samples.pool", {
         nodes.push(...Array.from(holder.childNodes || holder.children || []));
       });
     } else {
-      nodes.push(this.sampleEmptyHintNode("暂无样机"));
+      nodes.push(this.sampleEmptyHintNode(Number(cat.sampleCount ?? cat.samples?.length) > 0
+        ? "没有符合筛选条件的样机，请调整或清空筛选。" : "暂无样机"));
     }
     return nodes;
   },
 
   refreshSamplePageRegion(cat) {
+    if (typeof this.sampleCategoryRecords === "function") {
+      cat = this.sampleCategoryRecords().find(category => category.id === cat?.id);
+      if (!cat) return;
+    }
     const shell = document.getElementById("samplePageShell");
     if (!shell || shell.dataset.categoryId !== String(cat.id || "")) {
       this.renderSamples();
@@ -398,6 +152,16 @@ app.registerModule("samples.pool", {
     this.replaceContentNodes(bottomPager, state.total > state.pageSize ? [pagerNode()] : []);
     if (count) count.innerText = this.samplePoolCountText(cat, state);
     this.replaceContentNodes(grid, this.samplePageGridNodes(cat, state));
+    const filters = this.samplePoolPageState(100).filters;
+    for (const field of ["owner", "borrower"]) {
+      const select = shell.querySelector?.(`[data-sample-filter="${field}"]`);
+      if (!select) continue;
+      const placeholder = field === "owner" ? "挂账人" : "持有人";
+      const options = this.samplePersonFilterOptions(cat, state, field, filters[field]);
+      const replacement = this.sampleFilterSelectNode(select.className, field, placeholder, options, filters[field]);
+      select.replaceChildren(...Array.from(replacement.childNodes || replacement.children || []));
+      select.value = filters[field] || "";
+    }
     if (!hadLocalUnsavedChanges) this.markDataSynced?.();
   },
 
@@ -496,25 +260,25 @@ app.registerModule("samples.pool", {
     filterBar.className = "sample-pool-toolbar-filters";
     const search = document.createElement("input");
     search.className = "sample-pool-search";
-    search.placeholder = "样机详情 / 问题 / 履历搜索（回车搜索）";
+    search.placeholder = "详情 / 问题 / 履历（回车）";
     search.setAttribute("aria-label", "搜索样机详情、问题和履历");
     search.value = filters.keyword || "";
     search.dataset.appAction = "sample-filter-search";
     search.dataset.appEvents = "input keydown";
     filterBar.append(search);
-    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-status", "status", "全部使用状态", this.constants.sampleStatuses, filters.status, "使用状态筛选"));
-    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-result", "problemState", "全部故障状态", [
+    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-status", "status", "使用状态", this.constants.sampleStatuses, filters.status, "使用状态筛选"));
+    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-result", "problemState", "故障状态", [
       { value: "fault", label: "有故障" },
       { value: "ok", label: "无故障" }
     ], filters.problemState, "故障状态筛选"));
-    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-reassembly", "reassembled", "全部重组状态", [
+    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-reassembly", "reassembled", "重组状态", [
       { value: "normal", label: "非重组" },
       { value: "reassembled", label: "重组" }
     ], filters.reassembled, "重组状态筛选"));
-    const owners = [...new Set((cat.samples || []).map(s => s.owner).filter(Boolean))].sort();
-    const borrowers = [...new Set((cat.samples || []).map(s => s.borrower).filter(Boolean))].sort();
-    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-person", "owner", "全部挂账人", owners, filters.owner, "挂账人筛选"));
-    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-person", "borrower", "全部持有人", borrowers, filters.borrower, "持有人筛选"));
+    const owners = this.samplePersonFilterOptions(cat, state, "owner", filters.owner);
+    const borrowers = this.samplePersonFilterOptions(cat, state, "borrower", filters.borrower);
+    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-person", "owner", "挂账人", owners, filters.owner, "挂账人筛选"));
+    filterBar.append(this.sampleFilterSelectNode("sample-pool-filter-person", "borrower", "持有人", borrowers, filters.borrower, "持有人筛选"));
     const clear = document.createElement("button");
     clear.type = "button";
     clear.className = "btn btn-sm btn-outline sample-pool-clear-btn";
@@ -537,13 +301,19 @@ app.registerModule("samples.pool", {
     template.textContent = "下载批量导入模板";
     const batch = document.createElement("button");
     batch.type = "button";
-    batch.className = "btn btn-purple sample-pool-main-btn";
+    batch.className = "btn btn-add sample-pool-main-btn";
     batch.dataset.appAction = "sample-batch-import";
     batch.dataset.id = cat.id || "";
     batch.textContent = "批量新增";
     actions.append(template, batch);
     toolbar.append(actions);
     return toolbar;
+  },
+
+  samplePersonFilterOptions(cat, state, field, currentValue = "") {
+    const names = state.cached?.stats?.[`${field}Names`] ?? state.meta?.stats?.[`${field}Names`];
+    const values = Array.isArray(names) ? names : (cat.samples || []).map(sample => sample[field]);
+    return [...new Set([...values, currentValue].filter(Boolean))].sort();
   },
 
   sampleFilterSelectNode(className, filterName, placeholder, options, currentValue, accessibleLabel = placeholder) {
@@ -607,7 +377,6 @@ app.registerModule("samples.pool", {
   sampleCategoryCardNode(category) {
     const card = document.createElement("div");
     card.className = "card sample-card";
-    card.dataset.appAction = "sample-category-open";
     card.dataset.id = category.id || "";
 
     const header = document.createElement("div");
@@ -622,6 +391,7 @@ app.registerModule("samples.pool", {
     edit.dataset.id = category.id || "";
     edit.dataset.stopPropagation = "1";
     edit.title = "编辑样机池";
+    edit.ariaLabel = "编辑样机池";
     edit.textContent = "✎";
     header.append(name, edit);
     card.append(header);
@@ -636,11 +406,38 @@ app.registerModule("samples.pool", {
     desc.append(descValue);
     card.append(desc);
 
+    const enterRow = document.createElement("div");
+    enterRow.className = "sample-pool-card-enter-row";
+    const enterButton = document.createElement("button");
+    enterButton.type = "button";
+    enterButton.className = "btn sample-pool-card-enter-btn";
+    enterButton.dataset.appAction = "sample-category-open";
+    enterButton.dataset.id = category.id || "";
+    enterButton.append(document.createTextNode("进入样机池"));
+    const arrow = document.createElement("b");
+    arrow.textContent = "▶";
+    enterButton.append(arrow);
+    enterRow.append(enterButton);
+    card.append(enterRow);
+
     const divider = document.createElement("div");
     divider.className = "sample-pool-card-divider";
     card.append(divider);
 
     card.append(this.sampleCategoryStatsNode(category));
+
+    const footer = document.createElement("div");
+    footer.className = "sample-pool-card-footer";
+
+    const exportButton = document.createElement("button");
+    exportButton.type = "button";
+    exportButton.className = "sample-pool-card-export-btn";
+    exportButton.dataset.appAction = "sample-pool-export-scope";
+    exportButton.dataset.id = category.id || "";
+    exportButton.dataset.stopPropagation = "1";
+    exportButton.title = "导出此样机池范围数据包";
+    exportButton.ariaLabel = "导出此样机池范围数据包";
+    exportButton.innerHTML = Utils.iconHtml("download");
 
     const destroy = document.createElement("button");
     destroy.type = "button";
@@ -649,8 +446,10 @@ app.registerModule("samples.pool", {
     destroy.dataset.id = category.id || "";
     destroy.dataset.stopPropagation = "1";
     destroy.title = "档案销毁";
-    destroy.textContent = "🗑";
-    card.append(destroy);
+    destroy.ariaLabel = "档案销毁";
+    destroy.innerHTML = Utils.iconHtml("trash");
+    footer.append(destroy, exportButton);
+    card.append(footer);
     return card;
   },
 
@@ -726,6 +525,8 @@ app.registerModule("samples.pool", {
     const card = document.createElement("div");
     card.className = "card add-card";
     card.dataset.appAction = "sample-category-add";
+    card.setAttribute("role", "button");
+    card.tabIndex = 0;
     const plus = document.createElement("div");
     plus.className = "add-card-plus";
     plus.textContent = "+";
@@ -771,7 +572,7 @@ app.registerModule("samples.pool", {
     return `<div class="card sample-card sample-archive-card status-${usageClass} ${hasProblem ? "has-problem" : "is-ok"}" data-usage-status="${Utils.esc(usageStatus)}" data-quality-status="${hasProblem ? "fault" : "ok"}" data-reassembly-status="${isReassembled ? "reassembled" : "normal"}" data-app-action="sample-open" data-id="${Utils.esc(s.id)}">
       <div class="sample-card-top">
         <button type="button" class="sample-card-code sample-card-open-btn" data-app-action="sample-open" data-id="${Utils.esc(s.id)}" aria-label="查看样机 ${Utils.esc(displayCode)}">${Utils.esc(displayCode)}</button>
-        <button type="button" class="sample-card-destroy-btn" data-app-action="sample-destroy" data-id="${Utils.esc(s.id)}" data-stop-propagation="1" title="档案销毁" aria-label="档案销毁">🗑</button>
+        <button type="button" class="sample-card-destroy-btn" data-app-action="sample-destroy" data-id="${Utils.esc(s.id)}" data-stop-propagation="1" title="档案销毁" aria-label="档案销毁">${Utils.iconHtml("trash")}</button>
       </div>
       <div class="sample-card-content">
         <div class="sample-card-main">
@@ -783,6 +584,7 @@ app.registerModule("samples.pool", {
           <div class="sample-card-detail">
             <div class="sample-card-line wide"><span>阶段:</span><b>${Utils.esc(stageText)}</b></div>
             <div class="sample-card-line issue ${hasProblem ? "has-issue" : ""}"><span>问题:</span><b>${Utils.esc(problemText)}</b></div>
+            <div class="sample-card-line history"><span>测试履历：</span><b>${Number.isInteger(s.testHistoryCount) && s.testHistoryCount >= 0 ? s.testHistoryCount + "项" : "—"}</b></div>
           </div>
         </div>
         <div class="sample-card-statuses">
@@ -850,13 +652,15 @@ app.registerModule("samples.pool", {
   },
 
   editSampleCategory(id) {
-    const c = this.sampleCategoryRecords().find(x => x.id === id);
+    let c = this.sampleCategoryRecords().find(x => x.id === id);
     if (!c) return;
     this.showModal("编辑样机池", `
       <div class="form-group"><label class="req">代号</label><input id="catName" value="${Utils.esc(c.name)}"></div>
       <div class="form-group"><label>说明</label><textarea id="catDesc" placeholder="如 新一代小内折手机 / TSE是张三 / 此为特稿保密项目">${Utils.esc(c.description || "")}</textarea></div>
     `, async () => {
       this.clearFieldValidationMarks();
+      c = this.sampleCategoryRecords().find(x => x.id === id);
+      if (!c) { Utils.toast("样机池已不存在，请重新选择"); return false; }
       const snapshot = this.dataSnapshot();
       const nameEl = document.getElementById("catName");
       const name = nameEl.value.trim();
@@ -875,570 +679,8 @@ app.registerModule("samples.pool", {
     });
   },
 
-  async deleteSampleCategory(id) {
-    if (!await this.ensureSampleDestroyImpactScope({ categoryId: id })) return;
-    const c = this.sampleCategoryRecords().find(x => x.id === id);
-    if (!c) return;
-    const impact = this.collectSampleCategoryDestroyImpact(c);
-    this.confirmDeleteKeyword(
-      "档案销毁",
-      "档案销毁会物理删除该样机池、池内样机、照片/CT文件、问题表和样机事件数据。此操作不可恢复。",
-      async () => {
-        const dataSnapshot = this.dataSnapshot();
-        const destroyedIds = new Set((c.samples || []).map(sample => String(sample?.id || "")).filter(Boolean));
-        const impactedItems = [
-          ...(impact.runningOrBlocked || []),
-          ...(impact.pending || [])
-        ];
-        const affectedSampleIds = new Set();
-        impactedItems.forEach(item => {
-          (item.allSampleIds || item.task?.sampleIds || []).forEach(id => {
-            const sid = String(id || "");
-            if (sid && !destroyedIds.has(sid)) affectedSampleIds.add(sid);
-          });
-        });
-        this.applySampleCategoryDestroyImpact(c, impact);
-        const taskMutations = impactedItems
-          .map(item => this.taskMutationPayloadFor(item.project, item.stage, item.task))
-          .filter(item => item?.taskId);
-        const affectedSamples = [...affectedSampleIds]
-          .map(id => this.findSample(id)?.sample)
-          .filter(Boolean);
-        const eventSampleIds = new Set([...destroyedIds, ...affectedSampleIds]);
-        const sampleEvents = this.sampleEventRecords().filter(log => eventSampleIds.has(String(log?.sampleId || "")));
-        const categoryRecords = this.sampleCategoryRecords();
-        const categoryIndex = categoryRecords.findIndex(x => x.id === id);
-        if (categoryIndex >= 0) categoryRecords.splice(categoryIndex, 1);
-        this.patchViewState({ selectedCategoryId: null });
-        const saved = await this.commitSampleCategoryMutation(c, {
-          action: "destroy_sample_category",
-          remark: "样机池档案销毁",
-          user: "管理员",
-          deleteCategory: true,
-          taskMutations,
-          samples: affectedSamples,
-          sampleEvents,
-          render: false
-        });
-        if (!saved) {
-          this.restoreDataSnapshot(dataSnapshot);
-          return true;
-        }
-        this.renderSamples();
-        Utils.toast("样机池档案已销毁，关联任务已处理。");
-        return false;
-      },
-      this.sampleCategoryDestroyImpactHtml(impact)
-    );
-  },
-
-  collectSampleCategoryDestroyImpact(category) {
-    const samples = category?.samples || [];
-    const sampleIds = new Set(samples.map(s => s.id).filter(Boolean));
-    const sampleName = id => {
-      const sample = samples.find(s => s.id === id) || this.findSample(id)?.sample;
-      return sample ? this.sampleDisplayCode(sample) : id;
-    };
-    const hasArchive = samples.filter(s =>
-      this.sampleHasArchiveData(s) ||
-      (s.problemRecords || []).length ||
-      (s.initialResults || []).length ||
-      String(s.initialResult || "").trim()
-    ).length;
-    const runningOrBlocked = [];
-    const pending = [];
-    const defaultProjects = this.projectRecords().filter(project => String(project?.defaultSampleCategoryId || "") === String(category?.id || ""));
-    this.projectRecords().forEach(project => (project.stages || []).forEach(stage => (stage.tasks || []).forEach(task => {
-      if (!task || task.archived || this.isTaskCompleted(task)) return;
-      const matchedIds = (task.sampleIds || []).filter(id => sampleIds.has(id));
-      if (!matchedIds.length) return;
-      const flow = this.taskFlowStatus(task);
-      const item = {
-        project, stage, task, flow,
-        matchedIds,
-        matchedNames: matchedIds.map(sampleName),
-        allSampleIds: [...(task.sampleIds || [])],
-        allSampleNames: (task.sampleIds || []).map(sampleName)
-      };
-      if (["进行中", "阻塞中"].includes(flow)) runningOrBlocked.push(item);
-      else pending.push(item);
-    })));
-    return {
-      categoryName: category?.name || "未命名样机池",
-      sampleCount: samples.length,
-      archiveCount: hasArchive,
-      defaultProjects,
-      runningOrBlocked,
-      pending
-    };
-  },
-
-  sampleCategoryDestroyImpactHtml(impact) {
-    const taskLine = item => `
-      <li>
-        <b>${Utils.esc(item.project.name)} / ${Utils.esc(item.stage.name)} / ${Utils.esc(item.task.testItem || "-")}</b>
-        <span>${Utils.esc(item.flow)}；涉及 ${item.matchedNames.map(x => Utils.esc(x)).join("、")}</span>
-      </li>`;
-    return `<div class="destroy-impact">
-      <div class="destroy-impact-title">危险影响确认</div>
-      <ul>
-        <li><b>将删除样机池：</b><span>${Utils.esc(impact.categoryName)}，共 ${impact.sampleCount} 台样机。</span></li>
-        <li><b>档案数据：</b><span>${impact.archiveCount} 台样机含履历/照片/CT/问题表，销毁后会一起物理删除。</span></li>
-        <li><b>进行中/阻塞中任务：</b><span>${impact.runningOrBlocked.length} 个任务会被自动设置为"异常终止"，任务样机列表会被清空。</span></li>
-        <li><b>未启动任务：</b><span>${impact.pending.length} 个未启动任务会移除被销毁样机，并保留任务等待重新分配。</span></li>
-        <li><b>项目默认样机池：</b><span>${(impact.defaultProjects || []).length} 个项目会清除该默认设置，后续分配前需重新选择默认样机池。</span></li>
-      </ul>
-      ${impact.runningOrBlocked.length ? `<div class="destroy-impact-subtitle">会异常终止的任务</div><ul>${impact.runningOrBlocked.map(taskLine).join("")}</ul>` : ""}
-      ${impact.pending.length ? `<div class="destroy-impact-subtitle">会移除样机的未启动任务</div><ul>${impact.pending.map(taskLine).join("")}</ul>` : ""}
-    </div>`;
-  },
-
-  applySampleCategoryDestroyImpact(category, impact) {
-    const samples = category?.samples || [];
-    const destroyedIds = new Set(samples.map(s => s.id).filter(Boolean));
-    const sampleName = id => {
-      const sample = samples.find(s => s.id === id) || this.findSample(id)?.sample;
-      return sample ? this.sampleDisplayCode(sample) : id;
-    };
-    const today = Utils.today();
-    const now = Utils.now();
-    (impact.runningOrBlocked || []).forEach(item => {
-      const task = item.task;
-      const oldFlow = item.flow;
-      const originalSampleIds = [...(task.sampleIds || [])];
-      this.ensureTaskSampleSnapshots?.(task, originalSampleIds, { capturedAt: now, destroyedAt: now });
-      const destroyedNames = item.matchedNames.join("、") || "样机";
-      const reason = `${destroyedNames} 样机档案被销毁，任务无法继续。`;
-      originalSampleIds.filter(id => !destroyedIds.has(id)).forEach(id => {
-        if (this.findSample(id)) {
-          const otherUsage = this.activeTaskUsagesForSample(id, task.id)[0];
-          this.changeSampleStatus(id, otherUsage ? this.statusForOpenTaskUsage(otherUsage.task) : "闲置", {
-            user: "管理员",
-            source: "样机池档案销毁",
-            reason: otherUsage ? `关联任务异常终止，样机仍被其他任务占用；${reason}` : `关联任务异常终止，释放样机；${reason}`,
-            projectId: otherUsage?.project?.id || item.project.id,
-            stageId: otherUsage?.stage?.id || item.stage.id,
-            taskId: otherUsage?.task?.id || task.id,
-            testItem: otherUsage?.task?.testItem || task.testItem,
-            forceLog: true
-          });
-        }
-      });
-      task.sampleIds = [];
-      this.transitionTaskStatus(item.stage, task, "异常终止", {
-        completedAt: now,
-        endDate: today,
-        issue: reason
-      });
-      task.resultDate = today;
-      task.latestResult = "不通过";
-      this.addTaskLog(task, "样机池档案销毁", {
-        user: "管理员",
-        reason,
-        fromStatus: oldFlow,
-        toStatus: "异常终止",
-        detail: `已清空任务样机：${originalSampleIds.map(sampleName).join("、") || "-"}`
-      });
-    });
-    (impact.pending || []).forEach(item => {
-      const task = item.task;
-      const before = [...(task.sampleIds || [])];
-      this.ensureTaskSampleSnapshots?.(task, before, { capturedAt: now, destroyedAt: now });
-      task.sampleIds = before.filter(id => !destroyedIds.has(id));
-      this.addTaskLog(task, "样机池档案销毁", {
-        user: "管理员",
-        reason: `${item.matchedNames.join("、")} 样机档案被销毁，已从未启动任务中移除。`,
-        fromStatus: item.flow,
-        toStatus: this.taskFlowStatus(task),
-        detail: `任务样机：${before.map(sampleName).join("、") || "-"} → ${(task.sampleIds || []).map(sampleName).join("、") || "空"}`
-      });
-    });
-    (impact.defaultProjects || []).forEach(project => {
-      if (String(project?.defaultSampleCategoryId || "") === String(category?.id || "")) {
-        project.defaultSampleCategoryId = "";
-      }
-    });
-  },
-
-  sampleHasArchiveData(sample) {
-    return !!(
-      (sample?.logs || []).length ||
-      (sample?.photos || []).length ||
-      (sample?.ctData || []).length ||
-      (sample?.ctFiles || []).length
-    );
-  },
-
-  canDestroySample(sample) {
-    if (!sample) return { ok: false, reason: "样机不存在。" };
-    return { ok: true, reason: "" };
-  },
-
-  collectSingleSampleDestroyImpact(sample) {
-    const sampleId = sample?.id;
-    if (!sampleId) return { runningOrBlocked: [], pending: [], completed: [], sample };
-    const runningOrBlocked = [];
-    const pending = [];
-    const completedTaskRefs = [];
-    this.projectRecords().forEach(project => (project.stages || []).forEach(stage => (stage.tasks || []).forEach(task => {
-      if (!task || task.archived) return;
-      if (!(task.sampleIds || []).includes(sampleId) && !(task.removedSampleRecords || []).some(item => item?.sampleId === sampleId)) return;
-      const flow = this.taskFlowStatus(task);
-      const item = { project, stage, task, flow };
-      if (this.isTaskCompleted(task)) completedTaskRefs.push(item);
-      else if (["进行中", "阻塞中"].includes(flow)) runningOrBlocked.push(item);
-      else pending.push(item);
-    })));
-    return { runningOrBlocked, pending, completed: completedTaskRefs, sample };
-  },
-
-  singleSampleDestroyImpactHtml(impact) {
-    const name = impact.sample ? this.sampleDisplayCode(impact.sample) : "样机";
-    const archiveCount = impact.sample && this.sampleHasArchiveData(impact.sample) ? 1 : 0;
-    const runningCount = (impact.runningOrBlocked || []).length;
-    const pendingCount = (impact.pending || []).length;
-    const completedCount = (impact.completed || []).length;
-    const taskLine = item => `<li><b>${Utils.esc(item.project.name)} / ${Utils.esc(item.stage.name)} / ${Utils.esc(item.task.testItem || "-")}</b><span>${Utils.esc(item.flow)}</span></li>`;
-    return `<div class="destroy-impact">
-      <div class="destroy-impact-title">危险影响确认</div>
-      <ul>
-        <li><b>将销毁样机：</b><span>${Utils.esc(name)}${archiveCount ? "，含履历/照片/CT/问题表" : ""}。</span></li>
-        ${runningCount ? `<li><b>进行中/阻塞中任务：</b><span>${runningCount} 个任务会被自动设置为"异常终止"，任务样机列表会被清空。</span></li>` : ""}
-        ${pendingCount ? `<li><b>未启动任务：</b><span>${pendingCount} 个未启动任务会移除该样机，并保留任务等待重新分配。</span></li>` : ""}
-        ${completedCount ? `<li><b>已完成任务：</b><span>${completedCount} 个已完成任务不受影响，依赖样机快照继续展示历史。</span></li>` : ""}
-        ${!runningCount && !pendingCount && !completedCount ? `<li><b>无关联任务</b><span>该样机未关联任何任务。</span></li>` : ""}
-      </ul>
-      ${runningCount ? `<div class="destroy-impact-subtitle">会异常终止的任务</div><ul>${(impact.runningOrBlocked || []).map(taskLine).join("")}</ul>` : ""}
-      ${pendingCount ? `<div class="destroy-impact-subtitle">会移除样机的未启动任务</div><ul>${(impact.pending || []).map(taskLine).join("")}</ul>` : ""}
-      ${completedCount ? `<div class="destroy-impact-subtitle">已有快照的已完成任务</div><ul>${(impact.completed || []).map(taskLine).join("")}</ul>` : ""}
-    </div>`;
-  },
-
-  applySingleSampleDestroyImpact(sample, impact) {
-    const sampleId = sample.id;
-    const destroyedName = this.sampleDisplayCode(sample);
-    const today = Utils.today();
-    const now = Utils.now();
-    // 处理进行中/阻塞中任务 → 异常终止
-    (impact.runningOrBlocked || []).forEach(item => {
-      const task = item.task;
-      const oldFlow = item.flow;
-      const originalSampleIds = [...(task.sampleIds || [])];
-      const reason = `${destroyedName} 样机档案被销毁，任务无法继续。`;
-      // 释放该任务下其它样机
-      originalSampleIds.filter(id => id !== sampleId).forEach(id => {
-        if (this.findSample(id)) {
-          const otherUsage = this.activeTaskUsagesForSample(id, task.id)[0];
-          this.changeSampleStatus(id, otherUsage ? this.statusForOpenTaskUsage(otherUsage.task) : "闲置", {
-            user: "管理员",
-            source: "样机档案销毁",
-            reason: otherUsage ? `关联任务异常终止，样机仍被其他任务占用；${reason}` : `关联任务异常终止，释放样机；${reason}`,
-            projectId: otherUsage?.project?.id || item.project.id,
-            stageId: otherUsage?.stage?.id || item.stage.id,
-            taskId: otherUsage?.task?.id || task.id,
-            testItem: otherUsage?.task?.testItem || task.testItem,
-            forceLog: true
-          });
-        }
-      });
-      // 记录退出样机
-      this.recordTaskRemovedSamples(task, [sampleId], { user: "管理员", reason, removedAt: now, destroyedAt: now });
-      task.sampleIds = [];
-      this.transitionTaskStatus(item.stage, task, "异常终止", {
-        completedAt: now,
-        endDate: today,
-        issue: reason
-      });
-      task.resultDate = today;
-      task.latestResult = "不通过";
-      this.addTaskLog(task, "样机档案销毁", {
-        user: "管理员",
-        reason,
-        fromStatus: oldFlow,
-        toStatus: "异常终止",
-        detail: `已清空任务样机：${originalSampleIds.map(id => this.taskSampleDisplayName(id)).join("、") || "-"}`
-      });
-    });
-    // 处理待下发任务 → 仅移除样机，不终止任务
-    (impact.pending || []).forEach(item => {
-      const task = item.task;
-      const before = [...(task.sampleIds || [])];
-      const reason = `${destroyedName} 样机档案被销毁，已从未启动任务中移除。`;
-      this.recordTaskRemovedSamples(task, [sampleId], { user: "管理员", reason, removedAt: now, destroyedAt: now });
-      task.sampleIds = before.filter(id => id !== sampleId);
-      this.addTaskLog(task, "样机档案销毁", {
-        user: "管理员",
-        reason,
-        fromStatus: item.flow,
-        toStatus: this.taskFlowStatus(task),
-        detail: `任务样机：${before.map(id => this.taskSampleDisplayName(id)).join("、") || "-"} → ${(task.sampleIds || []).map(id => this.taskSampleDisplayName(id)).join("、") || "空"}`
-      });
-    });
-    // 已完成任务：不做任何修改，快照已在 attachSampleSnapshotToTasks 中保存
-  },
-
-  async destroySample(sampleId) {
-    if (!await this.ensureSampleDestroyImpactScope({ sampleId })) return;
-    const found = this.findSample(sampleId);
-    if (!found) return;
-    const check = this.canDestroySample(found.sample);
-    if (!check.ok) { alert(check.reason); return; }
-    const impact = this.collectSingleSampleDestroyImpact(found.sample);
-    this.confirmDeleteKeyword(
-      "档案销毁",
-      `档案销毁会物理删除 ${this.sampleDisplayCode(found.sample)} 的样机档案、照片/CT文件和样机事件数据。此操作不可恢复。`,
-      async () => {
-        const dataSnapshot = this.dataSnapshot();
-        const impactedItems = [
-          ...(impact.runningOrBlocked || []),
-          ...(impact.pending || [])
-        ];
-        const affectedSampleIds = new Set();
-        impactedItems.forEach(item => {
-          (item.task?.sampleIds || []).forEach(id => {
-            const sid = String(id || "");
-            if (sid && sid !== sampleId) affectedSampleIds.add(sid);
-          });
-        });
-        // 处理任务影响
-        this.applySingleSampleDestroyImpact(found.sample, impact);
-        // 写入样机销毁日志（在物理删除前）
-        this.changeSampleStatus(sampleId, "已退库", {
-          user: "管理员",
-          source: "样机档案销毁",
-          reason: "样机档案被销毁，物理删除前记录最终状态",
-          forceLog: true
-        });
-        const taskMutations = impactedItems
-          .map(item => this.taskMutationPayloadFor(item.project, item.stage, item.task))
-          .filter(item => item?.taskId);
-        const affectedSamples = [...affectedSampleIds]
-          .map(id => this.findSample(id)?.sample)
-          .filter(Boolean);
-        const eventSampleIds = new Set([sampleId, ...affectedSampleIds]);
-        const sampleEvents = this.sampleEventRecords().filter(log => eventSampleIds.has(String(log?.sampleId || "")));
-        // 物理删除
-        found.category.samples = (found.category.samples || []).filter(s => s.id !== sampleId);
-        const saved = await this.commitSampleMutation(found.sample, {
-          action: "destroy_sample",
-          remark: "样机档案销毁",
-          user: "管理员",
-          deleteSample: true,
-          taskMutations,
-          samples: affectedSamples,
-          sampleEvents
-        });
-        if (!saved) {
-          this.restoreDataSnapshot(dataSnapshot);
-          return true;
-        }
-        Utils.toast("样机档案已销毁，关联任务已处理。");
-        return false;
-      },
-      this.singleSampleDestroyImpactHtml(impact)
-    );
-  },
-
-  confirmDeleteKeyword(title, message, onConfirm, detailsHtml = "") {
-    this.showModal(title, `
-      <div class="delete-confirm">
-        <p>${Utils.esc(message)}</p>
-        ${detailsHtml || ""}
-        <label>请输入 <strong>DELETE</strong> 确认销毁：</label>
-        <input id="deleteKeywordInput" autocomplete="off" autofocus>
-        <div id="deleteKeywordError" class="delete-confirm-error" style="display:none">请输入 DELETE 后才能继续。</div>
-      </div>
-    `, () => {
-      const input = document.getElementById("deleteKeywordInput");
-      const error = document.getElementById("deleteKeywordError");
-      if ((input?.value || "") !== "DELETE") {
-        if (error) error.style.display = "block";
-        input?.focus();
-        return true;
-      }
-      return onConfirm?.();
-    }, "确认销毁");
-    document.getElementById("deleteKeywordInput")?.focus();
-  },
-
   openCategory(id) { this.selectSampleCategoryState(id); this.render(); },
 
   // ---- 新建样机（简化：不强制项目/阶段/SKU）----,
-
-  newSample(catId, sampleNo, sn, imei, sourceInfo = {}) {
-    return {
-      id: Utils.id("sample_"),
-      categoryId: catId,
-      sampleNo: sampleNo || `TMP-${Date.now()}`,
-      sn: sn || "",
-      imei: imei || "",
-      boardSn: sourceInfo.boardSn || "",
-      isReassembled: this.sampleIsReassembled(sourceInfo),
-      model: sourceInfo.platform || "",
-      config: sourceInfo.standard || "",
-      schemeNo: sourceInfo.schemeNo || "",
-      initialResult: sourceInfo.initialResult || "",
-      initialResults: Array.isArray(sourceInfo.initialResults)
-        ? sourceInfo.initialResults.filter(x => !Utils.isNoSampleIssueText(x))
-        : Utils.parseSampleIssueText(sourceInfo.initialResult || ""),
-      problemRecords: Array.isArray(sourceInfo.problemRecords)
-        ? sourceInfo.problemRecords.filter(x => !Utils.isNoSampleIssueText(x?.description || x))
-        : (Array.isArray(sourceInfo.initialResults)
-          ? sourceInfo.initialResults
-          : Utils.parseSampleIssueText(sourceInfo.initialResult || "")
-        ).filter(x => !Utils.isNoSampleIssueText(x)).map(desc => ({ id: Utils.id("problem_"), description: desc, source: "初检", taskLabel: "" })),
-      status: sourceInfo.status || "闲置",
-      location: sourceInfo.location || "",
-      owner: sourceInfo.owner || "",
-      borrower: sourceInfo.borrower || "",
-      borrowDate: sourceInfo.borrowDate || "",
-      tag: sourceInfo.tag || "",
-      sourceType: sourceInfo.sourceType || "manual",
-      sourceProjectId: null,
-      sourceProjectName: "",
-      sourceStageId: null,
-      sourceStageName: sourceInfo.stage || "Unknown",
-      sourceSkuIndex: null,
-      sourceSkuName: sourceInfo.skuName || sourceInfo.standard || "Unknown",
-      currentProjectId: null, currentStageId: null, currentTaskId: null, currentTestItem: "",
-      notes: sourceInfo.notes || "",
-      importDate: sourceInfo.importDate || Utils.today(),
-      photos: [],
-      createdAt: Utils.now(), updatedAt: Utils.now(),
-      logs: []
-    };
-  },
-
-  nextSampleNo(category, prefix, offset = 0) {
-    const existing = new Set((category.samples || []).map(s => String(s.sampleNo || "")));
-    let n = (category.samples || []).length + 1 + offset;
-    let no = `${prefix}-${String(n).padStart(3, "0")}`;
-    while (existing.has(no)) { n++; no = `${prefix}-${String(n).padStart(3, "0")}`; }
-    return no;
-  },
-
-  async addSample(catId) {
-    this.showModal("新增样机", `
-      <div style="display:flex;flex-direction:column;gap:18px">
-        <div class="form-row sample-id-row" style="gap:14px">
-          <div class="form-group" style="margin-bottom:0"><label>SN</label><input id="sampleSn" placeholder="请输入SN号"></div>
-          <div class="form-group" style="margin-bottom:0"><label>IMEI</label><input id="sampleImei" placeholder="请输入IMEI号"></div>
-          <div class="form-group" style="margin-bottom:0"><label>主板SN</label><input id="sampleBoardSn" placeholder="请输入主板SN"></div>
-        </div>
-        <div class="form-row form-row-three" style="gap:14px">
-          <div class="form-group" style="margin-bottom:0"><label>阶段</label><input id="sampleStage" placeholder="如 V3-1"></div>
-          <div class="form-group" style="margin-bottom:0"><label>方案（制式/配置/型号/SKU）</label><input id="sampleConfig" placeholder="如 VXN-XX 或 SKU2"></div>
-          <div class="form-group" style="margin-bottom:0"><label>方案编号</label><input id="sampleSchemeNo" placeholder="如 B1 或 1"></div>
-        </div>
-        <div class="form-row form-row-three" style="gap:14px">
-          <div class="form-group" style="margin-bottom:0"><label>样机状态</label><select id="sampleStatus">${this.constants.sampleStatuses.map(x => `<option ${x === "闲置" ? "selected" : ""}>${x}</option>`).join("")}</select></div>
-          <div class="form-group" style="margin-bottom:0"><label>重组样机</label><select id="sampleReassembled"><option value="否" selected>否</option><option value="是">是</option></select></div>
-          <div class="form-group" style="margin-bottom:0"><label>位置</label>${this.sampleLocationInputHtml("sampleLocation", "")}</div>
-        </div>
-        <div class="form-row" style="gap:14px">
-          <div class="form-group" style="margin-bottom:0"><label>挂账人</label>${this.samplePersonInputHtml("sampleOwner", "", "姓名/工号", { scope: "all" })}</div>
-          <div class="form-group" style="margin-bottom:0"><label>持有人/取走人</label>${this.samplePersonInputHtml("sampleBorrower", "", "姓名/工号", { scope: "developer" })}</div>
-        </div>
-        <div class="form-group" style="margin-bottom:0"><label>其他备注信息</label><textarea id="sampleNotes" rows="1" style="min-height:38px;height:38px"></textarea></div>
-        <div class="sample-info-divider" style="margin:4px 0"></div>
-        <div class="form-group" style="margin-bottom:0"><label>样机问题表</label>${this.sampleProblemsHtml("sampleInitialResults", [])}</div>
-      </div>
-    `, async () => {
-      this.clearFieldValidationMarks();
-      const category = this.sampleCategoryRecords().find(x => x.id === catId);
-      if (!category) return;
-      const snapshot = this.dataSnapshot();
-      const sn = document.getElementById("sampleSn").value.trim();
-      const imei = document.getElementById("sampleImei").value.trim();
-      const boardSn = document.getElementById("sampleBoardSn").value.trim();
-      const isReassembled = document.getElementById("sampleReassembled").value === "是";
-      if (!sn && !imei && !boardSn) {
-        this.markFieldInvalid(document.getElementById("sampleSn"), "SN、IMEI 和主板SN至少需要填写一个。");
-        this.markFieldInvalid(document.getElementById("sampleImei"), "SN、IMEI 和主板SN至少需要填写一个。");
-        this.markFieldInvalid(document.getElementById("sampleBoardSn"), "SN、IMEI 和主板SN至少需要填写一个。");
-        return true;
-      }
-      const stage = document.getElementById("sampleStage").value.trim();
-      const config = document.getElementById("sampleConfig").value.trim();
-      const problemRecords = this.collectSampleProblems("sampleInitialResults");
-      const initialResults = problemRecords.map(x => x.description);
-      const location = document.getElementById("sampleLocation").value.trim();
-
-      // 人员字段校验（复用全局 parsePersonField）
-      const ownerEl = document.getElementById("sampleOwner");
-      const borrowerEl = document.getElementById("sampleBorrower");
-      const ownerRaw = ownerEl.value.trim();
-      const borrowerRaw = borrowerEl?.value.trim() || "";
-      let ownerText = "", borrowerText = "";
-      if (ownerRaw) {
-        const check = this.collectSamplePersonValue(ownerEl, "all", "挂账人");
-        if (!check.ok) { this.markFieldInvalid(ownerEl, check.msg); return true; }
-        ownerText = check.value;
-      }
-      if (borrowerRaw) {
-        const check = this.collectSamplePersonValue(borrowerEl, "developer", "持有人/取走人");
-        if (!check.ok) { this.markFieldInvalid(borrowerEl, check.msg); return true; }
-        borrowerText = check.value;
-      }
-
-      if (!Array.isArray(category.samples)) category.samples = [];
-
-      // 自校验：同一台样机的 SN/IMEI/主板SN 互不相同
-      const selfDup = this.validateSampleSelfDuplicate(sn, imei, boardSn, "sample");
-      if (selfDup) { this.markFieldInvalid(document.getElementById(selfDup.field), selfDup.msg); return true; }
-
-      try {
-        const duplicate = await this._checkServerIdentityDuplicate(sn, imei, boardSn, isReassembled, catId, "", "sample");
-        if (duplicate) { this.markFieldInvalid(document.getElementById(duplicate.fieldId), duplicate.msg); return true; }
-      } catch (e) {
-        alert("样机身份查重失败：" + (e.message || e));
-        return true;
-      }
-      const sample = this.newSample(catId, sn || imei || boardSn, sn, imei, {
-        stage,
-        boardSn,
-        isReassembled,
-        standard: config,
-        schemeNo: document.getElementById("sampleSchemeNo").value.trim(),
-        initialResult: initialResults.join("\n"),
-        initialResults,
-        problemRecords,
-        status: document.getElementById("sampleStatus").value,
-        location,
-        owner: ownerText,
-        borrower: borrowerText,
-        notes: document.getElementById("sampleNotes").value.trim(),
-        sourceType: "manual"
-      });
-      category.samples.push(sample);
-      const saved = await this.commitSampleCategoryMutation(category, {
-        action: "create_sample",
-        remark: "新增样机",
-        user: "管理员",
-        createSamples: true,
-        samples: [sample]
-      });
-      if (!saved) { this.restoreDataSnapshot(snapshot); return true; }
-      Utils.toast("已新增 1 台样机。");
-      return false;
-    });
-    const footer = document.querySelector(".modal-footer");
-    if (footer && !document.getElementById("sampleArchiveImportFromAddBtn")) {
-      const importBtn = document.createElement("button");
-      importBtn.type = "button";
-      importBtn.id = "sampleArchiveImportFromAddBtn";
-      importBtn.className = "btn btn-outline modal-extra-action sample-add-archive-import-btn";
-      importBtn.dataset.appAction = "sample-archive-import";
-      importBtn.dataset.id = catId || "";
-      importBtn.textContent = "导入样机档案";
-      footer.insertBefore(importBtn, footer.firstChild);
-    }
-  },
-
-  addSamples(catId) {
-    this.addSample(catId);
-  },
-
-  // ---- 模板导入 ----,
 
 });

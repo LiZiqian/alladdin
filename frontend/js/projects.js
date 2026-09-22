@@ -24,7 +24,7 @@ app.registerModule("projects", {
     row.className = "path";
     row.style.cssText = "display:flex;gap:12px";
     const labelEl = document.createElement("span");
-    labelEl.style.cssText = "color:var(--muted);min-width:48px";
+    labelEl.style.cssText = "min-width:48px";
     labelEl.textContent = label;
     const valueEl = document.createElement("span");
     valueEl.textContent = value || "-";
@@ -34,42 +34,49 @@ app.registerModule("projects", {
 
   projectCard(project) {
     const card = document.createElement("div");
-    card.className = "card";
-    card.style.cssText = "position:relative;padding-bottom:28px";
-    if (this.isProjectSelected(project.id)) {
-      card.style.borderColor = "var(--primary)";
-      card.style.borderWidth = "2px";
-    }
+    card.className = "card project-entry-card";
 
     const head = document.createElement("div");
-    head.style.cssText = "display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:10px";
+    head.className = "project-card-heading";
 
     const title = document.createElement("h3");
-    title.style.cssText = "margin:0;flex:1;min-width:0";
+    title.className = "project-card-title";
     title.append(document.createTextNode(`项目：${project.name || ""}`));
 
     const editButton = document.createElement("button");
     editButton.type = "button";
     editButton.className = "sample-card-edit-btn";
-    editButton.style.cssText = "vertical-align:baseline;margin-left:4px";
     editButton.dataset.appAction = "project-edit";
     editButton.dataset.id = project.id || "";
     editButton.dataset.stopPropagation = "1";
     editButton.title = "编辑项目";
+    editButton.ariaLabel = "编辑项目";
     editButton.textContent = "✎";
-    title.append(editButton);
+    head.append(title, editButton);
+
+    const body = document.createElement("div");
+    body.className = "project-card-body";
+    const meta = document.createElement("div");
+    meta.className = "project-card-meta";
+    meta.append(
+      this.projectMetaRow("编号", project.code || "-"),
+      this.projectMetaRow("负责人", project.owner || "-"),
+      this.projectMetaRow("阶段数", String(project.stageCount ?? (project.stages || []).length))
+    );
 
     const enterButton = document.createElement("button");
     enterButton.type = "button";
-    enterButton.className = "btn btn-sm";
-    enterButton.style.cssText = "display:inline-flex;align-items:center;gap:3px;line-height:1;flex-shrink:0;white-space:nowrap";
+    enterButton.className = "btn project-card-enter-btn";
     enterButton.dataset.appAction = "project-select";
     enterButton.dataset.id = project.id || "";
     enterButton.append(document.createTextNode("进入项目"));
     const arrow = document.createElement("b");
     arrow.textContent = "▶";
     enterButton.append(arrow);
-    head.append(title, enterButton);
+    body.append(meta, enterButton);
+
+    const footer = document.createElement("div");
+    footer.className = "project-card-footer";
 
     const deleteButton = document.createElement("button");
     deleteButton.type = "button";
@@ -78,15 +85,20 @@ app.registerModule("projects", {
     deleteButton.dataset.id = project.id || "";
     deleteButton.dataset.stopPropagation = "1";
     deleteButton.title = "删除项目";
-    deleteButton.textContent = "🗑";
+    deleteButton.ariaLabel = "删除项目";
+    deleteButton.innerHTML = Utils.iconHtml("trash");
 
-    card.append(
-      head,
-      this.projectMetaRow("编号", project.code || "-"),
-      this.projectMetaRow("负责人", project.owner || "-"),
-      this.projectMetaRow("阶段数", String(project.stageCount ?? (project.stages || []).length)),
-      deleteButton
-    );
+    const exportButton = document.createElement("button");
+    exportButton.type = "button";
+    exportButton.className = "project-card-export-btn";
+    exportButton.dataset.appAction = "project-export-scope";
+    exportButton.dataset.id = project.id || "";
+    exportButton.dataset.stopPropagation = "1";
+    exportButton.title = "导出此项目范围数据包";
+    exportButton.ariaLabel = "导出此项目范围数据包";
+    exportButton.innerHTML = Utils.iconHtml("download");
+    footer.append(deleteButton, exportButton);
+    card.append(head, body, footer);
     return card;
   },
 
@@ -94,6 +106,8 @@ app.registerModule("projects", {
     const card = document.createElement("div");
     card.className = "card add-card";
     card.dataset.appAction = "project-add";
+    card.role = "button";
+    card.tabIndex = 0;
     const plus = document.createElement("div");
     plus.className = "add-card-plus";
     plus.textContent = "+";
@@ -171,15 +185,29 @@ app.registerModule("projects", {
     }, "确认", { className: "modal-sm" });
   },
 
-  editProject(id) {
-    const p = this.findProjectRecord(id);
+  async editProject(id) {
+    const request = this.beginDialogRequest?.();
+    let p = this.findProjectRecord(id);
     if (!p) return;
+    const sequence = this._projectEditSequence = (this._projectEditSequence || 0) + 1;
+    if (p._summaryOnly || (this._statePartial && !p._detailLoaded)) {
+      const module = this.viewModule();
+      const modalSequence = this._modalSequence;
+      p = await this.ensureProjectLoaded(id, { includeTasks: false, render: false });
+      if (!p || sequence !== this._projectEditSequence || module !== this.viewModule() || modalSequence !== this._modalSequence) return;
+    }
+    if (this.isDialogRequestCurrent?.(request) === false) return;
     this.showModal("编辑项目", `
       <div class="form-group"><label>项目名称</label><input id="pName" value="${Utils.esc(p.name)}"></div>
       <div class="form-group"><label>项目编号</label><input id="pCode" value="${Utils.esc(p.code || "")}"></div>
       <div class="form-group"><label>负责人</label><input id="pOwner" value="${Utils.esc(p.owner || "")}"></div>
     `, async () => {
       this.clearFieldValidationMarks();
+      p = this.findProjectRecord(id);
+      if (p?._summaryOnly || (p && this._statePartial && !p._detailLoaded)) {
+        p = await this.ensureProjectLoaded(id, { includeTasks: false, render: false });
+      }
+      if (!p) { Utils.toast("项目详情未就绪，请重新打开后重试"); return true; }
       const snapshot = this.dataSnapshot();
       const nameEl = document.getElementById("pName");
       const name = nameEl.value.trim();
@@ -282,7 +310,7 @@ app.registerModule("projects", {
       <ul>
         <li><b>进行中/阻塞中任务：</b>${impact.runningOrBlockedCount} 个任务将被异常终止，样机释放。</li>
         <li><b>未启动/待下发任务：</b>${impact.pendingCount} 个任务将被删除。</li>
-        <li><b>已完成任务：</b>${impact.completedCount} 个已完成任务不受影响，测试履历保留。</li>
+        <li><b>已完成任务：</b>${impact.completedCount} 个已完成任务的记录随项目删除；关联样机档案中的测试履历快照保留。</li>
       </ul>
       <p style="margin-top:12px;color:var(--muted);font-size:13px">
         ※ 样机库中的样机不会被删除，只会释放任务占用关系。<br>
@@ -293,9 +321,11 @@ app.registerModule("projects", {
   },
 
   async deleteProject(id) {
+    const request = this.beginDialogRequest?.();
     let p = this.findProjectRecord(id);
     if (!p) return;
-    p = await this.ensureProjectLoaded(id, { includeTasks: true, render: false }) || p;
+    p = await this.ensureProjectLoaded(id, { includeTasks: true, render: false });
+    if (!p || this.isDialogRequestCurrent?.(request) === false) return;
     let html;
     try {
       const impact = this.collectProjectDeleteImpact(p);

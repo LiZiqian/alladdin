@@ -70,6 +70,7 @@ def load_sample_rows_for_mutation(conn: sqlite3.Connection, sample_ids, *, row_l
         ids,
     ).fetchall()
     by_id = {str(row["id"] or ""): sample_queries.sample_from_db_row(row) for row in rows}
+    sample_queries.attach_sample_tested_item_names(conn, list(by_id.values()))
     photo_counts = sample_queries.load_sample_photo_counts_for(conn, list(by_id.keys()))
     for sid, sample in by_id.items():
         sample["photoCount"] = photo_counts.get(sid, 0)
@@ -111,7 +112,7 @@ def build_mutation_affected_summary(conn: sqlite3.Connection,
         if str(item.get("id") or "") in category_id_set
     ] if category_id_set else []
 
-    return {
+    summary = {
         "summaryVersion": 1,
         "rowLimit": row_limit,
         "projectIds": project_id_list,
@@ -120,12 +121,16 @@ def build_mutation_affected_summary(conn: sqlite3.Connection,
         "sampleCategoryIds": sample_category_id_list,
         "sampleIds": sample_id_list,
         "projectSummaries": project_summaries,
+        "stageSummaries": project_queries.load_stage_sample_summaries(conn, stage_id_list),
         "sampleCategorySummaries": category_summaries,
         "tasks": tasks,
         "samples": samples,
         "tasksTruncated": tasks_truncated,
         "samplesTruncated": samples_truncated,
     }
+    if sample_id_list or sample_category_id_list:
+        summary["samplePersonCounts"] = project_queries.sample_person_counts(conn)
+    return summary
 
 
 def build_import_mutation_summary(current_data: dict,

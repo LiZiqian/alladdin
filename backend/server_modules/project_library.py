@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable
 
-from server_modules import record_writers, status_normalization, task_queries
+from server_modules import record_writers, status_normalization, task_queries, problem_records
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,7 @@ def sync_project_library(ctx: ProjectLibraryContext, conn: sqlite3.Connection, d
         active_project_ids.append(project_id)
         project_json = copy.deepcopy(project)
         project_json.pop("stages", None)
+        project_json.pop("samplePersonCounts", None)
         conn.execute(
             """
             INSERT INTO project_records
@@ -70,6 +71,9 @@ def sync_project_library(ctx: ProjectLibraryContext, conn: sqlite3.Connection, d
             active_stage_ids.append(stage_id)
             stage_json = copy.deepcopy(stage)
             stage_json.pop("tasks", None)
+            stage_json.pop("usedSampleRuns", None)
+            stage_json.pop("runningSampleCount", None)
+            stage_json.pop("progressTaskCounts", None)
             conn.execute(
                 """
                 INSERT INTO project_stages
@@ -102,6 +106,7 @@ def sync_project_library(ctx: ProjectLibraryContext, conn: sqlite3.Connection, d
                 task["id"] = task_id
                 task["projectId"] = project_id
                 task["stageId"] = stage_id
+                problem_records.preserve_task_created_at(conn, task)
                 active_task_ids.append(task_id)
                 sample_ids = [str(x) for x in (task.get("sampleIds") or [])]
                 task_json = copy.deepcopy(task)
@@ -152,7 +157,7 @@ def sync_project_library(ctx: ProjectLibraryContext, conn: sqlite3.Connection, d
                 for log in task_logs:
                     if not isinstance(log, dict):
                         continue
-                    log = status_normalization.normalize_business_value(log)
+                    log = log
                     log_id = str(log.get("id") or f"tasklog_{uuid.uuid4().hex}")
                     if log_id in seen_log_ids:
                         continue

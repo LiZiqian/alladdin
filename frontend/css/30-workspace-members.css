@@ -25,6 +25,7 @@
   padding-top: 0;
 }
 .project-locations-grid .add-card {
+  background: transparent;
   flex-direction: row;
   gap: 4px;
   min-height: 46px;
@@ -48,12 +49,10 @@
 .project-default-sample-section .stage-summary-section-head { margin-top: 0 }
 .project-default-sample-body {
   display: grid;
-  grid-template-columns: auto minmax(220px, 420px) minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 200px);
+  justify-content: start;
   align-items: center;
   gap: 10px 12px;
-}
-.project-default-sample-section.is-collapsed .project-default-sample-body {
-  display: none;
 }
 .project-default-sample-label {
   color: var(--text);
@@ -63,12 +62,7 @@
 }
 .project-default-sample-select {
   width: 100%;
-  min-width: 0;
-}
-.project-default-sample-current {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
+  max-width: 200px;
   min-width: 0;
 }
 @media (max-width: 760px) {
@@ -91,111 +85,69 @@
   gap: 8px;
   flex-wrap: wrap;
 }
-.project-member-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
-}
-.project-member-summary-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "main action"
-    "metrics metrics";
-  align-items: center;
-  gap: 8px 10px;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--card);
-}
-.project-member-summary-card.is-detail-open {
-  border-color: var(--primary-border);
-  box-shadow: 0 8px 22px var(--focus-ring);
-}
-.project-member-summary-card.role-tester {
-  border-left: 4px solid var(--pass);
-}
-.project-member-summary-card.role-developer {
-  border-left: 4px solid var(--primary);
-}
-.project-member-summary-card.role-other {
-  border-left: 4px solid var(--gray);
-}
-.project-member-summary-main {
-  grid-area: main;
-  min-width: 0;
-}
-.project-member-summary-main b {
-  display: block;
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.35;
-}
-.project-member-summary-main span {
-  color: var(--muted);
-  font-size: 12px;
-}
-.project-member-summary-main em,
-.project-member-role-count em {
-  color: var(--text);
-  font-style: normal;
-  font-weight: 800;
-}
-.project-member-summary-actions {
-  grid-area: action;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-.project-member-summary-actions .btn {
-  white-space: nowrap;
-}
-.project-member-summary-metrics {
-  grid-area: metrics;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-.project-member-summary-metrics span {
-  min-width: 0;
-  padding: 5px 6px;
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.2;
-}
-.project-member-summary-metrics b {
-  display: block;
-  color: var(--text);
-  font-size: 14px;
-}
 .project-members-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 12px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
-  position: sticky;
-  top: 0;
-  z-index: 2;
 }
+.project-member-role-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-right: auto;
+}
+.project-member-role-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.project-member-role-filter[aria-pressed="true"] {
+  color: var(--brand-gold);
+  font-weight: 700;
+}
+.project-member-role-filter[aria-pressed="true"]::after {
+  content: "";
+  position: absolute;
+  bottom: -6px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--brand-gold);
+}
+.project-member-role-filter:hover { color: var(--brand-gold) }
+.project-member-role-filter:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 3px;
+}
+.project-member-role-filter span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.project-member-role-filter[aria-pressed="true"] span { color: inherit }
 .project-members-search {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  flex: 0 1 360px;
-  min-width: min(100%, 230px);
+  flex: 0 0 150px;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
 }
 .project-members-search span {
   color: var(--muted);
@@ -206,19 +158,23 @@
 .project-members-search input {
   width: 100%;
   min-width: 0;
+  height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
 }
 .project-members-search-count {
-  margin-right: auto;
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
 }
 .project-members-bulk-actions {
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  padding: 4px 0;
 }
+.project-members-bulk-actions.has-selection { display: flex }
 .project-members-selected-count {
   color: var(--muted);
   font-size: 12px;
@@ -236,7 +192,7 @@
 }
 .project-members-detail-panel {
   display: grid;
-  gap: 10px;
+  gap: 0;
 }
 .project-member-picker {
   display: block;
@@ -300,7 +256,7 @@
 }
 .project-member-combobox-group-label {
   padding: 4px 8px 5px;
-  color: var(--muted);
+  color: var(--brand-navy);
   font-size: 12px;
   font-weight: 700;
 }
@@ -360,7 +316,7 @@
   padding: 2px 7px;
   border-radius: 999px;
   background: var(--surface);
-  font-size: 12px;
+  font-size: 10px;
   font-weight: 400;
   white-space: nowrap;
 }
@@ -387,13 +343,8 @@
   }
 }
 .project-members-body {
+  container-type: inline-size;
   display: block;
-}
-.project-members-section.is-collapsed .project-members-body {
-  display: none;
-}
-.project-locations-section.is-collapsed .project-locations-body {
-  display: none;
 }
 .section-toggle-triangle {
   width: 32px;
@@ -433,7 +384,7 @@
 }
 .task-workbench-title h2 span {
   margin-left: 24px;
-  color: var(--primary);
+  color: var(--brand-gold);
   font-size: inherit;
   font-weight: inherit;
   white-space: nowrap;
@@ -457,7 +408,10 @@
   padding: 8px;
 }
 .project-member-role-detail {
-  background: var(--card);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 .project-member-role-head {
   display: flex;
@@ -509,38 +463,28 @@
 }
 .project-member-table-shell {
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border-bottom: 1px solid var(--border);
   background: var(--card);
 }
 .project-member-role-group.is-role-collapsed .project-member-table-shell {
   display: none;
 }
-.project-member-table-head,
 .project-member-row {
   display: grid;
-  grid-template-columns: 28px minmax(90px, 1fr) 56px 56px 88px;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
   align-items: center;
-  column-gap: 6px;
-}
-.project-member-table-head {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  min-height: 28px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
+  column-gap: 10px;
 }
 .project-member-table-body {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 48px;
   max-height: 320px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 .project-member-empty {
+  grid-column: 1 / -1;
   color: var(--muted);
   font-size: 12px;
   min-height: 38px;
@@ -552,7 +496,6 @@
   display: none;
 }
 @media (max-width: 980px) {
-  .project-member-summary-grid,
   .project-members-role-grid {
     grid-template-columns: 1fr;
   }
@@ -641,23 +584,37 @@
 }
 .project-member-row {
   position: relative;
-  min-height: 38px;
-  padding: 5px 8px;
+  min-width: 0;
+  min-height: 46px;
+  padding: 5px 4px;
   border-bottom: 1px solid var(--border);
   background: var(--card);
   cursor: pointer;
   outline: none;
   transition: background .16s ease;
 }
-.project-member-row:last-child {
-  border-bottom: 0;
-}
 .project-member-row:hover,
 .project-member-row:focus-visible {
-  background: var(--primary-bg);
+  background: var(--surface-hover);
 }
 .project-member-row.is-search-hidden {
   display: none;
+}
+.project-member-row::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: -1px;
+  right: -25px;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+@container (min-width: 901px) {
+  .project-member-row:nth-child(3n of .project-member-row:not(.is-search-hidden))::after { display: none }
+}
+@container (min-width: 561px) and (max-width: 900px) {
+  .project-member-row:nth-child(2n of .project-member-row:not(.is-search-hidden))::after { display: none }
 }
 .project-member-check {
   position: static;
@@ -714,10 +671,13 @@
   color: var(--muted);
 }
 .project-member-stat {
-  display: grid;
-  justify-items: start;
+  display: flex;
+  flex-direction: row-reverse;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 400;
   line-height: 1.15;
 }
@@ -726,49 +686,22 @@
   font-size: 12px;
   line-height: 1.1;
 }
-.project-member-row-actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  min-width: 0;
+.project-member-dialog-remove { margin-top: 12px }
+@container (max-width: 900px) {
+  .project-member-table-body { grid-template-columns: repeat(2, minmax(0, 1fr)) }
 }
-.project-member-remove {
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  font-size: 15px;
-  color: var(--danger);
-  opacity: .72;
-  cursor: pointer;
-  line-height: 1;
-  transition: background .15s, opacity .15s;
-}
-.project-member-remove:hover {
-  opacity: 1;
-  background: var(--danger-bg);
+@container (max-width: 560px) {
+  .project-member-table-body { grid-template-columns: minmax(0, 1fr) }
+  .project-member-row::after { display: none }
 }
 @media (max-width: 760px) {
+  .project-members-head-actions { flex-wrap: wrap; gap: 6px }
   .project-members-toolbar {
     position: static;
   }
-  .project-members-search,
   .project-members-search-count,
   .project-members-bulk-actions {
     width: 100%;
-  }
-  .project-member-table-head {
-    display: none;
-  }
-  .project-member-row {
-    grid-template-columns: 28px minmax(0, 1fr) repeat(2, 44px);
-    row-gap: 4px;
-  }
-  .project-member-row-actions {
-    grid-column: 2 / -1;
-    justify-content: flex-start;
   }
 }
 /* add-card already styled in 02-components.css; height adapts to grid */

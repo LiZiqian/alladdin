@@ -16,8 +16,8 @@ HTTP_RUNTIME_FIELDS = (
     "build_export_bundle_file",
     "build_sample_archive_file",
     "first_query_value",
-    "get_state",
     "connect_db",
+    "begin_read_snapshot",
     "compose_bootstrap_state",
     "list_project_summary",
     "load_project_detail",
@@ -52,7 +52,6 @@ HTTP_RUNTIME_FIELDS = (
     "commit_task_mutation",
     "commit_sample_mutation",
     "commit_sample_category_mutation",
-    "save_state",
 )
 
 

@@ -11,6 +11,27 @@ app.registerModule("workspace.home", {
     return Math.min(100, Math.max(0, Math.round((executed / planned) * 100)));
   },
 
+  refreshStageSummaryMetrics(stage) {
+    if (!stage?.id || typeof document.querySelectorAll !== "function") return;
+    const counts = stage.statusCounts || {};
+    const executed = Number(counts["正常完成"] || 0) + Number(counts["异常终止"] || 0);
+    const running = Number(counts["进行中"] || 0);
+    const pct = this.stageProgressPercent(executed, (stage.progress || []).length);
+    const values = { executedTasks: `${executed} 项`, runningTasks: `${running} 项`, progressPercent: `${pct}%` };
+    if (stage.usedSampleRuns != null) values.usedSampleRuns = `${stage.usedSampleRuns} 台次`;
+    if (stage.runningSampleCount != null) values.runningSampleCount = `${stage.runningSampleCount} 台`;
+    document.querySelectorAll(".stage-summary-card[data-stage-summary-id]").forEach(card => {
+      if (card.dataset.stageSummaryId !== String(stage.id)) return;
+      card.querySelectorAll("[data-stage-stat]").forEach(node => {
+        if (Object.prototype.hasOwnProperty.call(values, node.dataset.stageStat)) node.textContent = values[node.dataset.stageStat];
+      });
+      const fill = card.querySelector(".progress-bar-fill");
+      if (fill) {
+        fill.style.width = `${pct}%`;
+      }
+    });
+  },
+
   // ==================== 项目工作台主页 ====================
   renderProjectWorkspace() {
     const p = this.currentProject();
@@ -37,11 +58,14 @@ app.registerModule("workspace.home", {
       const pending = countStatus("待下发");
       const blocked = countStatus("阻塞中");
       const executedTasks = pass + fail;
-      const usedSampleRuns = tasks
+      const usedSampleRuns = st.usedSampleRuns ?? (this._statePartial && !p._tasksFullyLoaded ? null : tasks
         .filter(t => this.taskFlowStatus(t) !== "待下发")
-        .reduce((sum, t) => sum + (t.sampleIds || []).length, 0);
+        .reduce((sum, t) => sum + new Set([
+          ...(t.sampleIds || []),
+          ...(t.removedSampleRecords || []).map(record => record?.sampleId || record?.sid),
+        ].map(id => String(id || "").trim()).filter(Boolean)).size, 0));
       const runningTasks = tasks.filter(t => this.taskFlowStatus(t) === "进行中");
-      const runningSampleCount = new Set(runningTasks.flatMap(t => t.sampleIds || [])).size;
+      const runningSampleCount = st.runningSampleCount ?? (this._statePartial && !p._tasksFullyLoaded ? null : new Set(runningTasks.flatMap(t => t.sampleIds || [])).size);
       const passRate = (pass + fail) ? ((pass / (pass + fail)) * 100).toFixed(1) : "0.0";
       const sampleIds = [...new Set(tasks.flatMap(t => t.sampleIds || []))];
       const taskCount = Number(st.taskCount ?? tasks.length) || 0;
@@ -67,40 +91,44 @@ app.registerModule("workspace.home", {
         ? `data-stage-id="${Utils.esc(x.stage.id)}" draggable="true" data-app-action="stage-drag" data-app-events="dragstart dragover dragleave drop dragend" data-id="${Utils.esc(x.stage.id)}"`
         : `data-app-action="stage-select" data-id="${Utils.esc(x.stage.id)}"`;
       return `
-      <div class="stage-summary-card ${x.stage.id === s?.id ? 'active' : ''} ${sortMode ? 'is-sorting' : ''}" ${cardAttrs}>
+      <div class="stage-summary-card ${x.stage.id === s?.id ? 'active' : ''} ${sortMode ? 'is-sorting' : ''}" data-stage-summary-id="${Utils.esc(x.stage.id)}" ${cardAttrs}>
         <div class="stage-summary-title">
           <div class="stage-summary-name-row">
-            <span>${Utils.esc(x.stage.name)}</span>
-            ${sortMode ? '' : `<button type="button" class="btn btn-sm btn-purple stage-config-btn" data-app-action="stage-strategy-open" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">配置测试用例集</button>`}
+            <span title="${Utils.esc(x.stage.name)} 阶段">${Utils.esc(x.stage.name)} 阶段</span>
           </div>
-          <div class="stage-summary-actions">
-            ${sortMode
-              ? '<span class="stage-sort-hint">拖动排序</span>'
-              : `<button type="button" class="sample-card-destroy-btn" style="position:static" data-app-action="stage-delete" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}" title="删除此阶段">🗑</button>
-                <button type="button" style="background:none;border:none;font-size:18px;font-weight:900;color:var(--muted);cursor:pointer;padding:2px;line-height:1;margin-left:2px" title="复制为一个新阶段" aria-label="复制为一个新阶段" data-app-action="stage-copy" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">🗐</button>`}
-          </div>
+          <div class="path stage-summary-skus" title="方案：${(x.stage.skuNames || []).map(n => Utils.esc(n)).join('/') || '-'}">方案：${(x.stage.skuNames || []).map(n => Utils.esc(n)).join('/') || '-'}</div>
         </div>
-        <div class="path">方案(SKU)：${(x.stage.skuNames || []).map(n => Utils.esc(n)).join(" / ") || "-"}</div>
-        <div class="progress-bar-wrap">
-          <div class="progress-bar-fill" style="width:${pct}%;background:${x.passRate > 80 ? 'var(--pass)' : x.passRate > 50 ? 'var(--warn)' : 'var(--primary)'}"></div>
+        <div class="stage-summary-progress">
+          <div class="progress-bar-wrap">
+            <div class="progress-bar-fill" style="width:${pct}%"></div>
+          </div>
+          <span data-stage-stat="progressPercent">${pct}%</span>
         </div>
         <div class="stage-summary-metrics">
           <div class="stage-metric-card">
             <b>测试项</b>
-            <span>计划执行<em>${x.total} 项</em></span>
-            <span>已执行<em>${x.executedTasks} 项</em></span>
-            <span>进行中<em>${x.runningTasks} 项</em></span>
+            <span title="当前配置的测试用例与方案组合数">计划执行<em>${x.total} 项</em></span>
+            <span title="正常完成与异常终止的任务数；同一用例重复执行分别计数">已执行<em data-stage-stat="executedTasks">${x.executedTasks} 项</em></span>
           </div>
           <div class="stage-metric-card">
             <b>样机数</b>
-            <span>计划使用<em>${x.plannedSampleCount} 台</em></span>
-            <span>已使用<em>${x.usedSampleRuns} 台次</em></span>
+            <span title="各计划用例所需样机数量之和">计划使用<em>${x.plannedSampleCount} 台</em></span>
+            <span title="已启动任务使用过的样机台次，含临时退出样机；同一任务内去重">已使用<em data-stage-stat="usedSampleRuns">${x.usedSampleRuns == null ? "—" : `${x.usedSampleRuns} 台次`}</em></span>
           </div>
           <div class="stage-metric-card">
             <b>进行中</b>
-            <span>任务<em>${x.runningTasks} 项</em></span>
-            <span>占用样机<em>${x.runningSampleCount} 台</em></span>
+            <span>任务<em data-stage-stat="runningTasks">${x.runningTasks} 项</em></span>
+            <span title="进行中任务当前关联的样机数，跨任务去重">占用样机<em data-stage-stat="runningSampleCount">${x.runningSampleCount == null ? "—" : `${x.runningSampleCount} 台`}</em></span>
           </div>
+        </div>
+        <div class="stage-summary-footer">
+          ${sortMode
+            ? '<span class="stage-sort-hint">拖动排序</span>'
+            : `<button type="button" class="btn btn-sm btn-purple stage-config-btn" data-app-action="stage-strategy-open" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">配置测试用例集</button>
+              <div class="stage-summary-actions">
+                <button type="button" class="sample-card-destroy-btn" style="position:static" data-app-action="stage-delete" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}" title="删除此阶段" aria-label="删除此阶段">${Utils.iconHtml("trash")}</button>
+                <button type="button" class="stage-summary-copy-btn" title="复制为一个新阶段" aria-label="复制为一个新阶段" data-app-action="stage-copy" data-stop-propagation="1" data-id="${Utils.esc(x.stage.id)}">${Utils.iconHtml("copy")}</button>
+              </div>`}
         </div>
       </div>`;
     }).join("");
@@ -153,9 +181,8 @@ app.registerModule("workspace.home", {
     intro.className = "project-config-intro";
     const title = document.createElement("h2");
     title.textContent = "项目配置工作台";
-    const desc = document.createElement("p");
-    desc.textContent = "项目需首先完成人员配置、位置配置与阶段方案配置。";
-    intro.append(title, desc);
+    intro.append(title);
+    this.appendWorkspaceHtml(intro, this.projectConfigHelpHtml("overview", "项目配置说明", "项目需首先完成人员配置、位置配置与阶段方案配置。"));
     configCard.append(intro);
 
     this.appendWorkspaceHtml(configCard, this.workspaceMembersHtml(project, { sampleOwnerCounts, sampleBorrowerCounts }));
@@ -166,20 +193,24 @@ app.registerModule("workspace.home", {
 
     if (stage) {
       const taskFlow = document.createElement("div");
-      taskFlow.className = `card workspace-section section-green ${this.isCollapsed("taskFlow") ? "is-collapsed" : ""}`.trim();
+      taskFlow.className = "card workspace-section section-green";
       this.appendWorkspaceHtml(taskFlow, this.workspaceTaskFlowHtml(project, stage));
       nodes.push(taskFlow);
     }
     return nodes;
   },
 
+  projectConfigHelpHtml(key, label, text) {
+    const id = `project-config-help-${key}`;
+    return `<span class="project-config-help"><button type="button" class="project-config-help-button" aria-label="${Utils.esc(label)}" aria-describedby="${Utils.esc(id)}">?</button><span class="project-config-help-text" id="${Utils.esc(id)}" role="tooltip">${Utils.esc(text)}</span></span>`;
+  },
+
   projectStageConfigSectionNode(stageCards, addStageCard, sortMode) {
     const section = document.createElement("div");
-    section.className = `project-config-section ${this.isCollapsed("stage") ? "is-collapsed" : ""}`.trim();
+    section.className = "project-config-section";
 
     const head = document.createElement("div");
     head.className = "stage-summary-section-head";
-    this.appendWorkspaceHtml(head, this.sectionToggleTriangle("stage"));
     const title = document.createElement("div");
     title.className = "stage-summary-section-title";
     title.textContent = "项目阶段与方案配置";
@@ -188,13 +219,10 @@ app.registerModule("workspace.home", {
     toggle.className = `btn btn-sm ${sortMode ? "stage-sort-done" : "btn-outline"} stage-sort-toggle stage-sort-toggle-right`;
     toggle.dataset.appAction = "stage-sort-toggle";
     toggle.textContent = sortMode ? "完成排序" : "手动拖动排序";
-    head.append(title, toggle);
+    head.append(title);
+    this.appendWorkspaceHtml(head, this.projectConfigHelpHtml("stages", "阶段与方案配置说明", "点击「配置测试用例集」可为该阶段配置测试用例池，并在「任务管理」中下发用例任务。"));
+    head.append(toggle);
     section.append(head);
-
-    const desc = document.createElement("div");
-    desc.className = "stage-summary-section-desc";
-    desc.textContent = "点击 <配置测试用例集> 可为该阶段配置测试用例池，并在 <任务管理> 中下发用例任务。";
-    section.append(desc);
 
     const body = document.createElement("div");
     body.className = "project-config-body";
@@ -219,6 +247,16 @@ app.registerModule("workspace.home", {
 
   samplePersonCountsByMemberKey(field) {
     const counts = new Map();
+    const totals = this.currentProject()?.samplePersonCounts?.[field];
+    counts.complete = !!totals || !this._statePartial;
+    if (totals && typeof totals === "object") {
+      Object.entries(totals).forEach(([person, count]) => {
+        const identity = Utils.personIdentityFromText(person);
+        const key = Utils.memberIdentityKey(identity.name, identity.employeeNo);
+        if (key !== "||") counts.set(key, (counts.get(key) || 0) + Number(count || 0));
+      });
+      return counts;
+    }
     this.sampleCategoryRecords().forEach(category => {
       (category.samples || []).forEach(sample => {
         const identity = Utils.personIdentityFromText(sample?.[field] || "");
@@ -232,79 +270,46 @@ app.registerModule("workspace.home", {
 
   workspaceMembersHtml(project, counts = {}) {
     if (!Array.isArray(project.members)) project.members = [];
-    const collapsed = this.isCollapsed('members');
     const activeMembers = this.projectActiveMembers(project);
     const memberUiState = this.projectMemberUiState();
     const memberSearch = String(memberUiState.memberSearch || "");
     const memberKw = memberSearch.trim().toLowerCase();
     const detailRoleValue = String(memberUiState.memberDetailRole || "");
-    const detailRole = this.memberRoleList().includes(detailRoleValue) ? detailRoleValue : "";
+    const detailRole = this.memberRoleList().includes(detailRoleValue) ? detailRoleValue : "tester";
     const roleData = this.memberRoleList().map(role => {
       const members = activeMembers.filter(m => this.memberRoleValue(m.role) === role);
       const rows = members.map(m => {
         const hidden = !this.projectMemberMatchesSearch(m, role, memberKw);
         return this.projectMemberRowHtml(project, m, counts, { hidden });
       }).join("");
-      const totals = members.reduce((acc, member) => {
-        const stat = this.memberSampleStats(member, counts);
-        acc.ownedSamples += stat.ownedSamples;
-        acc.borrowedSamples += stat.borrowedSamples;
-        return acc;
-      }, { ownedSamples: 0, borrowedSamples: 0 });
       const visibleCount = members.filter(m => this.projectMemberMatchesSearch(m, role, memberKw)).length;
-      return { role, members, rows, totals, visibleCount, activeDetail: role === detailRole };
+      return { role, members, rows, visibleCount, activeDetail: role === detailRole };
     });
     const detailItem = roleData.find(item => item.activeDetail);
     const visibleTotal = detailItem ? detailItem.visibleCount : 0;
-    const summaryCards = roleData.map(item => `
-      <div class="project-member-summary-card role-${Utils.esc(item.role)} ${item.activeDetail ? 'is-detail-open' : ''}" data-member-role="${Utils.esc(item.role)}">
-        <div class="project-member-summary-main">
-          <b>${Utils.esc(this.memberRoleLabel(item.role))}</b>
-          <span><em class="project-member-summary-visible">${item.visibleCount}</em> / ${item.members.length} 人</span>
-        </div>
-        <div class="project-member-summary-metrics">
-          <span><b>${item.totals.ownedSamples}</b> 挂账</span>
-          <span><b>${item.totals.borrowedSamples}</b> 持有</span>
-        </div>
-        <div class="project-member-summary-actions">
-          <button class="btn btn-sm btn-outline" data-app-action="project-member-add" data-value="${Utils.esc(item.role)}">新增</button>
-          <button class="btn btn-sm btn-outline" data-app-action="project-members-role-toggle" data-value="${Utils.esc(item.role)}">${item.activeDetail ? '收起详情' : '查看详情'}</button>
-        </div>
-      </div>
+    const roleButtons = roleData.map(item => `
+      <button type="button" class="project-member-role-filter role-${Utils.esc(item.role)}" aria-pressed="${item.activeDetail}" data-app-action="project-members-role-toggle" data-value="${Utils.esc(item.role)}">
+        ${Utils.esc(this.memberRoleLabel(item.role))}<span>${item.members.length}</span>
+      </button>
     `).join("");
     const bulkDisabled = "disabled aria-disabled=\"true\"";
     const detailPanel = detailItem ? `
           <div class="project-members-detail-panel" data-member-role="${Utils.esc(detailItem.role)}">
             <div class="project-members-toolbar">
+              <div class="project-member-role-filters" role="group" aria-label="人员分类">${roleButtons}</div>
               <label class="project-members-search">
-                <span>搜索人员</span>
-                <input type="search" value="${Utils.esc(memberSearch)}" placeholder="姓名 / 工号 / 类型" data-app-action="project-member-search" data-app-events="input">
+                <input type="search" aria-label="搜索当前分类人员" value="${Utils.esc(memberSearch)}" placeholder="姓名 / 工号" data-app-action="project-member-search" data-app-events="input">
               </label>
-              <span class="project-members-search-count">显示 ${visibleTotal} / ${detailItem.members.length} 人</span>
+              <span class="project-members-search-count" ${memberKw ? '' : 'hidden'} aria-live="polite">找到 ${visibleTotal} 人</span>
+            </div>
               <div class="project-members-bulk-actions">
                 <span class="project-members-selected-count">已选 0 人</span>
-                <button class="btn btn-sm btn-outline" data-app-action="project-members-bulk-role" data-value="tester" ${bulkDisabled}>移到测试</button>
-                <button class="btn btn-sm btn-outline" data-app-action="project-members-bulk-role" data-value="developer" ${bulkDisabled}>移到开发</button>
-                <button class="btn btn-sm btn-outline" data-app-action="project-members-bulk-role" data-value="other" ${bulkDisabled}>移到其他</button>
+                ${this.memberRoleList().filter(role => role !== detailRole).map(role => `<button class="btn btn-sm btn-outline" data-app-action="project-members-bulk-role" data-value="${Utils.esc(role)}" ${bulkDisabled}>移到${Utils.esc(this.memberRoleLabel(role))}</button>`).join('')}
+                <button class="btn btn-sm btn-danger" data-app-action="project-members-bulk-remove" ${bulkDisabled}>移除</button>
                 <button class="btn btn-sm btn-outline" data-app-action="project-members-clear-selection" ${bulkDisabled}>清空选择</button>
               </div>
-            </div>
             <section class="project-member-role-group project-member-role-detail" data-member-role="${Utils.esc(detailItem.role)}">
-              <div class="project-member-role-head">
-                <div class="project-member-role-title">
-                  <b>${Utils.esc(this.memberRoleLabel(detailItem.role))}名单</b>
-                  <span class="project-member-role-count">显示 <em class="project-member-role-visible">${detailItem.visibleCount}</em> / ${detailItem.members.length} 人</span>
-                </div>
-                <button class="btn btn-sm btn-outline" data-app-action="project-member-add" data-value="${Utils.esc(detailItem.role)}">新增</button>
-              </div>
               <div class="project-member-table-shell">
-                <div class="project-member-table-head" aria-hidden="true">
-                  <span></span>
-                  <span>人员</span>
-                  <span>挂账</span>
-                  <span>持有</span>
-                  <span>操作</span>
-                </div>
                 <div class="project-member-table-body">
                   ${detailItem.rows}
                   <div class="project-member-empty ${detailItem.visibleCount ? 'is-hidden' : ''}">${detailItem.members.length ? '无匹配人员' : `暂无${Utils.esc(this.memberRoleLabel(detailItem.role))}`}</div>
@@ -314,18 +319,17 @@ app.registerModule("workspace.home", {
           </div>` : '';
 
     return `
-      <div class="project-config-section project-members-section ${collapsed ? 'is-collapsed' : ''}">
+      <div class="project-config-section project-members-section">
         <div class="stage-summary-section-head">
-          ${this.sectionToggleTriangle('members')}
           <div class="stage-summary-section-title">人员配置</div>
+          ${this.projectConfigHelpHtml("members", "人员配置说明", `测试人员用于任务下发和操作记录；开发人员用于样机取走；挂账人可从全部人员中选择。共 ${activeMembers.length} 人`)}
           <div class="project-members-head-actions">
             <button class="btn btn-sm btn-outline" data-app-action="project-members-template">下载导入模板</button>
             <button class="btn btn-sm" data-app-action="project-members-import">批量导入人员名单</button>
+            <button class="btn btn-sm btn-add" data-app-action="project-member-add" data-value="${Utils.esc(detailRole)}">新增人员</button>
           </div>
         </div>
-        <div class="stage-summary-section-desc">测试人员用于任务下发和操作记录；开发人员用于样机取走；挂账人可从全部人员中选择。共 ${activeMembers.length} 人</div>
         <div class="project-members-body">
-          <div class="project-member-summary-grid">${summaryCards}</div>
           ${detailPanel}
         </div>
       </div>`;
@@ -346,20 +350,16 @@ app.registerModule("workspace.home", {
     const role = this.memberRoleValue(member.role);
     const searchKey = `${identity} ${member.name || ""} ${member.employeeNo || ""} ${role} ${this.memberRoleLabel(role)}`.toLowerCase();
     return `
-      <div class="project-member-row project-member-card ${options.hidden ? 'is-search-hidden' : ''}" data-member-role="${Utils.esc(role)}" data-member-key="${Utils.esc(searchKey)}" data-app-action="project-member-edit" data-app-events="dblclick" data-id="${Utils.esc(member.id)}" tabindex="0" title="双击编辑人员" aria-label="双击编辑人员 ${Utils.esc(identity || "-")}">
+      <div class="project-member-row project-member-card ${options.hidden ? 'is-search-hidden' : ''}" data-member-role="${Utils.esc(role)}" data-member-key="${Utils.esc(searchKey)}" data-app-action="project-member-edit" data-app-events="dblclick" data-id="${Utils.esc(member.id)}" role="button" tabindex="0" title="双击或按回车编辑人员" aria-label="编辑人员 ${Utils.esc(identity || "-")}">
         <label class="project-member-check" title="选择用于批量改分类" data-stop-propagation="1">
-          <input type="checkbox" class="project-member-bulk-check" value="${Utils.esc(member.id)}" data-app-action="project-member-selection" data-app-events="change">
+          <input type="checkbox" class="project-member-bulk-check" aria-label="选择 ${Utils.esc(identity)}" value="${Utils.esc(member.id)}" data-app-action="project-member-selection" data-app-events="change">
         </label>
         <div class="project-member-identity">
-          <b>${Utils.esc(member.name || "-")}</b>
-          <span>${Utils.esc(member.employeeNo || "-")}</span>
+          <b title="${Utils.esc(member.name || "-")}">${Utils.esc(member.name || "-")}</b>
+          <span title="${Utils.esc(member.employeeNo || "-")}">${Utils.esc(member.employeeNo || "-")}</span>
         </div>
-        <div class="project-member-stat"><b>${stat.ownedSamples}</b><span>挂账</span></div>
-        <div class="project-member-stat"><b>${stat.borrowedSamples}</b><span>持有</span></div>
-        <div class="project-member-row-actions">
-          <button type="button" class="btn btn-sm btn-outline" data-app-action="project-member-edit" data-stop-propagation="1" data-id="${Utils.esc(member.id)}">编辑</button>
-          <button type="button" class="project-member-remove" data-app-action="project-member-remove" data-stop-propagation="1" data-id="${Utils.esc(member.id)}" title="移出人员">🗑</button>
-        </div>
+        <div class="project-member-stat"><b>${counts.sampleOwnerCounts?.complete === false ? "—" : stat.ownedSamples}</b><span>挂账</span></div>
+        <div class="project-member-stat"><b>${counts.sampleBorrowerCounts?.complete === false ? "—" : stat.borrowedSamples}</b><span>持有</span></div>
       </div>`;
   },
 
@@ -369,24 +369,21 @@ app.registerModule("workspace.home", {
 
   workspaceLocationsHtml(project) {
     if (!Array.isArray(project.locations)) project.locations = [];
-    const collapsed = this.isCollapsed('locations');
-    const locations = project.locations.filter(Boolean);
-    const cards = locations.map((loc, idx) => `
-      <div class="project-location-card" data-app-action="project-location-edit" data-app-events="dblclick" data-value="${idx}" tabindex="0" title="双击编辑位置" aria-label="双击编辑位置 ${Utils.esc(loc)}">
+    const cards = project.locations.map((loc, idx) => loc ? `
+      <div class="project-location-card" data-app-action="project-location-edit" data-app-events="dblclick" data-value="${idx}" role="button" tabindex="0" title="双击或按回车编辑位置" aria-label="编辑位置 ${Utils.esc(loc)}">
         <b>${Utils.esc(loc)}</b>
-        <span class="project-location-remove" data-app-action="project-location-remove" data-stop-propagation="1" data-value="${idx}" title="删除位置">🗑</span>
-      </div>`).join("");
+        <span class="project-location-remove" data-app-action="project-location-remove" data-stop-propagation="1" data-value="${idx}" role="button" tabindex="0" title="删除位置" aria-label="删除位置 ${Utils.esc(loc)}">${Utils.iconHtml("trash")}</span>
+      </div>` : "").join("");
     return `
-      <div class="project-config-section project-locations-section ${collapsed ? 'is-collapsed' : ''}">
+      <div class="project-config-section project-locations-section">
         <div class="stage-summary-section-head">
-          ${this.sectionToggleTriangle('locations')}
           <div class="stage-summary-section-title">位置配置</div>
+          ${this.projectConfigHelpHtml("locations", "位置配置说明", "配置项目相关位置信息，用于记录样机实时存放地点，后续可在样机档案中选填。")}
         </div>
-        <div class="stage-summary-section-desc">配置项目相关位置信息，用于记录样机实时存放地点，后续可在样机档案中选填。</div>
         <div class="project-locations-body">
           <div class="project-locations-grid">
             ${cards || ''}
-            <div class="card add-card" data-app-action="project-location-add">
+            <div class="card add-card" data-app-action="project-location-add" role="button" tabindex="0" aria-label="新增位置">
               <div class="add-card-plus">+</div>
               <div class="add-card-label">新增位置</div>
             </div>
@@ -396,11 +393,10 @@ app.registerModule("workspace.home", {
   },
 
   workspaceDefaultSampleCategoryHtml(project) {
-    const collapsed = this.isCollapsed("sampleCategoryConfig");
     const categories = this.sampleCategoryRecords();
     const selectedId = this.projectDefaultSampleCategoryId(project);
     const options = [
-      `<option value="" ${selectedId ? "" : "selected"}>不设置（默认全部样机池）</option>`,
+      `<option value="" ${selectedId ? "" : "selected"}>全部样机池</option>`,
       ...categories.map(category => {
         const id = String(category.id || "");
         const selected = id === selectedId ? "selected" : "";
@@ -409,20 +405,14 @@ app.registerModule("workspace.home", {
         return `<option value="${Utils.esc(id)}" ${selected}>${Utils.esc(category.name || id)}${suffix}</option>`;
       })
     ].join("");
-    const configured = selectedId
-      ? `当前默认：${Utils.esc(this.projectDefaultSampleCategoryName(project) || selectedId)}`
-      : "当前未设置，任务配置和临时变更默认显示全部样机池。";
     return `
-      <div class="project-config-section project-default-sample-section ${collapsed ? 'is-collapsed' : ''}">
+      <div class="project-config-section project-default-sample-section">
         <div class="stage-summary-section-head">
-          ${this.sectionToggleTriangle('sampleCategoryConfig')}
           <div class="stage-summary-section-title">样机池配置</div>
+          ${this.projectConfigHelpHtml("samples", "样机池配置说明", "设置本项目任务配置、临时变更等样机选择入口的默认候选池。")}
         </div>
-        <div class="stage-summary-section-desc">设置本项目任务配置、临时变更等样机选择入口的默认候选池。</div>
         <div class="project-default-sample-body project-config-body">
-          <label class="project-default-sample-label" for="projectDefaultSampleCategory">默认样机池</label>
-          <select id="projectDefaultSampleCategory" class="project-default-sample-select" data-app-action="project-default-sample-category" data-app-events="change">${options}</select>
-          <span class="project-default-sample-current">${configured}</span>
+          <select id="projectDefaultSampleCategory" class="project-default-sample-select" aria-label="默认样机池" data-app-action="project-default-sample-category" data-app-events="change">${options}</select>
         </div>
       </div>`;
   },
@@ -478,9 +468,12 @@ app.registerModule("workspace.home", {
     const p = this.currentProject();
     if (!p || !Array.isArray(p.locations) || !p.locations[index]) return;
     const currentName = p.locations[index];
+    const projectId = p.id;
     this.showModal("编辑项目位置", `
       <div class="form-group"><label class="req modal-field-title">位置名称</label><input id="projectLocationName" value="${Utils.esc(currentName)}" placeholder="如：溪村-D8-B1F-A08 / 武汉-A3-1F-03R"></div>
     `, async () => {
+      const p = this.findProjectRecord(projectId);
+      if (!p?.locations?.[index]) { alert("位置已不存在，请关闭后刷新。"); return true; }
       this.clearFieldValidationMarks();
       const snapshot = this.dataSnapshot();
       const el = document.getElementById("projectLocationName");
@@ -513,7 +506,12 @@ app.registerModule("workspace.home", {
     this.patchViewState({ memberSearch: value });
     const kw = String(value || "").trim().toLowerCase();
     document.querySelectorAll(".project-member-row[data-member-key]").forEach(row => {
-      row.classList.toggle("is-search-hidden", !!kw && !row.dataset.memberKey.includes(kw));
+      const hidden = !!kw && !row.dataset.memberKey.includes(kw);
+      row.classList.toggle("is-search-hidden", hidden);
+      if (hidden) {
+        const check = row.querySelector(".project-member-bulk-check");
+        if (check) check.checked = false;
+      }
     });
     this.refreshProjectMemberVisibleCounts();
   },
@@ -524,18 +522,17 @@ app.registerModule("workspace.home", {
       const role = group.dataset.memberRole || "";
       const roleRows = rows.filter(row => row.dataset.memberRole === role);
       const visibleCount = roleRows.filter(row => !row.classList.contains("is-search-hidden")).length;
-      const countEl = group.querySelector(".project-member-role-visible");
-      if (countEl) countEl.textContent = String(visibleCount);
       const emptyEl = group.querySelector(".project-member-empty");
       if (emptyEl) {
         emptyEl.textContent = roleRows.length ? "无匹配人员" : `暂无${this.memberRoleLabel(role)}`;
         emptyEl.classList.toggle("is-hidden", visibleCount > 0);
       }
-      const summaryEl = document.querySelector(`.project-member-summary-card[data-member-role="${role}"] .project-member-summary-visible`);
-      if (summaryEl) summaryEl.textContent = String(visibleCount);
     });
     const searchCount = document.querySelector(".project-members-search-count");
-    if (searchCount) searchCount.textContent = `显示 ${visibleRows.length} / ${rows.length} 人`;
+    if (searchCount) {
+      searchCount.textContent = `找到 ${visibleRows.length} 人`;
+      searchCount.hidden = !String(this.projectMemberUiState().memberSearch || "").trim();
+    }
     this.updateProjectMemberSelectionCount();
   },
   updateProjectMemberSelectionCount() {
@@ -543,7 +540,7 @@ app.registerModule("workspace.home", {
     this.patchViewState({ memberSelectedCount: selectedCount });
     const countEl = document.querySelector(".project-members-selected-count");
     if (countEl) countEl.textContent = `已选 ${selectedCount} 人`;
-    document.querySelectorAll('.project-members-bulk-actions [data-app-action="project-members-bulk-role"], .project-members-bulk-actions [data-app-action="project-members-clear-selection"]').forEach(button => {
+    document.querySelectorAll('.project-members-bulk-actions button').forEach(button => {
       button.disabled = selectedCount === 0;
       button.setAttribute("aria-disabled", selectedCount === 0 ? "true" : "false");
     });
@@ -557,8 +554,7 @@ app.registerModule("workspace.home", {
   },
   toggleProjectMemberRoleGroup(role) {
     const value = this.memberRoleValue(role);
-    const nextRole = this.projectMemberUiState().memberDetailRole === value ? "" : value;
-    this.patchViewState({ memberDetailRole: nextRole, memberSearch: "" });
+    this.patchViewState({ memberDetailRole: value, memberSearch: "", memberSelectedCount: 0 });
     this.render();
   },
   validateProjectMember(name, employeeNo = "") {
@@ -634,11 +630,16 @@ app.registerModule("workspace.home", {
     const m = p?.members?.find(x => x.id === memberId);
     if (!m) return;
     const currentIdentity = Utils.personText(m.name, m.employeeNo);
+    const projectId = p.id;
     this.showModal("编辑项目人员", `
       <div class="form-group"><label class="req modal-field-title">人员</label><input id="memberText" value="${Utils.esc(currentIdentity)}" placeholder="姓名/工号，如：张三/00609513"></div>
       <div class="form-group"><label class="req modal-field-title">人员类型</label>${this.projectMemberRoleSelectHtml(m.role)}</div>
       <div class="form-hint">人员必须按「姓名/工号」填写，姓名和工号都不能为空。</div>
+      <button type="button" class="btn btn-sm btn-danger project-member-dialog-remove" data-app-action="project-member-remove" data-id="${Utils.esc(m.id)}">移出项目人员</button>
     `, async () => {
+      const p = this.findProjectRecord(projectId);
+      const m = p?.members?.find(member => member.id === memberId);
+      if (!m) { alert("人员已不存在，请关闭后刷新。"); return true; }
       this.clearFieldValidationMarks();
       const snapshot = this.dataSnapshot();
       const memberEl = document.getElementById("memberText");
@@ -672,6 +673,8 @@ app.registerModule("workspace.home", {
     ], "项目人员导入模板.csv");
   },
   importProjectMembersCsv() {
+    const projectId = this.currentProject()?.id;
+    if (!projectId) return;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".csv,text/csv";
@@ -681,7 +684,7 @@ app.registerModule("workspace.home", {
       reader.addEventListener("load", async () => {
         const result = Utils.parseProjectMembersCsv(reader.result);
         if (result.error) { alert("人员名单导入失败：" + result.error); return; }
-        const p = this.currentProject();
+        const p = this.findProjectRecord(projectId);
         if (!p) return;
         if (!Array.isArray(p.members)) p.members = [];
         let added = 0, restored = 0, skippedDup = 0, roleUpdated = 0;
@@ -729,11 +732,13 @@ app.registerModule("workspace.home", {
     const p = this.currentProject();
     const m = p?.members?.find(x => x.id === memberId);
     if (!m) return;
+    const editingModalId = document.getElementById("memberText") ? this._currentModalId : null;
     this.showConfirm(`确认将 ${Utils.personText(m.name, m.employeeNo)} 移出项目人员名单？`, async () => {
       const snapshot = this.dataSnapshot();
       m.active = false;
       const saved = await this.commitProjectMutation(p, { action: "remove_project_member", remark: "移出项目人员", user: "管理员" });
       if (!saved) { this.restoreDataSnapshot(snapshot); return; }
+      if (editingModalId != null) this.closeModal(editingModalId);
       this.render();
       Utils.toast("人员已移出");
     }, { title: "移出人员", okText: "移出", okClass: "btn btn-danger" });
@@ -749,6 +754,36 @@ app.registerModule("workspace.home", {
       ? (borrowerCounts.get(memberKey) || 0)
       : this.allSamples().filter(sample => Utils.personMatchesMember(sample.borrower, member)).length;
     return { ownedSamples, borrowedSamples };
+  },
+
+  bulkRemoveProjectMembers() {
+    const project = this.currentProject();
+    if (!project) return;
+    const selectedIds = new Set([...document.querySelectorAll(".project-member-bulk-check:checked")]
+      .map(el => String(el.value || "").trim()).filter(Boolean));
+    const members = (project.members || []).filter(member => member.active !== false && selectedIds.has(String(member.id)));
+    if (!members.length) { Utils.toast("请先勾选需要移出的人员。"); return; }
+    const projectId = project.id;
+    const memberIds = new Set(members.map(member => String(member.id)));
+    this.showConfirm(`确认将选中的 ${members.length} 人移出项目人员名单？`, async () => {
+      const current = this.findProjectRecord(projectId);
+      if (!current) { Utils.toast("项目已不存在，请刷新后重试。"); return; }
+      const targets = (current.members || []).filter(member => member.active !== false && memberIds.has(String(member.id)));
+      if (!targets.length) { Utils.toast("所选人员已移出。"); return; }
+      const snapshot = this.dataSnapshot();
+      targets.forEach(member => { member.active = false; });
+      try {
+        const saved = await this.commitProjectMutation(current, { action: "bulk_remove_project_members", remark: `批量移出 ${targets.length} 名项目人员`, user: "管理员" });
+        if (!saved) { this.restoreDataSnapshot(snapshot); this.render(); return; }
+      } catch (error) {
+        this.restoreDataSnapshot(snapshot);
+        this.render();
+        throw error;
+      }
+      this.patchViewState({ memberSelectedCount: 0 });
+      this.render();
+      Utils.toast(`已移出 ${targets.length} 人。`);
+    }, { title: "批量移出人员", description: "仅移出项目人员名单，已有任务和样机记录保留。", okText: "移出", okClass: "btn btn-danger" });
   },
 
   async bulkUpdateProjectMembersRole(role) {
@@ -779,7 +814,7 @@ app.registerModule("workspace.home", {
     this.setStageSortModeState(!this.stageSortMode());
     this.render();
   },
-  onStageDragStart(ev, stageId) {
+  onStageDragStart(ev, stageId, card) {
     if (!this.stageSortMode()) {
       ev.preventDefault();
       return;
@@ -787,21 +822,22 @@ app.registerModule("workspace.home", {
     this._dragStageId = stageId;
     ev.dataTransfer.effectAllowed = "move";
     ev.dataTransfer.setData("text/plain", stageId);
-    ev.currentTarget.classList.add("dragging");
+    card.classList.add("dragging");
   },
-  onStageDragOver(ev, targetStageId) {
+  onStageDragOver(ev, targetStageId, card) {
     if (!this.stageSortMode() || !this._dragStageId || this._dragStageId === targetStageId) return;
     ev.preventDefault();
     ev.dataTransfer.dropEffect = "move";
     document.querySelectorAll(".stage-summary-card.drag-over")
-      .forEach(el => { if (el !== ev.currentTarget) el.classList.remove("drag-over"); });
-    ev.currentTarget.classList.add("drag-over");
+      .forEach(el => { if (el !== card) el.classList.remove("drag-over"); });
+    card.classList.add("drag-over");
   },
-  onStageDragLeave(ev) {
-    ev.currentTarget.classList.remove("drag-over");
+  onStageDragLeave(ev, card) {
+    if (!card.contains(ev.relatedTarget)) card.classList.remove("drag-over");
   },
-  onStageDrop(ev, targetStageId) {
+  onStageDrop(ev, targetStageId, card) {
     ev.preventDefault();
+    if (!this.stageSortMode()) return;
     const p = this.currentProject();
     const sourceStageId = this._dragStageId || ev.dataTransfer.getData("text/plain");
     if (!p || !sourceStageId || sourceStageId === targetStageId) return;
@@ -811,7 +847,7 @@ app.registerModule("workspace.home", {
     if (fromIdx < 0 || targetIdx < 0) return;
 
     const dataSnapshot = this.dataSnapshot();
-    const rect = ev.currentTarget.getBoundingClientRect();
+    const rect = card.getBoundingClientRect();
     const insertAfter = ev.clientX > rect.left + rect.width / 2;
     const [moved] = p.stages.splice(fromIdx, 1);
     let insertIdx = targetIdx + (insertAfter ? 1 : 0);

@@ -38,7 +38,21 @@ app.registerModule("workspace.strategy", {
     const p = project || this.currentProject();
     const s = stage || this.currentStage();
     if (!p || !s) return false;
-    return this.commitStageMutation(p, s, { action, remark, user: "管理员", render });
+    this._stageStrategyMutations ||= new Map();
+    const key = `${p.id}:${s.id}`;
+    const epoch = this._dataSnapshotEpoch || 0;
+    const previous = this._stageStrategyMutations.get(key);
+    const save = async () => {
+      if ((this._dataSnapshotEpoch || 0) !== epoch) return false;
+      return this.commitStageMutation(p, s, { action, remark, user: "管理员", render });
+    };
+    const pending = previous ? previous.then(save, save) : save();
+    this._stageStrategyMutations.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this._stageStrategyMutations.get(key) === pending) this._stageStrategyMutations.delete(key);
+    }
   },
 
   scheduleStageStrategySave(delay = 450, action = "update_stage_strategy", remark = "阶段策略编辑") {
@@ -93,75 +107,56 @@ app.registerModule("workspace.strategy", {
     const editPanel = document.createElement("div");
     editPanel.className = "card stage-edit-panel";
     const intro = document.createElement("div");
+    intro.className = "stage-config-title";
     const title = document.createElement("h3");
     title.style.margin = "0";
-    title.textContent = "阶段与方案设置";
-    const desc = document.createElement("div");
-    desc.className = "path";
-    desc.textContent = "可随时修改阶段名称，并通过 + / - 调整该阶段包含的方案。";
-    intro.append(title, desc);
+    title.textContent = "阶段与方案物料配置";
+    intro.append(title);
+    this.appendWorkspaceHtml(intro, this.projectConfigHelpHtml("scheme-materials", "阶段与方案物料配置说明", "每行一个方案，每列一种物料；在单元格中填写规格、版本、数量或差异说明。"));
     const editor = document.createElement("div");
     editor.className = "inline-stage-editor";
     this.replaceHtml(editor, this.inlineStageEditorHtml(stage));
     editPanel.append(intro, editor);
 
-    const bom = document.createElement("div");
-    bom.className = "card workspace-section section-purple";
-    this.replaceHtml(bom, this.workspaceBomHtml(stage));
     const strategy = document.createElement("div");
     strategy.className = "card workspace-section section-purple";
     this.replaceHtml(strategy, this.workspaceStrategyHtml(stage));
-    return [editPanel, bom, strategy];
+    return [editPanel, strategy];
   },
 
-  // ==================== BOM 上料清单（删除规格/说明列）====================
+  // Rows are schemes; columns retain the existing material/skuN storage mapping.
   workspaceBomHtml(stage) {
-    const skuNames = Array.isArray(stage.skuNames) ? stage.skuNames : [];
-    const bomRows = stage.bom || [];
-    const bomScrollMinWidth = Math.max(180, (skuNames.length * 180) + 72);
+    const names = stage.skuNames?.length ? stage.skuNames : ["SKU1"];
+    const materials = stage.bom || [];
+    const columnCount = Math.max(4, materials.length);
+    const emptyHeaders = '<th scope="col" class="scheme-bom-placeholder" aria-label="未使用物料列"></th>'.repeat(columnCount - materials.length);
+    const emptyCells = '<td class="scheme-bom-placeholder"></td>'.repeat(columnCount - materials.length);
     return `
-      <div class="section-head">
-        <div>
-          <h3 style="margin:0">BOM 上料清单</h3>
-          <div class="bom-desc">BOM 上料清单用于记录不同方案之间的物料组成差异。每一行代表一种物料或配置项，每一列代表一个方案。<br>STEP1：请先点击「新增物料」添加物料行。<br>STEP2：为每个方案录入物料、规格、版本、数量或差异说明。</div>
+      <div class="scheme-bom-toolbar">
+        <strong>方案与 BOM 上料清单</strong>
+        <div class="scheme-bom-actions">
+          <button type="button" class="btn btn-sm btn-add" data-app-action="matrix-sku-add">+ 增加方案</button>
+          <button type="button" class="btn btn-sm btn-add" data-app-action="bom-add">+ 增加物料列</button>
         </div>
-        <button class="btn btn-sm" data-app-action="bom-add">+ 新增物料</button>
       </div>
-      <div class="mini-table split-table bom-table">
-        <div class="split-frozen bom-frozen">
-          <table class="bom-config-table bom-frozen-table">
-            <colgroup>
-              <col class="col-row-no">
-              <col class="col-bom-material">
-            </colgroup>
-            <thead><tr>
-              <th></th>
-              <th style="color:var(--primary);font-weight:900">物料名称</th>
-            </tr></thead>
-            <tbody>${bomRows.map((r, idx) => `
-              <tr>
-                <td class="row-no">${idx + 1}</td>
-                <td><input value="${Utils.esc(r.materialName || "")}" data-app-action="bom-update" data-app-events="change" data-index="${idx}" data-field="materialName" placeholder="选填"></td>
-              </tr>`).join("") || `<tr><td colspan="2" class="empty">暂无 BOM 物料</td></tr>`}</tbody>
-          </table>
-        </div>
-        <div class="split-scroll bom-scroll">
-          <table class="bom-config-table bom-scroll-table" style="min-width:${bomScrollMinWidth}px">
-            <colgroup>
-              ${skuNames.map(() => `<col class="col-bom-sku">`).join("")}
-              <col class="col-action">
-            </colgroup>
-            <thead><tr>
-              ${skuNames.map(n => `<th style="color:var(--primary);font-weight:900">${Utils.esc(n)}</th>`).join("")}
-              <th>操作</th>
-            </tr></thead>
-            <tbody>${bomRows.map((r, idx) => `
-              <tr>
-                ${skuNames.map((n, i) => `<td><input value="${Utils.esc(r['sku' + (i + 1)] || "")}" data-app-action="bom-update" data-app-events="change" data-index="${idx}" data-field="sku${i + 1}" placeholder="说明"></td>`).join("")}
-                <td><button class="stage-row-delete-btn" data-app-action="bom-delete" data-index="${idx}" title="删除" aria-label="删除 BOM 物料">🗑</button></td>
-              </tr>`).join("") || `<tr><td colspan="${skuNames.length + 1}" class="empty"></td></tr>`}</tbody>
-          </table>
-        </div>
+      <div class="scheme-bom-scroll" tabindex="0" aria-label="方案与物料配置表，可横向滚动">
+        <table class="scheme-bom-table" style="min-width:${210 + columnCount * 200}px">
+          <colgroup><col style="width:210px">${'<col style="width:200px">'.repeat(columnCount)}</colgroup>
+          <thead><tr><th scope="col" class="scheme-bom-name">方案名称<span class="req-star">*</span></th>
+            ${materials.map((material, index) => `<th scope="col"><div class="scheme-bom-heading">
+              <input value="${Utils.esc(material.materialName || "")}" aria-label="物料 ${index + 1} 名称" placeholder="物料名称" data-app-action="bom-update" data-app-events="input" data-index="${index}" data-field="materialName">
+              <button type="button" class="stage-row-delete-btn" data-app-action="bom-delete" data-index="${index}" title="删除物料列" aria-label="删除物料 ${index + 1}">${Utils.iconHtml("trash")}</button>
+            </div></th>`).join("")}${emptyHeaders}
+          </tr></thead>
+          <tbody>${names.map((name, skuIndex) => `<tr>
+            <th scope="row" class="scheme-bom-name"><div class="scheme-bom-heading">
+              <span class="scheme-bom-index">${skuIndex + 1}</span>
+              <input value="${Utils.esc(name)}" aria-label="方案 ${skuIndex + 1} 名称" data-app-action="matrix-sku-name" data-app-events="change" data-index="${skuIndex}">
+              <button type="button" class="stage-row-delete-btn" data-app-action="matrix-sku-delete" data-index="${skuIndex}" title="删除方案" aria-label="删除方案 ${Utils.esc(name)}" ${names.length === 1 ? "disabled" : ""}>${Utils.iconHtml("trash")}</button>
+            </div></th>
+            ${materials.map((material, index) => `<td><textarea rows="1" aria-label="方案 ${Utils.esc(name)}，物料 ${index + 1} 明细" placeholder="规格 / 版本 / 数量 / 说明" data-app-action="bom-update" data-app-events="input" data-index="${index}" data-field="sku${skuIndex + 1}">${Utils.esc(material['sku' + (skuIndex + 1)] || "")}</textarea></td>`).join("")}${emptyCells}
+          </tr>`).join("")}</tbody>
+        </table>
       </div>`;
   },
 
@@ -182,7 +177,7 @@ app.registerModule("workspace.strategy", {
     const s = this.currentStage();
     const row = s?.bom?.[idx];
     if (!s || !row) return;
-    const name = String(row.materialName || "").trim() || `第 ${idx + 1} 行`;
+    const name = String(row.materialName || "").trim() || `第 ${idx + 1} 列`;
     this.showConfirm(`确认删除 BOM 物料「${name}」？`, async () => {
       const latest = this.currentStage();
       if (!latest?.bom?.[idx]) return;
@@ -244,9 +239,9 @@ app.registerModule("workspace.strategy", {
     const strategyScrollMinWidth = Math.max(180, (skuNames.length * 92) + 86);
     return `
       <div class="section-head">
-        <div>
+        <div class="stage-config-title">
           <h3 style="margin:0">测试策略配置</h3>
-          <div class="path strategy-desc">STEP1（可选）：可以手动导入一个测试用例集<br>STEP2：点击 <新增测试项>，在测试项列表中新增一行测试用例<br>STEP3：搜索选择或手动输入测试项<br>STEP4：勾选需要被执行的方案</div>
+          ${this.projectConfigHelpHtml("test-strategy", "测试策略配置说明", "STEP1（可选）：可以手动导入一个测试用例集\nSTEP2：点击「新增测试项」，在测试项列表中新增一行测试用例\nSTEP3：搜索选择或手动输入测试项\nSTEP4：勾选需要被执行的方案")}
         </div>
         <div class="case-tools">
           <span class="case-master-badge">用例库：${caseCount} 条</span>
@@ -295,7 +290,7 @@ app.registerModule("workspace.strategy", {
             <tbody>${visibleRows.map(({ row: r, index: idx }) => `
               <tr>
                 ${skuNames.map((n, i) => `<td style="text-align:center;vertical-align:middle"><input data-sku="${i + 1}" data-index="${idx}" data-app-action="strategy-sku" data-app-events="change" type="checkbox" style="width:auto;vertical-align:middle" ${r.skuMap?.[i + 1] ? 'checked' : ''}></td>`).join("")}
-                <td><button class="stage-row-delete-btn" data-app-action="strategy-delete" data-index="${idx}" title="删除" aria-label="删除测试策略">🗑</button></td>
+                <td><button class="stage-row-delete-btn" data-app-action="strategy-delete" data-index="${idx}" title="删除" aria-label="删除测试策略">${Utils.iconHtml("trash")}</button></td>
               </tr>`).join("") || `<tr><td colspan="${skuNames.length + 1}" class="empty"></td></tr>`}</tbody>
           </table>
         </div>
@@ -430,7 +425,34 @@ app.registerModule("workspace.strategy", {
     document.body.removeChild(a);
   },
 
+  parseTestCaseImportRows(matrix) {
+    const header = matrix[0] || [];
+    const columns = ["测试大类", "测试名称", "基线数量"];
+    if (!columns.every((name, index) => String(header[index] ?? "").trim() === name)) {
+      throw new Error("请使用新版三列模板：测试大类、测试名称、基线数量（可留空）。");
+    }
+    const rows = [];
+    for (let i = 1; i < matrix.length; i++) {
+      const cols = matrix[i] || [];
+      const category = String(cols[0] ?? "").trim();
+      const item = String(cols[1] ?? "").trim();
+      const baselineText = String(cols[2] ?? "").trim();
+      if ((!category && !item && !baselineText) || category.startsWith("如：")) continue;
+      if (!category || !item) throw new Error(`第 ${i + 1} 行：测试大类和测试名称不能为空。`);
+      const baselineCount = baselineText === "" ? null : Utils.parsePositiveInt(baselineText);
+      if (baselineText !== "" && baselineCount === null) {
+        throw new Error(`第 ${i + 1} 行「基线数量」必须是不小于 1 的正整数，或留空。`);
+      }
+      rows.push({ category, item, baselineCount });
+    }
+    if (!rows.length) throw new Error("没有可导入的测试用例，请填写数据后重试。示例行不会导入。");
+    return rows;
+  },
+
   async importTestCaseXlsx() {
+    const targetProject = this.currentProject();
+    if (!targetProject) { alert("请先选择一个项目。"); return; }
+    const projectId = targetProject.id;
     const input = document.createElement("input");
     input.type = "file"; input.accept = ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     input.addEventListener("change", async () => {
@@ -439,19 +461,10 @@ app.registerModule("workspace.strategy", {
         const buffer = await file.arrayBuffer();
         const files = await Utils.unzipXlsxFiles(buffer);
         const sharedStrings = Utils.parseXlsxSharedStrings(files["xl/sharedStrings.xml"] || "");
-        const sheetPath = Object.keys(files).find(x => /^xl\/worksheets\/sheet\d+\.xml$/i.test(x));
-        if (!sheetPath) { alert("XLSX中没有找到工作表。"); return; }
+        const sheetPath = Utils.firstXlsxWorksheet(files).path;
         const matrix = Utils.parseXlsxSheet(files[sheetPath], sharedStrings, new Set());
-        const rows = [];
-        for (let i = 1; i < matrix.length; i++) {
-          const cols = matrix[i] || [];
-          const category = String(cols[0] || "").trim();
-          const item = String(cols[1] || "").trim();
-          if (!category || !item) continue;
-          if (category.startsWith("如：") || category === "测试大类") continue;
-          rows.push({ category, item });
-        }
-        const p = this.currentProject();
+        const rows = this.parseTestCaseImportRows(matrix);
+        const p = typeof this.findProjectRecord === "function" ? this.findProjectRecord(projectId) : targetProject;
         if (!p) { alert("请先选择一个项目。"); return; }
         const snapshot = this.dataSnapshot();
         p.testCaseMaster = rows;

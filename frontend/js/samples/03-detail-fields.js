@@ -23,6 +23,14 @@ app.registerModule("samples.detailFields", {
     return null;
   },
 
+  ensureSamplePersonContextLoaded(options = {}) {
+    const project = this.samplePersonContextProject(options);
+    if (project?._summaryOnly && typeof this.ensureProjectLoaded === "function") {
+      return this.ensureProjectLoaded(project.id, { render: false });
+    }
+    return project;
+  },
+
   samplePersonInputHtml(id, value = "", placeholder = "任意填写", options = {}) {
     const project = this.samplePersonContextProject(options);
     if (project?.id && typeof this.projectMemberSelectHtml === "function") {
@@ -101,11 +109,7 @@ app.registerModule("samples.detailFields", {
   },
 
   sampleInitialResultsValue(sample) {
-    const rows = this.sampleProblemRecords(sample).length
-      ? this.sampleProblemRecords(sample).map(x => x.description)
-      : Array.isArray(sample?.initialResults) && sample.initialResults.length
-        ? sample.initialResults
-      : String(sample?.initialResult || "").split(/\r?\n|；|;/);
+    const rows = this.sampleProblemRecords(sample).map(item => item.description);
     return rows.map(x => String(x || "").trim()).filter(Boolean);
   },
 
@@ -138,30 +142,37 @@ app.registerModule("samples.detailFields", {
   },
 
   sampleReassemblySourcesHtml(sample = {}) {
-    if (!this.sampleIsReassembled(sample)) return "";
-    const groups = this.sampleReassemblySources(sample);
-    const hasMatches = groups.some(group => group.matches.length);
-    const body = hasMatches
-      ? groups.map(group => `
+    const reassembled = this.sampleIsReassembled(sample);
+    const sources = reassembled ? this.sampleReassemblySources(sample) : [];
+    const groups = this.sampleIdentityFields(sample).map(field => ({
+      ...field, matches: sources.find(group => group.key === field.key)?.matches || [],
+    }));
+    const body = groups.map(group => `
           <div class="sample-reassembly-group">
-            <div class="sample-reassembly-group-title">${Utils.esc(group.label)}来源</div>
+            <div class="sample-reassembly-group-title">${Utils.esc(group.label)}</div>
             <div class="sample-reassembly-group-body">
               ${group.matches.length ? group.matches.map(item => `
-                <button type="button" class="sample-reassembly-link" data-app-action="sample-readonly" data-id="${Utils.esc(item.sample.id)}">
+                <button type="button" class="sample-reassembly-link" data-app-action="sample-readonly" data-id="${Utils.esc(item.sample.id)}" data-return-text="返回" title="${Utils.esc(`${group.label} 匹配来源的 ${item.matchedFields.join(" / ")} · ${item.category.name || "未命名池"} · ${this.sampleDisplayCode(item.sample)}`)}">
                   <b>${Utils.esc(this.sampleDisplayCode(item.sample))}</b>
-                  <span>${Utils.esc(item.category.name || "-")} · 匹配${Utils.esc(item.matchedFields.join("/"))}</span>
+                  <span>${Utils.esc(item.category.name || "-")}</span>
                 </button>
-              `).join("") : `<span class="sample-reassembly-empty">暂无匹配样机</span>`}
+              `).join("") : `<span class="sample-reassembly-empty">${!reassembled ? "不适用" : group.value ? "未匹配" : "未填写"}</span>`}
             </div>
-          </div>`).join("")
-      : `<div class="sample-reassembly-none">暂无已建档前身样机</div>`;
+          </div>`).join("");
     return `<div class="sample-reassembly-panel">
-      <div class="sample-reassembly-head">
-        <b>重组来源</b>
-        <span>按 SN / IMEI / 主板SN 自动匹配全局样机池</span>
-      </div>
       ${body}
     </div>`;
+  },
+
+  refreshSampleReassemblySources() {
+    const container = document.getElementById("sdReassemblySources");
+    const sample = this.findSample(this._activeSampleDetailId)?.sample;
+    if (!container || !sample) return;
+    const draft = { ...sample, isReassembled: document.getElementById("sdReassembled")?.value === "是" };
+    for (const [field, id] of [["sn", "sdSn"], ["imei", "sdImei"], ["boardSn", "sdBoardSn"]]) {
+      draft[field] = document.getElementById(id)?.value.trim() || "";
+    }
+    this.replaceHtml(container, this.sampleReassemblySourcesHtml(draft));
   },
 
   showSamplePersonOptions(id) {

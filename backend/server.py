@@ -27,7 +27,7 @@ BACKEND_DIR = PROJECT_ROOT / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from server_modules import app_metadata, bundle_preview_service, chamber_package, database_backfills, database_schema, http_handler, http_helpers, http_multipart, http_routes, http_runtime, import_bundle_service, import_commit, import_defaults, import_diff, mutation_services, mutation_summary, project_library, project_queries, record_writers, runtime_paths, sample_assets, sample_constraints, sample_history, sample_library, sample_queries, server_runner, state_externalization, state_merge, state_persistence, state_read_service, status_normalization, storage_core, task_mutation_rules, task_queries, version, zip_security
+from server_modules import app_metadata, bundle_preview_service, chamber_package, database_schema, http_handler, http_helpers, http_multipart, http_routes, http_runtime, import_bundle_service, import_commit, import_diff, mutation_services, mutation_summary, project_library, project_queries, record_writers, runtime_paths, sample_assets, sample_constraints, sample_history, sample_library, sample_queries, server_runner, state_externalization, sample_asset_mutations, state_read_service, status_normalization, storage_core, task_mutation_rules, task_queries, version, zip_security
 
 
 APP_VERSION = version.APP_VERSION
@@ -64,11 +64,6 @@ def validate_data_root(path: Path) -> None:
     runtime_paths.validate_project_data_root(path, ROOT_DIR)
 
 
-def validate_external_data_root(path: Path) -> None:
-    """Compatibility alias for older tests/tools."""
-    validate_data_root(path)
-
-
 def _apply_runtime_paths(paths: runtime_paths.RuntimePaths) -> None:
     global _RUNTIME_PATHS, DATA_DIR, SAMPLE_DATA_DIR, IMPORT_PREVIEW_DIR, EXPORT_DIR, DB_PATH, DEPLOYMENT_FILE
     _RUNTIME_PATHS = paths
@@ -83,15 +78,15 @@ def _apply_runtime_paths(paths: runtime_paths.RuntimePaths) -> None:
 def set_data_root(path_value=None) -> Path:
     """Configure the runtime data root without creating or migrating files."""
     data_root = runtime_paths.resolve_data_root(ROOT_DIR, path_value)
-    validate_external_data_root(data_root)
+    validate_data_root(data_root)
     _apply_runtime_paths(runtime_paths.build_runtime_paths(data_root))
     return DATA_DIR
 
 
-def prepare_runtime_data_root(path_value=None, *, migrate_legacy: bool = True) -> runtime_paths.DataRootMigrationReport:
-    paths, report = runtime_paths.prepare_runtime_paths(ROOT_DIR, path_value, migrate_legacy=migrate_legacy)
+def prepare_runtime_data_root(path_value=None) -> runtime_paths.RuntimePaths:
+    paths = runtime_paths.prepare_runtime_paths(ROOT_DIR, path_value)
     _apply_runtime_paths(paths)
-    return report
+    return paths
 
 
 now_iso = app_metadata.now_iso
@@ -151,38 +146,8 @@ def split_state_for_storage(data: dict) -> dict:
     return state_externalization.split_state_for_storage(data, APP_VERSION)
 
 
-ensure_table_column = database_schema.ensure_table_column
-
-
-def _database_backfill_context() -> database_backfills.DatabaseBackfillContext:
-    return database_backfills.DatabaseBackfillContext(
-        json_obj=json_obj,
-        task_flow_status=task_flow_status,
-        sample_has_problem=sample_has_problem,
-        sample_effective_status=sample_effective_status,
-        sample_is_reassembled=sample_is_reassembled,
-        replace_task_sample_links=replace_task_sample_links,
-    )
-
-
-def backfill_query_state_columns(conn: sqlite3.Connection) -> None:
-    database_backfills.backfill_query_state_columns(_database_backfill_context(), conn)
-
-
-def backfill_sample_identity_columns(conn: sqlite3.Connection) -> None:
-    database_backfills.backfill_sample_identity_columns(_database_backfill_context(), conn)
-
-
-def backfill_status_normalization(conn: sqlite3.Connection) -> None:
-    database_backfills.backfill_status_normalization(_database_backfill_context(), conn)
-
-
 def ensure_schema(conn: sqlite3.Connection) -> None:
     database_schema.ensure_static_schema(conn)
-    backfill_status_normalization(conn)
-    backfill_sample_identity_columns(conn)
-    backfill_project_task_samples(conn)
-    backfill_query_state_columns(conn)
     record_writers.prune_orphan_operational_logs(conn, clear_empty_platform_audit=True)
 
 
@@ -274,10 +239,6 @@ def store_thumbnail_bytes(
     )
 
 
-def materialize_data_url_photo(conn: sqlite3.Connection, sample_id: str, photo: dict) -> dict | None:
-    return sample_assets.materialize_data_url_photo(_asset_context(), conn, sample_id, photo)
-
-
 def upsert_existing_photo_asset(conn: sqlite3.Connection, sample_id: str, photo: dict) -> dict:
     return sample_assets.upsert_existing_photo_asset(_asset_context(), conn, sample_id, photo)
 
@@ -322,13 +283,6 @@ def load_sample_library(conn: sqlite3.Connection, *, include_photos: bool = True
     return sample_library.load_sample_library(_sample_library_context(), conn, include_photos=include_photos, include_logs=include_logs)
 
 
-to_int = state_merge.to_int
-
-
-def merge_state(base_data: dict, new_data: dict, current_data: dict) -> dict:
-    return state_merge.merge_state(base_data, new_data, current_data, app_version=APP_VERSION)
-
-
 def _project_library_context() -> project_library.ProjectLibraryContext:
     return project_library.ProjectLibraryContext(
         now_iso=now_iso,
@@ -357,10 +311,6 @@ def replace_task_sample_links(
     sample_ids: list[str] | None = None,
 ) -> None:
     record_writers.replace_task_sample_links(conn, task_id, project_id, stage_id, task, sample_ids)
-
-
-def backfill_project_task_samples(conn: sqlite3.Connection) -> None:
-    database_backfills.backfill_project_task_samples(_database_backfill_context(), conn)
 
 
 person_name_from_text = task_queries.person_name_from_text
@@ -435,8 +385,6 @@ def _state_read_context() -> state_read_service.StateReadContext:
         list_sample_categories_summary=list_sample_categories_summary,
         load_project_library=load_project_library,
         load_sample_library=load_sample_library,
-        sync_project_library=sync_project_library,
-        sync_sample_library=sync_sample_library,
     )
 
 
@@ -467,14 +415,6 @@ def get_state(*, compact: bool = False) -> tuple[dict, int, str]:
 
 def get_state_metadata() -> tuple[int, str]:
     return state_read_service.get_state_metadata(_state_read_context())
-
-
-def hydrate_externalized_sample_fields(new_data: dict, current_data: dict) -> None:
-    state_externalization.hydrate_externalized_sample_fields(
-        new_data,
-        current_data,
-        content_hash=import_commit.content_hash,
-    )
 
 
 # ── 导出/导入 bundle ────────────────────────────────────────────
@@ -523,7 +463,6 @@ _content_hash = import_commit.content_hash
 _safe_extract_zip = zip_security.safe_extract_zip
 _entity_label_for_conflict = import_diff.entity_label_for_conflict
 _strip_view_state = import_diff.strip_view_state
-_normalize_project = import_diff.normalize_project
 _text_sha256 = bundle_preview_service.text_sha256
 
 
@@ -533,10 +472,6 @@ def prepare_export_bundle_parts(selection: dict | None = None) -> tuple[dict, di
 
 def write_export_bundle_zip(zf: zipfile.ZipFile, export_data: dict, package: dict, payloads: dict[str, str]) -> None:
     bundle_preview_service.write_export_bundle_zip(_bundle_preview_context(), zf, export_data, package, payloads)
-
-
-def build_export_bundle() -> tuple[bytes, str]:
-    return bundle_preview_service.build_export_bundle(_bundle_preview_context())
 
 
 def build_export_bundle_file(selection: dict | None = None) -> tuple[Path, str]:
@@ -692,49 +627,19 @@ FINISHED_TASK_STATUSES = import_commit.FINISHED_TASK_STATUSES
 detect_sample_occupancy_conflicts = import_commit.detect_sample_occupancy_conflicts
 
 
-def _state_persistence_context() -> state_persistence.StatePersistenceContext:
-    return state_persistence.StatePersistenceContext(
+def _sample_asset_mutation_context() -> sample_asset_mutations.SampleAssetMutationContext:
+    return sample_asset_mutations.SampleAssetMutationContext(
         app_version=APP_VERSION,
-        write_db_connection=write_db_connection,
         now_iso=now_iso,
         json_dumps=json_dumps,
         json_obj=json_obj,
         empty_data=empty_data,
-        compose_state=compose_state,
-        merge_state=merge_state,
-        detect_sample_occupancy_conflicts=detect_sample_occupancy_conflicts,
-        hydrate_externalized_sample_fields=hydrate_externalized_sample_fields,
-        sync_project_library=sync_project_library,
-        sync_sample_library=sync_sample_library,
         split_state_for_storage=split_state_for_storage,
         load_sample_photos=load_sample_photos,
     )
 
 
-def save_state(
-    new_data: dict,
-    expected_revision: int | None,
-    client_ip: str,
-    remark: str = "",
-    user: str = "",
-    base_data: dict | None = None,
-) -> tuple[bool, dict]:
-    return state_persistence.save_state(
-        _state_persistence_context(),
-        new_data,
-        expected_revision,
-        client_ip,
-        remark=remark,
-        user=user,
-        base_data=base_data,
-    )
-
-
 parse_multipart = http_multipart.parse_multipart
-
-
-def commit_data_mutation(conn: sqlite3.Connection, data: dict, action: str, remark: str, client_ip: str) -> dict:
-    return state_persistence.commit_data_mutation(_state_persistence_context(), conn, data, action, remark, client_ip)
 
 
 def commit_sample_asset_mutation(
@@ -746,8 +651,8 @@ def commit_sample_asset_mutation(
     *,
     user: str = "",
 ) -> dict:
-    return state_persistence.commit_sample_asset_mutation(
-        _state_persistence_context(),
+    return sample_asset_mutations.commit_sample_asset_mutation(
+        _sample_asset_mutation_context(),
         conn,
         sample_id,
         action,

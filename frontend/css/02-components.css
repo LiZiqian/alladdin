@@ -3,44 +3,57 @@
    ======================================== */
 
 /* ---- Cards & Layout ---- */
+.action-icon {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  vertical-align: middle;
+  color: var(--brand-navy);
+  fill: currentColor;
+  pointer-events: none;
+}
+
 .card {
   background: var(--card); border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow);
   padding: 18px; margin-bottom: 16px;
 }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 16px }
 .sample-category-grid {
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   align-items: stretch;
   overflow-x: auto;
 }
-.grid-small { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px }
-.project-grid { grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)) }
+.grid-small { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 14px }
+.project-grid { grid-template-columns: repeat(auto-fill, minmax(min(310px, 100%), 1fr)) }
 
 /* ---- Add Card (统一新增入口卡片) ---- */
 .add-card {
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
   min-height: 150px;
-  border: 2px dashed var(--border);
-  background: var(--card); cursor: pointer;
+  border: 1px dashed var(--accent-border);
+  background: var(--accent-bg); cursor: pointer;
   transition: border-color .2s, background .2s, box-shadow .2s;
 }
 .add-card:hover {
-  border-color: var(--primary);
-  background: var(--surface);
+  border-color: var(--brand-gold);
+  background: color-mix(in srgb, var(--accent-bg) 85%, var(--brand-gold));
   box-shadow: 0 4px 20px rgba(0, 0, 0, .08);
 }
 .add-card-plus {
-  font-size: 36px; line-height: 1; color: var(--primary);
+  font-size: 36px; line-height: 1; color: var(--brand-gold);
   margin-bottom: 8px; font-weight: 300;
 }
 .add-card-label {
-  font-size: 14px; font-weight: 700; color: var(--primary);
+  font-size: 14px; font-weight: 700; color: var(--brand-gold);
 }
 
 /* ---- Buttons ---- */
 .btn {
+  display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+  font-family: inherit; line-height: 1.2;
   border: 0; background: var(--primary); color: var(--on-accent);
   border-radius: 9px; padding: 8px 13px; font-size: 13px; cursor: pointer;
   font-weight: 600;
@@ -52,9 +65,17 @@
 .btn-outline:disabled { opacity: 1; background: var(--surface); color: var(--muted) }
 .btn-danger { background: var(--danger) }
 .btn-pass { background: var(--pass) }
-.btn-warn { background: var(--warn); color: var(--on-accent) }
-/* 旧类名保留兼容；普通配置与导入操作统一使用主蓝色。 */
+.btn-warn { background: var(--warn-bg); color: var(--warn-text); border: 1px solid var(--warn-border) }
+/* 旧类名保留兼容；普通配置与导入操作统一使用品牌藏蓝。 */
 .btn-purple { background: var(--primary) }
+.btn.btn-add {
+  background: var(--accent-bg);
+  color: var(--brand-gold);
+  border: 1px dashed var(--accent-border);
+}
+.btn.btn-add:hover { background: color-mix(in srgb, var(--accent-bg) 85%, var(--brand-gold)); border-color: var(--brand-gold); filter: none }
+.btn.btn-add:disabled { background: var(--surface-hover); color: var(--muted); border-color: var(--border) }
+.btn.btn-add:focus-visible, .add-card:focus-visible { outline-color: var(--accent-border) }
 button:focus-visible, [role="button"]:focus-visible, a:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 3px;
@@ -66,6 +87,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 
 /* ---- Badges ---- */
 .badge {
+  line-height: 1.2; vertical-align: middle;
   display: inline-flex; align-items: center; gap: 4px;
   padding: 4px 10px; border-radius: 999px; font-size: 12px;
   font-weight: 700; white-space: nowrap; min-width: 68px; justify-content: center;
@@ -178,11 +200,17 @@ label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px
 
 /* ---- Tables ---- */
 table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--card) }
-th, td { padding: 10px 9px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top }
+th, td { padding: 10px 9px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle }
 th { font-size: 13px; color: var(--text); font-weight: 700; background: var(--table-head-bg) }
 tr:hover td { background: var(--surface) }
-.table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 12px }
-.mini-table { max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 12px }
+/* Project-wide table geometry: square frames, headers and cells. */
+table, thead, tbody, tfoot, tr, th, td,
+.table-wrap, .mini-table, .split-table, .split-frozen, .split-scroll,
+.wide-table-scroll, .sample-problem-table-scroll, .scheme-bom-scroll {
+  border-radius: 0;
+}
+.table-wrap { overflow: auto; border: 1px solid var(--border) }
+.mini-table { max-height: 360px; overflow: auto; border: 1px solid var(--border) }
 .wide-table-scroll {
   overflow: auto;
   scrollbar-gutter: stable;
@@ -277,7 +305,7 @@ tr:hover td { background: var(--surface) }
   justify-content: space-between;
   gap: 18px;
   padding: 18px 22px 10px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--accent-border);
 }
 .modal-header h3 {
   flex: 0 0 auto;

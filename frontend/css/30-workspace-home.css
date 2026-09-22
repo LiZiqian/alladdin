@@ -15,10 +15,11 @@
 
 /* ---- Stage Summary Cards ---- */
 .stage-summary-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(288px, 1fr));
-  gap: 12px; flex: 1;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(288px, 100%), 1fr));
+  gap: 12px; flex: 1; min-width: 0;
 }
 .stage-summary-grid .add-card {
+  background: transparent;
   margin-bottom: 0;
   padding: 16px;
   border-radius: 12px;
@@ -45,7 +46,19 @@
   box-shadow: 0 1px 3px rgba(15,23,42,.04);
 }
 .stage-summary-card:hover { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(15, 23, 42, .08) }
-.stage-summary-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--focus-ring) }
+.stage-summary-card.active {
+  border: 3px solid var(--brand-gold);
+  padding: 14px;
+  box-shadow: none;
+}
+.stage-summary-progress { display: flex; align-items: center; gap: 8px }
+.stage-summary-progress > span { color: var(--brand-navy); font-size: 11px; min-width: 30px; text-align: right; font-variant-numeric: tabular-nums }
+.stage-summary-card .progress-bar-wrap {
+  flex: 1; min-width: 0; margin-top: 0;
+  background: var(--accent-bg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-gold) 45%, transparent);
+}
+.stage-summary-card .progress-bar-fill { background: var(--brand-gold) }
 .stage-summary-card.is-sorting {
   cursor: grab;
   user-select: none;
@@ -64,6 +77,7 @@
   box-shadow: 0 0 0 2px var(--focus-ring);
 }
 .stage-summary-section-head {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -74,14 +88,18 @@
   margin: 0 0 12px;
 }
 .project-config-intro {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 22px;
   padding-bottom: 18px;
   border-bottom: 1px solid var(--border);
 }
 .project-config-intro h2 {
   margin: 0;
-  color: var(--text);
-  font-size: 18px;
+  color: var(--heading);
+  font-size: 24px;
   font-weight: 700;
   line-height: 1.2;
 }
@@ -97,9 +115,6 @@
   margin-top: 20px;
   padding-top: 18px;
   border-top: 1px solid var(--border);
-}
-.project-config-section.is-collapsed .project-config-body {
-  display: none;
 }
 .project-config-card + .workspace-section {
   margin-top: 22px;
@@ -136,7 +151,7 @@
   gap: 8px; font-weight: 800; margin-bottom: 8px;
 }
 .stage-summary-name-row {
-  display: flex; align-items: center; gap: 8px; min-width: 0;
+  display: flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; max-width: 45%;
 }
 .stage-summary-name-row > span:first-child {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -145,6 +160,9 @@
 .stage-summary-actions {
   display: flex; align-items: center; gap: 8px; flex-shrink: 0;
 }
+.stage-summary-skus { color: var(--brand-navy); min-width: 0; flex: 1; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 400 }
+.stage-summary-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px }
+.stage-summary-copy-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 28px; flex: 0 0 auto; background: none; border: none; color: var(--brand-navy); cursor: pointer; padding: 0; line-height: 1 }
 .stage-sort-hint {
   border: 1px solid var(--purple-border);
   border-radius: 999px;
@@ -155,11 +173,63 @@
   font-weight: 900;
   white-space: nowrap;
 }
-.stage-config-btn {
+.btn.stage-config-btn {
+  background: var(--purple-bg);
+  color: var(--purple-text);
+  border: 1px solid var(--purple-border);
+  min-height: 28px;
+  box-sizing: border-box;
   border-radius: 999px;
-  padding: 5px 12px;
+  padding: 4px 12px;
   font-weight: 800;
   white-space: nowrap;
+}
+.project-config-help {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+.project-config-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--primary-border);
+  border-radius: 50%;
+  background: var(--primary-bg);
+  color: var(--primary-text);
+  font-family: Arial, sans-serif;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 700;
+  cursor: help;
+}
+.project-config-help-text {
+  position: absolute;
+  z-index: 200;
+  top: 100%;
+  left: 0;
+  width: max-content;
+  max-width: min(320px, 100%);
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  white-space: normal;
+  visibility: hidden;
+  opacity: 0;
+}
+.project-config-help:hover .project-config-help-text,
+.project-config-help:focus-within .project-config-help-text {
+  visibility: visible;
+  opacity: 1;
 }
 .stage-copy-btn {
   width: 30px;
@@ -175,21 +245,21 @@
 }
 .stage-summary-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
   margin-top: 10px;
 }
 .stage-metric-card {
-  background: var(--surface);
+  background: transparent;
   border: 1px solid var(--border);
   border-radius: 9px;
-  padding: 9px 10px;
+  padding: 8px 6px;
   min-width: 0;
 }
 .stage-metric-card b {
   display: block;
   color: var(--text);
-  font-size: 13px;
+  font-size: 11px;
   line-height: 1.25;
   margin-bottom: 5px;
   font-weight: 700;
@@ -202,7 +272,7 @@
   color: var(--muted);
   font-size: 11px;
   line-height: 1.55;
-  white-space: nowrap;
+  white-space: normal;
   min-width: 0;
 }
 .stage-metric-card em {

@@ -14,11 +14,11 @@ app.registerModule("app.logs", {
 
   logHtml(l, seq = "", seqPrefix = "", task = null) {
     const seqHtml = seq ? `<span class="log-seq">${Utils.esc(seqPrefix)}${Utils.esc(seq)}</span>` : "";
-    const reasonText = this.normalizeStatusText(String(l.reason || l.problemDescription || "").trim());
-    const detailText = this.normalizeStatusText(String(l.detail || "").trim());
+    const reasonText = String(l.reason || l.problemDescription || "").trim();
+    const detailText = String(l.detail || "").trim();
     const rawContent = [reasonText, detailText && detailText !== reasonText ? detailText : ""].filter(Boolean).join("；");
     const content = rawContent ? `<div class="task-log-text" title="${Utils.esc(rawContent)}">${this.linkSampleRefsInLogText(this.compactTaskLogText(rawContent), task, l)}</div>` : "";
-    const actionTitle = this.normalizeStatusText(l.action || l.source || "-");
+    const actionTitle = l.action || l.source || "-";
     return `<div class="log-line">${seqHtml}<b>${Utils.esc(actionTitle)}</b>
       <div class="task-log-meta">${Utils.esc(new Date(l.time).toLocaleString("zh-CN"))} | 操作人：${Utils.esc(l.user || "-")} | 状态：${Utils.esc(l.from || "-")} → ${Utils.esc(l.to || "-")} | 测试项：${Utils.esc(l.testItem || "-")}</div>
       ${content}</div>`;
@@ -117,7 +117,7 @@ app.registerModule("app.logs", {
       ["分配样机", "重新分配样机", "临时变更", "样机池档案销毁"].some(x => action.includes(x))
     ) ? detail : (reason || detail);
     if (action.includes("阻塞") && text && !text.startsWith("阻塞")) text = `阻塞：${text}`;
-    return this.normalizeStatusText(text);
+    return text;
   },
   taskLogDetailLines(log) {
     const action = String(log?.action || "").trim();
@@ -181,13 +181,14 @@ app.registerModule("app.logs", {
     return refs;
   },
   appendTaskLogRichText(target, text, task = null, log = null) {
-    const raw = this.normalizeStatusText(String(text || ""));
+    const raw = String(text || "");
     const pattern = /(?:SN|IMEI|主板SN)\s*#\s*[A-Za-z0-9-]+|\b\d{12,18}\b|\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+){2,}\b|(?:通过|不通过)(\s*[（(][^)）]*[)）])?/g;
     let last = 0;
     for (const match of raw.matchAll(pattern)) {
       if (match.index > last) target.append(document.createTextNode(raw.slice(last, match.index)));
       const token = match[0];
-      const sampleId = this.findLogSampleRefId(token, task, log);
+      const isResult = /^(?:通过|不通过)/.test(token);
+      const sampleId = isResult ? "" : this.findLogSampleRefId(token, task, log);
       if (sampleId || this.isLabeledLogSampleRef(token)) {
         if (sampleId) {
           const button = document.createElement("button");
@@ -201,11 +202,11 @@ app.registerModule("app.logs", {
         } else {
           const missing = document.createElement("span");
           missing.className = "sample-log-ref-missing";
-          missing.title = "样机档案不存在或已销毁";
+          missing.title = "样机档案不存在、已销毁或引用不唯一";
           missing.textContent = this.normalizeLogSampleRefCode(token);
           target.append(missing);
         }
-      } else if (/^(?:通过|不通过)/.test(token)) {
+      } else if (isResult) {
         const result = document.createElement("b");
         result.className = token.startsWith("通过") ? "log-result-pass" : "log-result-fail";
         result.textContent = token;
@@ -260,66 +261,55 @@ app.registerModule("app.logs", {
     const code = this.normalizeLogSampleRefCode(ref);
     if (!code) return "";
     const suffix = code.includes("#") ? code.split("#").pop() : "";
-    const logRefHit = (log?.sampleRefs || []).find(item => {
-      if (!item || !item.sampleId) return false;
-      return [
-        item.ref,
-        item.code,
-        item.sampleNo,
-        item.sn,
-        item.imei,
-        item.boardSn,
-      ].some(value => this.taskLogSampleRefMatches(value, code, suffix));
-    });
-    if (logRefHit) return String(logRefHit.sampleId || "");
-    const snapshots = task?.sampleSnapshots || {};
-    const snapHit = Object.entries(snapshots).find(([, snap]) => [
-      snap?.code,
-      snap?.sampleNo,
-      snap?.sn,
-      snap?.imei,
-      snap?.boardSn,
-    ].some(v => this.taskLogSampleRefMatches(v, code, suffix)));
-    if (snapHit) return snapHit[0];
-    const samples = typeof this.allSamples === "function" ? this.allSamples() : [];
-    const candidates = samples.filter(s => {
-      const refs = [
-        typeof this.sampleDisplayCode === "function" ? this.sampleDisplayCode(s) : "",
-        s.sampleNo,
-        s.sn,
-        s.imei,
-        s.boardSn,
-      ].map(v => this.normalizeLogSampleRefCode(v)).filter(Boolean);
-      return refs.includes(code) || (suffix && refs.some(v => v.endsWith(suffix)));
-    });
-    if (!candidates.length) return "";
     const taskIds = new Set([
       ...(task?.sampleIds || []),
       ...(task?.removedSampleRecords || []).map(item => item?.sampleId).filter(Boolean)
     ]);
-    if (taskIds.size) return candidates.find(s => taskIds.has(s.id))?.id || "";
-    return candidates.length === 1 ? candidates[0].id || "" : "";
+    const sources = [
+      (log?.sampleRefs || []).filter(item => item?.sampleId).map(item => [item.sampleId, item]),
+      Object.entries(task?.sampleSnapshots || {}),
+    ];
+    // Resolve a full identity before considering abbreviated last-four references.
+    // Ambiguous references must never silently jump to the first matching sample.
+    for (const matchSuffix of suffix ? ["", suffix] : [""]) {
+      for (const entries of sources) {
+        const ids = new Set(entries.filter(([, item]) => [
+          item?.ref, item?.code, item?.sampleNo, item?.sn, item?.imei, item?.boardSn,
+        ].some(value => this.taskLogSampleRefMatches(value, code, matchSuffix))).map(([id]) => String(id || "")).filter(Boolean));
+        if (ids.size) return ids.size === 1 ? [...ids][0] : "";
+      }
+    }
+    const samples = typeof this.allSamples === "function" ? this.allSamples() : [];
+    const candidates = samples.filter(sample => !taskIds.size || taskIds.has(sample.id));
+    for (const matchSuffix of suffix ? ["", suffix] : [""]) {
+      const ids = new Set(candidates.filter(sample => [
+        typeof this.sampleDisplayCode === "function" ? this.sampleDisplayCode(sample) : "",
+        sample.sampleNo, sample.sn, sample.imei, sample.boardSn,
+      ].some(value => this.taskLogSampleRefMatches(value, code, matchSuffix))).map(sample => String(sample.id || "")).filter(Boolean));
+      if (ids.size) return ids.size === 1 ? [...ids][0] : "";
+    }
+    return "";
   },
   linkSampleRefsInLogText(text, task = null, log = null) {
-    const str = this.normalizeStatusText(String(text || ""));
+    const str = String(text || "");
     const re = this.logSampleRefPattern();
     let html = "";
     let last = 0;
     for (const match of str.matchAll(re)) {
       const ref = match[0];
-      html += Utils.esc(str.slice(last, match.index));
+      html += this.highlightTestResult(Utils.esc(str.slice(last, match.index)));
       const sampleId = this.findLogSampleRefId(ref, task, log);
       if (sampleId) {
         html += `<button type="button" class="sample-log-link" data-app-action="sample-readonly" data-stop-propagation="1" data-id="${Utils.esc(sampleId)}">${Utils.esc(this.normalizeLogSampleRefCode(ref))}</button>`;
       } else if (this.isLabeledLogSampleRef(ref)) {
-        html += `<span class="sample-log-ref-missing" title="样机档案不存在或已销毁">${Utils.esc(this.normalizeLogSampleRefCode(ref))}</span>`;
+        html += `<span class="sample-log-ref-missing" title="样机档案不存在、已销毁或引用不唯一">${Utils.esc(this.normalizeLogSampleRefCode(ref))}</span>`;
       } else {
         html += Utils.esc(ref);
       }
       last = match.index + ref.length;
     }
-    html += Utils.esc(str.slice(last));
-    return this.highlightTestResult(html);
+    html += this.highlightTestResult(Utils.esc(str.slice(last)));
+    return html;
   },
 
   highlightTestResult(html) {
@@ -376,10 +366,18 @@ app.registerModule("app.logs", {
     return list;
   },
   async showTaskLogs(projectId, stageId, taskId) {
-    const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
+    const dialogRequest = this.beginDialogRequest?.();
+    let { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
     if (!t) return;
+    const request = this._taskLogsOpenSequence = (this._taskLogsOpenSequence || 0) + 1;
+    const modalId = this._currentModalId;
+    const viewKey = JSON.stringify(this.view || {});
     const loadingSamples = this.ensureTaskReferenceSamplesLoaded?.(t);
     if (loadingSamples?.then) await loadingSamples;
+    if (request !== this._taskLogsOpenSequence || modalId !== this._currentModalId || viewKey !== JSON.stringify(this.view || {})) return;
+    if (this.isDialogRequestCurrent?.(dialogRequest) === false) return;
+    ({ p, s, t } = this.getProjectStageTask(projectId, stageId, taskId));
+    if (!t) return;
     const logs = this.ensureTaskLogs(t);
     const taskLabel = [p?.name, s?.name, t.testItem].filter(Boolean).join(" - ");
     this.showModal(`任务日志 · ${taskLabel}`, "", () => false, "关闭", {

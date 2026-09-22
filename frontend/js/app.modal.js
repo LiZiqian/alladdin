@@ -4,6 +4,24 @@
 
 app.registerModule("app.modal", {
 
+  beginDialogRequest() {
+    return {
+      sequence: this._dialogRequestSequence = (this._dialogRequestSequence || 0) + 1,
+      modalId: this._currentModalId || null,
+      confirmId: this._currentConfirmId || null,
+      viewKey: JSON.stringify(this.view || {}),
+      epoch: this._dataSnapshotEpoch || 0,
+    };
+  },
+
+  isDialogRequestCurrent(request) {
+    return !!request && request.sequence === this._dialogRequestSequence
+      && request.modalId === (this._currentModalId || null)
+      && request.confirmId === (this._currentConfirmId || null)
+      && request.viewKey === JSON.stringify(this.view || {})
+      && request.epoch === (this._dataSnapshotEpoch || 0);
+  },
+
   dialogFocusableElements(root) {
     if (!root) return [];
     return Array.from(root.querySelectorAll(
@@ -44,6 +62,17 @@ app.registerModule("app.modal", {
     if (this._dialogKeyboardEventsBound) return;
     this._dialogKeyboardEventsBound = true;
     document.addEventListener("keydown", event => {
+      if (event.defaultPrevented) return;
+      const preview = document.querySelector(".sample-photo-preview-mask");
+      if (preview) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          preview.remove();
+          return;
+        }
+        this.trapDialogTab(event, preview);
+        return;
+      }
       const confirmMask = document.getElementById("confirmMask");
       if (confirmMask?.style.display === "flex") {
         const box = confirmMask.querySelector(".confirm-box");
@@ -60,7 +89,7 @@ app.registerModule("app.modal", {
       const modal = modalMask.querySelector(".modal");
       if (event.key === "Escape" && !this._modalBusy) {
         event.preventDefault();
-        this.closeModal();
+        this.requestModalClose();
         return;
       }
       this.trapDialogTab(event, modal);
@@ -69,6 +98,7 @@ app.registerModule("app.modal", {
 
   // ---- 模态框 ----
   showModal(title, bodyHtml, onOk, okText = "确认", options = {}) {
+    this._dialogRequestSequence = (this._dialogRequestSequence || 0) + 1;
     const modalMask = document.getElementById("modalMask");
     const modalWasOpen = modalMask?.style.display === "flex";
     if (!this._restoringModal && !modalWasOpen) this._modalReturnFocus = document.activeElement;
@@ -142,24 +172,8 @@ app.registerModule("app.modal", {
       cancel.style.display = options.hideCancel ? "none" : "";
       cancel.innerText = options.cancelText || "取消";
       cancel.className = "btn btn-outline";
-      cancel.addEventListener("click", async () => {
-        if (cancel.disabled || this._currentModalId !== modalId) return;
-        try {
-          const result = this._currentModalOnCancel ? this._currentModalOnCancel() : false;
-          if (result && typeof result.then === "function") {
-            this.setModalBusy(modalId, true);
-            const resolved = await result;
-            if (this._currentModalId !== modalId) return;
-            this.setModalBusy(modalId, false);
-            if (!resolved) this.closeModal(modalId);
-            return;
-          }
-          if (!result) this.closeModal(modalId);
-        } catch (e) {
-          if (this._currentModalId === modalId) this.setModalBusy(modalId, false);
-          console.error("[showModal] onCancel 异常：", e);
-          alert("操作失败：" + (e.message || e));
-        }
+      cancel.addEventListener("click", () => {
+        if (!cancel.disabled) return this.requestModalClose(modalId);
       });
     }
     const ok = this.resetEventTarget(document.getElementById("modalOk"));
@@ -168,6 +182,7 @@ app.registerModule("app.modal", {
     ok.className = options.okClass || "btn";
     ok.innerText = okText;
     ok.addEventListener("click", async () => {
+      if (ok.disabled || this._modalBusy || this._currentModalId !== modalId) return;
       try {
         const keepOpen = onOk && onOk();
         if (keepOpen && typeof keepOpen.then === "function") {
@@ -225,6 +240,7 @@ app.registerModule("app.modal", {
   },
 
   showConfirm(message, onOk, options = {}) {
+    this._dialogRequestSequence = (this._dialogRequestSequence || 0) + 1;
     const mask = document.getElementById("confirmMask");
     const box = mask?.querySelector(".confirm-box");
     const title = document.getElementById("confirmTitle");
@@ -237,6 +253,11 @@ app.registerModule("app.modal", {
       return;
     }
     this._confirmReturnFocus = document.activeElement;
+    const confirmId = (this._confirmSequence || 0) + 1;
+    this._confirmSequence = confirmId;
+    this._currentConfirmId = confirmId;
+    this._confirmBusy = false;
+    box?.setAttribute("aria-busy", "false");
     if (box) box.className = `confirm-box${options.className ? " " + options.className : ""}`;
     title.innerText = options.title || "确认操作";
     msg.innerText = message || "";
@@ -255,20 +276,32 @@ app.registerModule("app.modal", {
     boundOk.disabled = false;
     boundCancel.style.display = cancel.style.display;
     boundCancel.innerText = options.cancelText || "取消";
-    boundCancel.addEventListener("click", () => this.closeConfirm());
+    boundCancel.addEventListener("click", () => this.closeConfirm(confirmId));
     boundOk.innerText = options.okText || "确认";
     boundOk.className = options.okClass || "btn";
     boundOk.addEventListener("click", async () => {
+      if (boundOk.disabled || this._confirmBusy || this._currentConfirmId !== confirmId) return;
+      this._confirmBusy = true;
       boundOk.disabled = true;
+      boundCancel.disabled = true;
+      box?.setAttribute("aria-busy", "true");
       try {
         const result = typeof onOk === "function" ? onOk() : null;
         if (result && typeof result.then === "function") await result;
-        this.closeConfirm();
+        if (this._currentConfirmId === confirmId) {
+          this._confirmBusy = false;
+          this.closeConfirm(confirmId);
+        }
       } catch (e) {
         console.error("[showConfirm] onOk 异常：", e);
         alert("操作失败：" + (e.message || e));
       } finally {
-        boundOk.disabled = false;
+        if (this._currentConfirmId === confirmId) {
+          this._confirmBusy = false;
+          boundOk.disabled = false;
+          boundCancel.disabled = false;
+          box?.setAttribute("aria-busy", "false");
+        }
       }
     });
     mask.style.display = "flex";
@@ -287,21 +320,49 @@ app.registerModule("app.modal", {
     });
   },
 
-  closeConfirm() {
+  closeConfirm(expectedConfirmId = null) {
+    if (expectedConfirmId !== null && this._currentConfirmId !== expectedConfirmId) return false;
+    if (this._confirmBusy) return false;
     const mask = document.getElementById("confirmMask");
     if (mask) {
       mask.style.display = "none";
       mask.setAttribute("aria-hidden", "true");
     }
     const box = mask?.querySelector(".confirm-box");
-    if (box) box.className = "confirm-box";
+    if (box) {
+      box.className = "confirm-box";
+      box.setAttribute("aria-busy", "false");
+    }
+    this._currentConfirmId = null;
     const returnFocus = this._confirmReturnFocus;
     this._confirmReturnFocus = null;
     if (returnFocus?.isConnected) setTimeout(() => returnFocus.focus?.({ preventScroll: true }), 0);
+    return true;
+  },
+
+  async requestModalClose(expectedModalId = null) {
+    const modalId = expectedModalId || this._currentModalId;
+    if (!modalId || this._currentModalId !== modalId || this._modalBusy) return false;
+    try {
+      let keepOpen = this._currentModalOnCancel ? this._currentModalOnCancel() : false;
+      if (keepOpen && typeof keepOpen.then === "function") {
+        this.setModalBusy(modalId, true);
+        keepOpen = await keepOpen;
+        if (this._currentModalId !== modalId) return false;
+        this.setModalBusy(modalId, false);
+      }
+      return keepOpen ? false : this.closeModal(modalId);
+    } catch (e) {
+      if (this._currentModalId === modalId) this.setModalBusy(modalId, false);
+      console.error("[showModal] onCancel 异常：", e);
+      alert("操作失败：" + (e.message || e));
+      return false;
+    }
   },
 
   closeModal(expectedModalId = null) {
     if (expectedModalId && this._currentModalId !== expectedModalId) return false;
+    if (!expectedModalId && this._modalBusy) return false;
     if (this._currentModalId) this.setModalBusy(this._currentModalId, false);
     // 模态框堆栈：有上一级则恢复
     if (this._modalStack.length > 0) {

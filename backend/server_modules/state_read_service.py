@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Callable
 
@@ -22,8 +23,6 @@ class StateReadContext:
     list_sample_categories_summary: Callable[[sqlite3.Connection], list[dict]]
     load_project_library: Callable[[sqlite3.Connection], list[dict]]
     load_sample_library: Callable[..., dict]
-    sync_project_library: Callable[..., bool]
-    sync_sample_library: Callable[..., bool]
 
 
 def compose_bootstrap_state(ctx: StateReadContext, conn: sqlite3.Connection) -> tuple[dict, int, str]:
@@ -71,8 +70,6 @@ def compose_state(
         return ctx.empty_data(), 1, ctx.now_iso()
     data = ctx.json_obj(row["data_json"], ctx.empty_data()) or ctx.empty_data()
     data["version"] = ctx.app_version
-    data.pop("peoplePool", None)
-    data.pop("locationPool", None)
     data["projects"] = ctx.load_project_library(conn)
     data["sampleLibrary"] = ctx.load_sample_library(
         conn,
@@ -94,7 +91,8 @@ def init_db(ctx: StateReadContext) -> None:
     ctx.ensure_dirs()
     ctx.ensure_deployment_id()
     with ctx.db_lock:
-        with ctx.connect_db() as conn:
+        conn = ctx.connect_db()
+        with closing(conn), conn:
             ctx.ensure_schema(conn)
             row = conn.execute("SELECT data_json, revision FROM app_state WHERE id = 1").fetchone()
             if row is None:
@@ -102,29 +100,11 @@ def init_db(ctx: StateReadContext) -> None:
                     "INSERT INTO app_state (id, data_json, revision, updated_at) VALUES (1, ?, 1, ?)",
                     (ctx.json_dumps(ctx.split_state_for_storage(ctx.empty_data())), ctx.now_iso()),
                 )
-            else:
-                data = ctx.json_obj(row["data_json"], ctx.empty_data()) or ctx.empty_data()
-                library = data.get("sampleLibrary") or {}
-                migrated = False
-                if (data.get("projects") or []) and not data.get("projectsExternalized"):
-                    ctx.sync_project_library(conn, data)
-                    migrated = True
-                    print("[MIGRATE] Projects, stages, tasks and task logs externalized to SQLite tables.")
-                if (library.get("categories") or []) and not library.get("externalized"):
-                    ctx.sync_sample_library(conn, data)
-                    migrated = True
-                    print("[MIGRATE] Sample library externalized to SQLite tables and data/samples files.")
-                if migrated:
-                    revision = int(row["revision"]) + 1
-                    conn.execute(
-                        "UPDATE app_state SET data_json = ?, revision = ?, updated_at = ? WHERE id = 1",
-                        (ctx.json_dumps(ctx.split_state_for_storage(data)), revision, ctx.now_iso()),
-                    )
             conn.commit()
 
 
 def get_state(ctx: StateReadContext, *, compact: bool = False) -> tuple[dict, int, str]:
-    with ctx.connect_db() as conn:
+    with closing(ctx.connect_db()) as conn:
         began = begin_read_snapshot(conn)
         try:
             return compose_state(
@@ -139,7 +119,7 @@ def get_state(ctx: StateReadContext, *, compact: bool = False) -> tuple[dict, in
 
 
 def get_state_metadata(ctx: StateReadContext) -> tuple[int, str]:
-    with ctx.connect_db() as conn:
+    with closing(ctx.connect_db()) as conn:
         began = begin_read_snapshot(conn)
         try:
             row = conn.execute("SELECT revision, updated_at FROM app_state WHERE id = 1").fetchone()

@@ -178,6 +178,77 @@ def sample_identity_match_field(sample: dict, key: str) -> dict | None:
     return None
 
 
+def sample_identity_write_failure(conn: sqlite3.Connection, samples: list[dict]) -> dict | None:
+    """Validate every supplied identity under the caller's write transaction.
+
+    Existing records follow the same uniqueness contract as newly created ones.
+    Reassembled samples are exempt by the current business rule.
+    """
+    incoming: dict[str, dict] = {}
+    for sample in samples:
+        if not isinstance(sample, dict) or not str(sample.get("id") or ""):
+            return {"status": 400, "error": "每台样机必须是包含 id 的 JSON 对象"}
+        sample_id = str(sample["id"])
+        if sample_id in incoming:
+            return {"status": 400, "error": "样机载荷中存在重复 id"}
+        incoming[sample_id] = sample
+    if not incoming:
+        return None
+
+    def keys(sample: dict) -> set[str]:
+        return {sample_identity_key(field["value"]) for field in sample_identity_fields(sample) if field["value"]}
+
+    checked_ids = {
+        sample_id for sample_id, sample in incoming.items()
+        if not sample_queries.sample_is_reassembled(sample)
+    }
+    if not checked_ids:
+        return None
+
+    def conflict(sample_id: str, other_id: str, value: str) -> dict:
+        return {
+            "status": 409, "error_code": "SAMPLE_IDENTITY_CONFLICT",
+            "error": "SN、IMEI 或主板 SN 与其他非重组样机重复，请刷新查重结果后重试。",
+            "sampleId": sample_id, "conflictSampleId": other_id, "identity": value,
+        }
+
+    incoming_by_key: dict[str, str] = {}
+    for sample_id, sample in incoming.items():
+        if sample_queries.sample_is_reassembled(sample):
+            continue
+        for key in keys(sample):
+            other_id = incoming_by_key.get(key)
+            if other_id:
+                return conflict(sample_id, other_id, key)
+            incoming_by_key[key] = sample_id
+
+    changed_by_key = {key: sample_id for sample_id in checked_ids for key in keys(incoming[sample_id])}
+    values = list(changed_by_key)
+    for offset in range(0, len(values), 250):
+        batch = values[offset:offset + 250]
+        placeholders = ",".join("?" for _ in batch)
+        rows = conn.execute(
+            f"""
+            SELECT r.id, r.sn, r.imei, r.board_sn
+            FROM sample_records r JOIN sample_categories c ON c.id = r.category_id
+            WHERE r.deleted_at IS NULL AND c.deleted_at IS NULL AND COALESCE(r.is_reassembled, 0) = 0
+              AND (TRIM(r.sn) COLLATE NOCASE IN ({placeholders})
+                   OR TRIM(r.imei) COLLATE NOCASE IN ({placeholders})
+                   OR TRIM(r.board_sn) COLLATE NOCASE IN ({placeholders}))
+            """,
+            [*batch, *batch, *batch],
+        ).fetchall()
+        for row in rows:
+            other_id = str(row["id"])
+            if other_id in incoming:
+                continue
+            for value in (row["sn"], row["imei"], row["board_sn"]):
+                key = sample_identity_key(value)
+                if key in changed_by_key:
+                    return conflict(changed_by_key[key], other_id, key)
+    return None
+
+
 def check_sample_identity_conflicts(conn: sqlite3.Connection, payload: dict) -> dict:
     raw_samples = payload.get("samples")
     if not isinstance(raw_samples, list):

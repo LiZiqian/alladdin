@@ -51,8 +51,6 @@ app.registerModule("workspace.taskTable", {
   },
 
   taskFlowPagerHtml(page, totalPages, total, pageSize, { loading = false } = {}) {
-    const start = total ? (page - 1) * pageSize + 1 : 0;
-    const end = total ? Math.min(total, page * pageSize) : 0;
     const pageBtn = (label, target, disabled = false) => `
       <button type="button" class="btn btn-sm btn-outline" ${disabled || loading ? "disabled" : `data-app-action="task-flow-page" data-value="${target}"`}>${label}</button>`;
     return `
@@ -66,7 +64,6 @@ app.registerModule("workspace.taskTable", {
           </select>
           ${loading ? `<span class="path list-pager-loading">加载中...</span>` : ""}
         </div>
-        <span class="path task-flow-pager-range">显示 ${start}-${end} / ${total} 条</span>
       </div>`;
   },
 
@@ -125,21 +122,38 @@ app.registerModule("workspace.taskTable", {
   },
 
   storeTaskFlowPageResult(project, stage, key, result = {}) {
+    const currentProject = this.findProjectRecord?.(project?.id);
+    if (currentProject) {
+      project = currentProject;
+      stage = project.stages?.find(item => item.id === stage?.id);
+      if (!stage) return null;
+    }
     const rows = result.rows || [];
     const byId = new Map((stage.tasks || []).map(task => [String(task.id || ""), task]));
+    const baseStage = this._baseData?.projects?.find(item => item.id === project?.id)?.stages?.find(item => item.id === stage.id);
+    const baselineById = new Map((baseStage?.tasks || []).map(task => [String(task.id), task]));
+    const baselineTasks = [];
     rows.forEach(row => {
       const task = row.task;
       if (!task?.id) return;
+      baselineTasks.push(task);
       const existing = byId.get(String(task.id));
       if (existing) {
-        Object.assign(existing, task);
+        const baseline = baselineById.get(String(task.id));
+        Object.entries(task).forEach(([field, value]) => {
+          if (!baseline || JSON.stringify(existing[field]) === JSON.stringify(baseline[field])) existing[field] = value;
+        });
         row.task = existing;
       } else {
         if (!Array.isArray(stage.tasks)) stage.tasks = [];
         stage.tasks.push(task);
       }
     });
-    if (result.stats) {
+    // Page statistics respect owner/keyword/SKU filters. Keep them in the page
+    // cache; only an unfiltered read can replace the whole-stage summary.
+    const summaryQuery = { ...this.taskFlowQueryParams(stage), flowStatus: "" };
+    const hasSummaryFilters = this.taskFlowQueryHasFilters?.(summaryQuery);
+    if (result.stats && !hasSummaryFilters) {
       stage.taskCount = Number(result.stats.totalInStage ?? result.total ?? stage.taskCount ?? 0);
       stage.statusCounts = result.stats.statusCounts || stage.statusCounts || {};
       stage.ownerNames = result.stats.ownerNames || stage.ownerNames || [];
@@ -150,8 +164,8 @@ app.registerModule("workspace.taskTable", {
       statusCounts: stage.statusCounts || {},
       ownerNames: stage.ownerNames || [],
     });
-    rows.forEach(row => {
-      if (row?.task?.id) this.syncHydratedTaskBaseline?.(project?.id, stage.id, row.task);
+    baselineTasks.forEach(task => {
+      this.syncHydratedTaskBaseline?.(project?.id, stage.id, task);
     });
     this._taskFlowPageCache = { key, stageId: stage.id, ...result, rows };
     this.hydrateTaskFlowReferenceSamples(project, stage, rows, key);
@@ -167,12 +181,11 @@ app.registerModule("workspace.taskTable", {
       .filter(item => item?.then);
     if (!pending.length) return null;
     const refreshKey = key;
+    const cache = this._taskFlowPageCache;
     return Promise.allSettled(pending).then(() => {
-      (rows || []).forEach(row => {
-        if (row?.task?.id) this.syncHydratedTaskBaseline?.(project?.id, stage?.id, row.task);
-      });
       if (
         refreshKey
+        && this._taskFlowPageCache === cache
         && this._taskFlowPageCache?.key === refreshKey
         && this.isCurrentProjectWorkspaceStage?.(stage?.id)
       ) {
@@ -183,11 +196,18 @@ app.registerModule("workspace.taskTable", {
 
   refreshTaskFlowRegion(project, stage) {
     if (typeof document === "undefined" || typeof document.getElementById !== "function") return false;
+    const currentProject = this.findProjectRecord?.(project?.id);
+    if (currentProject) {
+      project = currentProject;
+      stage = project.stages?.find(item => item.id === stage?.id);
+      if (!stage) return false;
+    }
     const shell = document.getElementById("taskFlowShell");
     if (!shell || shell.dataset.stageId !== String(stage?.id || "")) return false;
     shell.dataset.pageKey = this.taskFlowCacheKey(stage, this.taskFlowQueryParams(stage));
     this.replaceHtml(shell, this.workspaceTaskFlowContentHtml(project, stage));
     this.updateSelectPlaceholderState?.(shell);
+    this.refreshStageSummaryMetrics?.(stage);
     return true;
   },
 
@@ -316,7 +336,6 @@ app.registerModule("workspace.taskTable", {
     return `
       <div class="section-head">
         <div class="task-workbench-title">
-          ${this.sectionToggleTriangle('taskFlow')}
           <h2 style="margin:0">任务管理工作台 <span>阶段 - ${Utils.esc(stage.name || "-")}</span></h2>
         </div>
         <button type="button" class="task-add-main task-add-header" data-app-action="task-add">
@@ -384,21 +403,22 @@ app.registerModule("workspace.taskTable", {
       const sampleCount = i.sampleIds.length;
       const flowStatus = i.flowStatus;
       const logs = t ? this.ensureTaskLogs(t) : [];
-      const d = (v) => {
+      const timeLine = (label, v) => {
         const t = this.taskDateText(v);
-        return t && t !== "-" ? t : "待设置";
+        const isSet = !!t && t !== "-";
+        return `<span${isSet ? ' class="task-time-set"' : ""}>${label}：${Utils.esc(isSet ? t : "待设置")}</span>`;
       };
       const timeHtml = pending
-        ? `<span>计划开始：${Utils.esc(d(i.planStartDate))}</span><span>计划终止：${Utils.esc(d(i.planEndDate))}</span>`
-        : `<span>开始：${Utils.esc(d(i.startDate))}</span><span>结束：${Utils.esc(d(i.endDate))}</span>`;
+        ? timeLine("计划开始", i.planStartDate) + timeLine("计划终止", i.planEndDate)
+        : timeLine("开始", i.startDate) + timeLine("结束", i.endDate);
       const actionsHtml = this.taskFlowActionsHtml(project, stage, row);
       const catHtml = `<div class="task-type-cell"><span class="task-type-cat">${Utils.esc(i.category || "-")}</span><span class="task-type-item">${Utils.esc(i.testItem || "-")}</span></div>`;
       const execHtml = i.ownerName
         ? `<div class="task-executor-cell"><span class="task-executor-name">${Utils.esc(i.ownerName)}</span>${i.ownerId ? `<span class="task-executor-id">${Utils.esc(i.ownerId)}</span>` : ""}</div>`
         : `<span class="muted">-</span>`;
       const sampleHtml = `<div class="task-sample-cell">${sampleCount && taskId
-        ? `<button type="button" class="task-sample-link" aria-label="查看 ${sampleCount} 台样机" title="查看此任务的 ${sampleCount} 台样机" data-app-action="task-show-samples" data-project-id="${Utils.esc(project.id)}" data-stage-id="${Utils.esc(stage.id)}" data-task-id="${Utils.esc(taskId)}"><span><span class="task-sample-count-num">${sampleCount}</span> 台</span><span class="task-sample-link-hint" aria-hidden="true">查看样机</span></button>`
-        : `<span class="task-sample-count">${sampleCount} 台</span>`}</div>`;
+        ? `<button type="button" class="task-sample-link" aria-label="查看样机：${sampleCount} pcs" title="查看此任务的样机：${sampleCount} pcs" data-app-action="task-show-samples" data-project-id="${Utils.esc(project.id)}" data-stage-id="${Utils.esc(stage.id)}" data-task-id="${Utils.esc(taskId)}"><span><span class="task-sample-count-num">${sampleCount}</span> pcs</span></button>`
+        : `<span class="task-sample-count">${sampleCount} pcs</span>`}</div>`;
       return `
               <tr>
                 <td class="task-seq-cell">${sequence}</td>
@@ -434,7 +454,7 @@ app.registerModule("workspace.taskTable", {
         <button type="button" class="btn btn-sm btn-outline task-more-trigger" data-app-action="task-more-toggle" data-stop-propagation="1" title="更多操作" aria-label="更多任务操作" aria-haspopup="menu" aria-expanded="false" aria-controls="${Utils.esc(panelId)}">...</button>
         <div id="${Utils.esc(panelId)}" class="task-more-panel" role="menu" aria-hidden="true">
           <button type="button" class="task-more-item" role="menuitem" data-app-action="task-show-logs" data-project-id="${Utils.esc(projectId)}" data-stage-id="${Utils.esc(stageId)}" data-task-id="${Utils.esc(taskId)}" data-stop-propagation="1">${logText}</button>
-          <button type="button" class="task-more-item danger" role="menuitem" data-app-action="task-delete" data-task-id="${Utils.esc(taskId)}" data-stop-propagation="1">🗑 删除</button>
+          <button type="button" class="task-more-item danger" role="menuitem" data-app-action="task-delete" data-task-id="${Utils.esc(taskId)}" data-stop-propagation="1">${Utils.iconHtml("trash")} 删除</button>
         </div>
       </div>`;
   },
@@ -535,19 +555,19 @@ app.registerModule("workspace.taskTable", {
     }
 
     if (flowStatus === "进行中") {
-      visibleHtml = btn("结果", "", "task-result")
+      visibleHtml = btn("结果", "task-result-btn", "task-result")
         + btn("阻塞", "btn-warn", "task-block")
         + btn("变更", "btn-outline", "task-change");
     }
 
     if (flowStatus === "阻塞中") {
-      visibleHtml = btn("结果", "", "task-result")
+      visibleHtml = btn("结果", "task-result-btn", "task-result")
         + btn("重启", "btn-start", "task-start")
         + btn("变更", "btn-outline", "task-change");
     }
 
     if (flowStatus === "正常完成" || flowStatus === "异常终止") {
-      visibleHtml = btn("结果", "", "task-result");
+      visibleHtml = btn("结果", "task-result-btn", "task-result");
     }
 
     return `<div class="task-op-group"><div class="task-op-actions">${visibleHtml}${moreMenuHtml}</div></div>`;
@@ -580,11 +600,27 @@ app.registerModule("workspace.taskTable", {
   },
 
   async showTaskSamples(projectId, stageId, taskId) {
-    const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
+    const request = this.beginDialogRequest?.();
+    let { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
     if (!t) return;
-    const entries = this.taskResultSampleEntries(t);
+    let entries = this.taskResultSampleEntries(t);
     const loadingSamples = this.ensureTaskReferenceSamplesLoaded?.(t);
     if (loadingSamples?.then) await loadingSamples;
+    if (this.isDialogRequestCurrent?.(request) === false) return;
+    let currentSamples = null;
+    if (typeof this.refreshSampleTestedItemNames === "function") {
+      try {
+        if (!await this.refreshSampleTestedItemNames(entries.map(entry => entry.sampleId).filter(Boolean),
+          () => this.isDialogRequestCurrent?.(request) !== false,
+          samples => { currentSamples = new Map(samples.map(sample => [sample.id, sample])); })) return;
+      } catch (error) {
+        if (this.isDialogRequestCurrent?.(request) !== false) alert("任务样机信息加载失败：" + error.message);
+        return;
+      }
+    }
+    ({ p, s, t } = this.getProjectStageTask(projectId, stageId, taskId));
+    if (!t || this.isDialogRequestCurrent?.(request) === false) return;
+    entries = this.taskResultSampleEntries(t);
     const activeCount = entries.filter(x => x.state !== "removed").length;
     const removedCount = entries.length - activeCount;
     const taskProblems = this.taskFailureProblemsBySample(p, s, t);
@@ -592,43 +628,42 @@ app.registerModule("workspace.taskTable", {
       const id = entry.sampleId;
       const found = this.findSample(id);
       const snapshot = t.sampleSnapshots?.[id] || null;
-      const sample = found?.sample || {};
+      const sample = currentSamples ? currentSamples.get(id) : found?.sample;
       const info = this.taskSampleIdentityInfo(id, snapshot);
       const displayName = this.taskSampleArchiveName(id, snapshot);
-      const hasProblem = found ? this.sampleHasProblem(sample) : false;
+      const hasProblem = sample ? this.sampleHasProblem(sample) : false;
       // 身份号优先级：SN > IMEI > 主板SN
       const identity = info.sn !== "-" ? `SN:${Utils.esc(info.sn)}`
         : info.imei !== "-" ? `IMEI:${Utils.esc(info.imei)}`
         : info.boardSn !== "-" ? `主板SN:${Utils.esc(info.boardSn)}`
         : "身份号未录入";
       // 已测项目
-      const testedItems = this.sampleTestedItemNames(id);
-      const testedText = testedItems.length === 0 ? "-"
-        : testedItems.length <= 2
-          ? Utils.esc(testedItems.join(" / "))
-          : `${Utils.esc(testedItems.slice(0, 3).join(" / "))} 等 ${testedItems.length} 项`;
+      const testedItems = this.sampleTestedItemNames(id, sample);
+      const testedHtml = testedItems.length
+        ? testedItems.map(item => `<span class="task-sample-tested-item">${Utils.esc(item)}</span>`).join("")
+        : `<span>-</span>`;
       // 问题：合并档案问题 + 任务范围内问题，去重
-      const archiveProblems = found ? this.sampleProblemRecords(sample).map(r => r.description) : [];
+      const archiveProblems = sample ? this.sampleProblemRecords(sample).map(r => r.description) : [];
       const taskProblemsForSample = [...(taskProblems.get(id) || [])];
       const allProblems = [...new Set([...archiveProblems, ...taskProblemsForSample])];
       const problemHtml = allProblems.length === 0
         ? `<span class="task-sample-problem-none">-</span>`
-        : allProblems.length === 1
-          ? `<span class="task-sample-problem-text" title="${Utils.esc(allProblems[0])}">${Utils.esc(allProblems[0].length > 40 ? allProblems[0].slice(0, 40) + "..." : allProblems[0])}</span>`
-          : `<span class="task-sample-problem-count" title="${Utils.esc(allProblems.join("\n"))}">${allProblems.length} 项问题</span>`;
+        : allProblems.map(problem => `<span class="task-sample-problem-text">${Utils.esc(problem)}</span>`).join("");
       // 状态徽章
-      const faultBadge = hasProblem
+      const faultBadge = !sample
+        ? `<span class="badge s-待确认">故障待确认</span>`
+        : hasProblem
         ? `<span class="badge sample-fault-badge has-fault">有故障</span>`
         : `<span class="badge sample-fault-badge no-fault">无故障</span>`;
-      const taskFlowStatus = this.taskSampleTaskFlowStatus(t, id, entry);
+      const taskFlowStatus = sample ? this.sampleEffectiveStatus(sample) : "待确认";
       const flowBadge = `<span class="badge s-${Utils.esc(taskFlowStatus)}">${Utils.esc(taskFlowStatus)}</span>`;
       // 在测 / 已退出
       const relationBadge = entry.state === "removed"
-        ? `<span class="task-result-sample-state removed">退出测试样机</span>`
-        : `<span class="task-result-sample-state active">当前测试样机</span>`;
+        ? `<span class="task-result-sample-state removed">变更样机</span>`
+        : `<span class="task-result-sample-state active">正式样机</span>`;
       // 退出详情行
       const removedDetail = entry.state === "removed"
-        ? `<div class="task-sample-removed-detail"><span>退出：${Utils.esc(entry.removedAt || "-")}</span>${entry.reason ? `<span> · ${Utils.esc(entry.reason)}</span>` : ""}</div>`
+        ? `<div class="task-sample-removed-detail"><span>退出：${Utils.esc(Utils.dateTimeLabel(entry.removedAt))}</span>${entry.reason ? `<span> · ${Utils.esc(entry.reason)}</span>` : ""}</div>`
         : "";
       // 身份标识（可点击 / 已销毁不可点）
       const isDestroyedSnapshot = !found && !!snapshot?.destroyedAt;
@@ -640,9 +675,9 @@ app.registerModule("workspace.taskTable", {
           ${identityEl}
           <span class="task-sample-row-archive">${Utils.esc(displayName)}</span>
         </div>
-        <div class="task-sample-row-tested" title="${Utils.esc(testedText)}">
+        <div class="task-sample-row-tested">
           <span class="task-sample-row-label">已测</span>
-          <span>${testedText}</span>
+          ${testedHtml}
         </div>
         <div class="task-sample-row-problems">
           <span class="task-sample-row-label">问题</span>
@@ -657,13 +692,18 @@ app.registerModule("workspace.taskTable", {
       </div>`;
     }).join("");
     this.showModal("任务样机清单", `
-      <div class="task-sample-context">项目：${Utils.esc(p?.name || "-")}；阶段：${Utils.esc(s?.name || "-")}；任务：${Utils.esc(t.testItem || "-")}；当前 ${activeCount} 台${removedCount ? `；退出测试 ${removedCount} 台` : ""}</div>
+      <div class="task-sample-context">
+        <div class="task-sample-context-line"><span><b>项目：</b>${Utils.esc(p?.name || "-")}</span><span><b>阶段：</b>${Utils.esc(s?.name || "-")}</span><span>当前 ${activeCount} 台${removedCount ? `；退出测试 ${removedCount} 台` : ""}</span></div>
+        <div><b>任务：</b>${Utils.esc(t.testItem || "-")}</div>
+      </div>
       <div class="task-sample-row-list">${rows || `<div class="empty">暂无关联样机。</div>`}</div>
     `, () => false, "关闭", { className: "task-sample-modal", hideCancel: true });
   },
 
 
-  sampleTestedItemNames(sampleId) {
+  sampleTestedItemNames(sampleId, sample = null) {
+    const source = sample || this.findSample?.(sampleId)?.sample;
+    if (Array.isArray(source?.testedItemNames)) return source.testedItemNames;
     const names = new Set();
     this.projectRecords().forEach(project => {
       (project.stages || []).forEach(stage => {

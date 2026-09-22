@@ -23,6 +23,7 @@ app.registerModule("workspace.taskActions", {
   },
 
   async deleteTask(taskId) {
+    const request = this.beginDialogRequest?.();
     const p = this.currentProject();
     const s = this.currentStage();
     const t = s?.tasks.find(x => x.id === taskId);
@@ -33,6 +34,7 @@ app.registerModule("workspace.taskActions", {
       const preparation = this.prepareTaskActionSamples(t, sampleIdsToRelease, "删除任务");
       if (preparation?.then ? !await preparation : preparation === false) return;
     }
+    if (this.isDialogRequestCurrent?.(request) === false) return;
     const detailsHtml = this.taskDeleteImpactHtml(p, s, t);
     this.confirmTaskDeleteKeyword(
       "删除任务",
@@ -94,6 +96,7 @@ app.registerModule("workspace.taskActions", {
 
   // 启动任务
   async startTask(projectId, stageId, taskId) {
+    const request = this.beginDialogRequest?.();
     const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
     if (!t) return;
     if (this.isTaskCompleted(t)) { alert("任务已完成。"); return; }
@@ -117,6 +120,7 @@ app.registerModule("workspace.taskActions", {
       const preparation = this.prepareTaskActionSamples(t, t.sampleIds || [], isRestart ? "恢复任务" : "启动任务");
       if (preparation?.then ? !await preparation : preparation === false) return;
     }
+    if (this.isDialogRequestCurrent?.(request) === false) return;
     this.showConfirm(isRestart ? "恢复测试？" : "开始测试？", async () => {
       const mutationSnapshot = this.taskActionMutationSnapshot();
       const user = t.owner;
@@ -143,37 +147,22 @@ app.registerModule("workspace.taskActions", {
   },
 
   /**
-   * 判断一段"问题描述"是否是历史脏数据（来自旧版本把"系统自动记录…"长文本误塞入 problemRecords 的情况），
-   * 这种文本不应进入"测试结果"的失效问题清单。
-   */
-  isTaskDirtyProblemText(text) {
-    const t = String(text || "");
-    if (!t) return true;
-    return /系统自动记录|录入样机\s*\d+\s*台|完成计划，正常结束|未完成计划，异常结束|去向：[^；]*\s*\d+\s*台/.test(t);
-  },
-
-  /**
    * 收集"本任务"范围内，每台样机被记录到的新增问题（按 sampleId 分组），返回 Map<sampleId, Set<description>>
-   * 数据来源（去重 + 过滤脏数据）：
+   * 数据来源（去重）：
    *   - task.sampleFaultRecords[].problem
-   *   - task.resultUploads[].samples[].problem 与 .problemRecords[]（taskLabel 命中本任务）
-   *   - task.resultDraft.samples[].problem 与 .problemRecords[]（taskLabel 命中本任务）
-   *   - 样机档案 problemRecords[]（taskLabel 命中本任务）
+   *   - task.resultUploads[].samples[].problem 与 .problemRecords[]（taskId 命中本任务）
+   *   - task.resultDraft.samples[].problem 与 .problemRecords[]（taskId 命中本任务）
+   *   - 样机档案 problemRecords[]（taskId 命中本任务）
    */
   taskFailureProblemsBySample(project, stage, task) {
     const groups = new Map();
     if (!task) return groups;
-    const label = this.sampleTaskLabelFromCtx({
-      projectId: project?.id,
-      stageId: stage?.id,
-      testItem: task.testItem
-    });
+    const belongsToTask = record => record.taskId === task.id;
     const add = (sampleId, text) => {
       const sid = String(sampleId || "").trim();
       const desc = String(text || "").trim();
       if (!sid || !desc) return;
       if (Utils.isNoSampleIssueText(desc)) return;
-      if (this.isTaskDirtyProblemText(desc)) return;
       if (!groups.has(sid)) groups.set(sid, new Set());
       groups.get(sid).add(desc);
     };
@@ -181,19 +170,19 @@ app.registerModule("workspace.taskActions", {
     (task.resultUploads || []).forEach(upload => (upload.samples || []).forEach(item => {
       add(item.sampleId || item.sid, item.problem);
       (item.problemRecords || []).forEach(record => {
-        if (String(record.taskLabel || "").trim() === label) add(item.sampleId || item.sid, record.description);
+        if (belongsToTask(record)) add(item.sampleId || item.sid, record.description);
       });
     }));
     (task.resultDraft?.samples || []).forEach(item => {
       add(item.sampleId || item.sid, item.problem);
       (item.problemRecords || []).forEach(record => {
-        if (String(record.taskLabel || "").trim() === label) add(item.sampleId || item.sid, record.description);
+        if (belongsToTask(record)) add(item.sampleId || item.sid, record.description);
       });
     });
     this.taskResultSampleEntries(task).forEach(entry => {
       const found = this.findSample(entry.sampleId);
       this.sampleProblemRecords(found?.sample).forEach(record => {
-        if (String(record.taskLabel || "").trim() === label) add(entry.sampleId, record.description);
+        if (belongsToTask(record)) add(entry.sampleId, record.description);
       });
     });
     return groups;
@@ -234,6 +223,10 @@ app.registerModule("workspace.taskActions", {
   },
 
   taskResultOutcomeBadgeHtml(task) {
+    const flowStatus = this.taskFlowStatus(task);
+    if (flowStatus === "进行中" || flowStatus === "阻塞中") {
+      return '<span class="task-result-outcome is-doing" title="任务尚未完成">doing</span>';
+    }
     const resultStatus = this.taskResultOutcomeStatus(task);
     const label = this.taskResultOutcomeLabel(resultStatus);
     if (!label) return "";
@@ -345,12 +338,14 @@ app.registerModule("workspace.taskActions", {
   },
 
   async tempChangeTask(projectId, stageId, taskId) {
+    const request = this.beginDialogRequest?.();
     const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
     if (!p || !s || !t || this.isTaskCompleted(t)) return;
     if (typeof this.prepareTaskActionSamples === "function") {
       const preparation = this.prepareTaskActionSamples(t, t.sampleIds || [], "打开临时变更");
       if (preparation?.then ? !await preparation : preparation === false) return;
     }
+    if (this.isDialogRequestCurrent?.(request) === false) return;
     const { progress } = this.resolveTaskProgress(s, t, t.progressId);
     const requiredSampleCount = this.getProgressRequiredSampleCount(s, progress);
     const sampleCards = this.buildTaskSamplePickerHtml(
@@ -361,18 +356,19 @@ app.registerModule("workspace.taskActions", {
       t.id,
       {
         progressId: progress?.id || t.progressId || "",
-        requiredSampleCount: requiredSampleCount ?? t.requiredSampleCount ?? null
+        requiredSampleCount: requiredSampleCount ?? t.requiredSampleCount ?? null,
+        planStartInputId: "tempPlanStart", planEndInputId: "tempPlanEnd", showScheduleHint: false
       }
     );
-    this.showModal("临时变更", `
+    const modalId = this.showModal("临时变更", `
       <div class="temp-change-header-row">
         <div class="form-group"><label class="req danger-field-label">任务变更人</label>${this.projectMemberSelectHtml("tempUser", "", "请选择任务变更人", { scope: "tester" })}</div>
         <div class="form-group"><label>变更原因</label><textarea id="tempReason" rows="1" class="temp-reason-one-line" placeholder="选填"></textarea></div>
       </div>
       <div class="temp-change-plan-row">
         <div class="form-group"><label class="req">执行人变更</label>${this.projectMemberSelectHtml("tempOwner", t.owner || "", "请选择执行人", { scope: "tester" })}</div>
-        <div class="form-group"><label>计划开始</label><input type="date" id="tempPlanStart" value="${Utils.esc(t.planStartDate || t.planDate || "")}"></div>
-        <div class="form-group"><label>计划完成</label><input type="date" id="tempPlanEnd" value="${Utils.esc(t.planEndDate || t.endDate || "")}"></div>
+        <div class="form-group"><label>计划开始</label><input type="date" id="tempPlanStart" data-app-action="task-sample-picker-schedule" data-app-events="change" data-id="tempSamplePick" value="${Utils.esc(t.planStartDate || t.planDate || "")}"></div>
+        <div class="form-group"><label>计划完成</label><input type="date" id="tempPlanEnd" data-app-action="task-sample-picker-schedule" data-app-events="change" data-id="tempSamplePick" value="${Utils.esc(t.planEndDate || t.endDate || "")}"></div>
       </div>
       <div class="temp-change-sample-section">
         <input type="hidden" id="tempSampleProgress" value="${Utils.esc(progress?.id || t.progressId || "")}">
@@ -380,11 +376,15 @@ app.registerModule("workspace.taskActions", {
           <div class="task-sample-label-row task-sample-label-row-compact">
             <label>样机逐台变更</label>
             <div id="tempSampleLimitHint" class="sample-limit-hint sample-limit-global" title="当前已选 / 任务要求样机数"></div>
+            ${this.taskSampleScheduleHintHtml()}
           </div>
           <div class="dispatch-sample-select">${sampleCards}</div>
         </div>
       </div>
     `, async () => {
+      const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
+      if (!t || this.isTaskCompleted(t)) { alert("任务状态已变化，请关闭后刷新。"); return true; }
+      const { progress } = this.resolveTaskProgress(s, t, t.progressId);
       const user = document.getElementById("tempUser").value.trim();
       const owner = document.getElementById("tempOwner").value.trim();
       const reason = document.getElementById("tempReason").value.trim();
@@ -397,6 +397,10 @@ app.registerModule("workspace.taskActions", {
       const ownerCheck = this.validatePersonForScope(owner, "tester", "执行人");
       if (!ownerCheck.ok) { this.markFieldInvalid(document.getElementById("tempOwner"), ownerCheck.msg); return true; }
       const changeReason = reason || "临时变更";
+      if (!planStart || !planEnd || planStart > planEnd) {
+        this.markFieldInvalid(document.getElementById("tempPlanEnd"), "请填写完整的计划时间，完成日期不能早于开始日期");
+        return true;
+      }
       if (progress) {
         const check = this.validateTaskSampleSelection(progress, newSampleIds, "临时变更");
         if (!check.ok) {
@@ -427,12 +431,15 @@ app.registerModule("workspace.taskActions", {
 
       if (!ownerChanged && !planStartChanged && !planEndChanged && !sampleChanged) {
         Utils.toast("未检测到变更");
-        this.closeModal();
-        return;
+        return false;
       }
 
+      const epoch = this._dataSnapshotEpoch || 0;
       if (typeof this.prepareTaskActionSamples === "function"
         && !await this.prepareTaskActionSamples(t, [...new Set([...beforeSampleIds, ...afterSampleIds])], "保存临时变更")) return true;
+      const current = this.getProjectStageTask(projectId, stageId, taskId);
+      if ((this._dataSnapshotEpoch || 0) !== epoch || current.p !== p || current.s !== s || current.t !== t
+        || this.isTaskCompleted(t)) return true;
 
       const mutationSnapshot = this.taskActionMutationSnapshot();
       // 写入新值
@@ -509,10 +516,14 @@ app.registerModule("workspace.taskActions", {
         user,
         sampleIdsForMutation: sampleChanged ? [...new Set([...beforeSampleIds, ...afterSampleIds])] : []
       });
-      if (!saved) this.restoreFailedTaskActionMutation(mutationSnapshot);
+      if (!saved) {
+        this.restoreFailedTaskActionMutation(mutationSnapshot, { render: false });
+        return true;
+      }
       return false;
     }, "确认", { className: "temp-change-modal", headerHint: `任务：${Utils.esc(t.testItem || "-")}` });
     setTimeout(() => {
+      if (modalId != null && this._currentModalId !== modalId) return;
       this.initTaskSamplePicker("tempSamplePick");
       this.updateTaskSampleLimitUI("tempSampleProgress", "tempSamplePick", "tempSampleLimitHint");
     }, 0);
@@ -520,6 +531,7 @@ app.registerModule("workspace.taskActions", {
 
   // 阻塞任务
   async blockTask(projectId, stageId, taskId) {
+    const request = this.beginDialogRequest?.();
     const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
     if (!t || this.isTaskCompleted(t)) return;
     if (this.taskFlowStatus(t) === "阻塞中") { alert("任务已是阻塞状态。"); return; }
@@ -528,12 +540,15 @@ app.registerModule("workspace.taskActions", {
       if (preparation?.then ? !await preparation : preparation === false) return;
     }
 
+    if (this.isDialogRequestCurrent?.(request) === false) return;
     this.showModal("阻塞暂停", `
       <div class="task-block-task-title">任务：${Utils.esc(t.testItem || "-")}</div>
       <div class="task-block-task-desc">阻塞只记录任务无法继续，样机失效请通过"上传结果"追加到档案。</div>
       <div class="form-group"><label class="req">状态变更人</label>${this.projectMemberSelectHtml("user", "", "请选择状态变更人", { scope: "tester" })}</div>
       <div class="form-group"><label class="req">阻塞原因说明</label><textarea id="reason" rows="3" placeholder="必须填写，如：设备故障暂停"></textarea></div>
     `, async () => {
+      const { p, s, t } = this.getProjectStageTask(projectId, stageId, taskId);
+      if (!t || this.isTaskCompleted(t)) { alert("任务状态已变化，请关闭后刷新。"); return true; }
       this.clearFieldValidationMarks();
       const user = document.getElementById("user").value.trim();
       const reason = document.getElementById("reason").value.trim();
@@ -550,7 +565,10 @@ app.registerModule("workspace.taskActions", {
         user,
         sampleIdsForMutation: [...(t.sampleIds || [])]
       });
-      if (!saved) this.restoreFailedTaskActionMutation(mutationSnapshot);
+      if (!saved) {
+        this.restoreFailedTaskActionMutation(mutationSnapshot, { render: false });
+        return true;
+      }
       return false;
     }, "确认", { className: "task-block-modal" });
   },
