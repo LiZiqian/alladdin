@@ -47,7 +47,9 @@ app.registerModule("samples.problemPhotos", {
     let record = {};
     try { record = JSON.parse(row.dataset.problemRecord || "{}"); } catch (_) { /* Invalid row metadata is ignored. */ }
     const count = this.problemPhotoIds(record).length;
-    button.textContent = count ? `查看图片（${count}）` : "添加图片";
+    const readonly = row.closest('.sample-archive-shell')?.dataset.readonly === '1';
+    button.textContent = count ? `查看图片（${count}）` : readonly ? "暂无图片" : "添加图片";
+    button.disabled = readonly && !count;
   },
 
   setProblemRowPhotoIds(row, ids) {
@@ -92,7 +94,7 @@ app.registerModule("samples.problemPhotos", {
     galleryId = this.showModal(`问题图片 · ${record.description || "未填写描述"}`, `
       <div class="problem-photo-toolbar">
         ${readonly ? "" : '<button type="button" class="btn" id="problemPhotoUpload">添加图片</button>'}
-        <span>图片保存在样机档案；关联随当前表单保存。</span>
+        <span>${readonly ? "只读查看此问题已关联的样机图片。" : "图片保存在样机档案；关联随当前表单保存。"}</span>
       </div><div id="problemPhotoGallery"></div>`, () => {
       if (!readonly && initial !== [...selected].sort().join("\n")) {
         if (isNew) {

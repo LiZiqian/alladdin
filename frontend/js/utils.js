@@ -204,8 +204,8 @@ const Utils = {
       if (!parsed.ok) { skipped++; continue; }
       const { name, employeeNo } = parsed;
       // CSV uses the current template's explicit categories; typos cannot grant a role.
-      const role = { "测试人员": "tester", "开发人员": "developer", "其他人员": "other",
-        tester: "tester", developer: "developer", other: "other" }[second];
+      const role = new Map([["测试人员", "tester"], ["开发人员", "developer"], ["其他人员", "other"],
+        ["tester", "tester"], ["developer", "developer"], ["other", "other"]]).get(second);
       if (!role) { skipped++; continue; }
 
       const key = Utils.memberIdentityKey(name, employeeNo);

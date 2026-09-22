@@ -9,7 +9,35 @@ from server_modules import (
     status_normalization,
     task_mutation_rules,
     task_queries,
+    task_reservations,
 )
+
+
+def _sample_archive_occupancy_failure(conn: sqlite3.Connection, samples: list[dict]) -> dict | None:
+    """Archive edits cannot release a task that is executing or blocked.
+
+    Read all projects under the caller's write lock; client currentTaskId alone
+    is not evidence of occupancy. Future reservations must still allow an
+    analysis sample to return; the write service then restores its queued usage.
+    """
+    reservations = task_reservations.open_reservations(conn, [s.get("id") for s in samples])
+    for sample in samples:
+        usage = task_reservations.primary_reservation([
+            item for item in reservations.get(str(sample.get("id")), [])
+            if item["status"] in task_reservations.EXECUTING
+        ])
+        if not usage:
+            continue
+        expected = {
+            "status": "测试中" if usage["status"] == "进行中" else "在位等待",
+            "currentTaskId": usage["taskId"], "currentProjectId": usage["projectId"],
+            "currentStageId": usage["stageId"], "currentTestItem": usage["testItem"],
+        }
+        if any(key in sample and sample[key] != value for key, value in expected.items()):
+            return {"status": 409, "error_code": "SAMPLE_TASK_OCCUPIED", "sampleId": sample.get("id"),
+                    "taskId": usage["taskId"],
+                    "error": "样机正被任务占用；请通过任务结束或变更来释放，不能在档案中直接修改状态或任务关联。"}
+    return None
 
 
 def _sample_destroy_scope_failure(

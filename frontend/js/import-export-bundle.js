@@ -252,7 +252,7 @@ app.registerModule("import-export-bundle", {
     }
 
     if (conflicts.length === 0) {
-      html += `<div class="import-no-conflicts">无冲突，可直接导入</div>`;
+      html += `<div class="import-no-conflicts">所选数据无冲突；选择导入范围后可确认导入。</div>`;
     } else {
       html += `<div class="import-conflict-list" id="importConflictList">`;
       conflicts.forEach((c, idx) => {
@@ -769,6 +769,11 @@ app.registerModule("import-export-bundle", {
     const okBtn = document.getElementById("modalOk");
     if (!okBtn) return;
     const hasSelection = Object.values(this._importState.selection || {}).some(ids => Array.isArray(ids) && ids.length);
+    const quickBtn = document.getElementById("quickImportBtn");
+    if (quickBtn) {
+      quickBtn.disabled = !!this._importState.preview.selectionTree && !hasSelection;
+      quickBtn.title = quickBtn.disabled ? "请至少选择一项导入数据" : "";
+    }
     if (this._importState.preview.selectionTree && !hasSelection) {
       okBtn.disabled = true;
       okBtn.textContent = "请先选择导入范围";
@@ -816,6 +821,7 @@ app.registerModule("import-export-bundle", {
       } else {
         footer.appendChild(btn);
       }
+      this._updateImportCommitButton();
     }, 50);
   },
 

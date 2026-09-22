@@ -445,7 +445,7 @@ app.registerModule("workspace.taskResult", {
       const lockedAttr = editLock.locked ? " disabled" : "";
       const lockedHint = editLock.locked ? `<div class="task-result-current-lock">${Utils.esc(editLock.hint)}</div>` : "";
       const removedInfo = entry.state === "removed"
-? `<span class="task-result-sample-state removed">变更样机</span><span>退出时间：${Utils.esc(Utils.dateTimeLabel(entry.removedAt))}</span>${entry.reason ? `<span>退出原因：${Utils.esc(entry.reason)}</span>` : ""}`
+        ? `<span class="task-result-sample-state removed">变更样机</span><span>退出时间：${Utils.esc(Utils.dateTimeLabel(entry.removedAt))}</span>${entry.reason ? `<span>退出原因：${Utils.esc(entry.reason)}</span>` : ""}`
         : `<span class="task-result-sample-state active">正式样机</span>`;
       const archiveName = this.taskSampleArchiveName(id, snapshot);
       const sampleCodeHtml = id && !snapshot?.destroyedAt

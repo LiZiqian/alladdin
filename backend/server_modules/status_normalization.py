@@ -132,6 +132,11 @@ def normalize_stage_payload(stage: Any) -> Any:
     if not isinstance(stage, dict):
         return stage
     item = copy.deepcopy(stage)
+    # Validate at the shared write/import boundary, not only in the number input.
+    for row in item.get("strategy") or []:
+        count = row.get("sampleSize") if isinstance(row, dict) else None
+        if type(count) is not int or not 1 <= count <= 9007199254740991:
+            raise ValueError("测试策略样机数必须为大于 0 的整数。")
     if isinstance(item.get("progress"), list):
         item["progress"] = [
             normalize_progress_plan_payload(progress)

@@ -181,13 +181,22 @@ def build_selection_tree(state: dict) -> dict:
                 "projectId": project_node["id"],
                 "tasks": [],
             }
-            for task in stage.get("tasks") or []:
+            for task_index, task in enumerate(stage.get("tasks") or [], 1):
                 if not isinstance(task, dict):
                     continue
                 label = " - ".join(part for part in [str(task.get("category") or ""), str(task.get("testItem") or "")] if part)
+                # Sequence distinguishes repeated runs even when name/date/status match.
+                details = [f"任务 {task_index}", label or "未命名任务", str(task.get("status") or "待下发")]
+                names = stage.get("skuNames") or []
+                sku = task.get("skuIndex")
+                if type(sku) is int and 1 <= sku <= len(names):
+                    details.append(str(names[sku - 1]))
+                start, end = task.get("planStartDate"), task.get("planEndDate")
+                if start or end:
+                    details.append(f"{start or '未设置'} 至 {end or '未设置'}")
                 stage_node["tasks"].append({
                     "id": str(task.get("id") or ""),
-                    "label": label or str(task.get("id") or "未命名任务"),
+                    "label": " · ".join(details),
                     "stageId": stage_node["id"],
                     "projectId": project_node["id"],
                     "sampleIds": sorted(task_sample_ids(task)),

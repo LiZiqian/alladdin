@@ -5,11 +5,13 @@ app.registerModule("samples.pool-destruction", {
 
   async deleteSampleCategory(id) {
     const request = this.beginDialogRequest?.();
-    if (!await this.ensureSampleDestroyImpactScope({ categoryId: id })) return;
+    const scope = await this.ensureSampleDestroyImpactScope({ categoryId: id });
+    if (!scope) return;
     if (this.isDialogRequestCurrent?.(request) === false) return;
     const c = this.sampleCategoryRecords().find(x => x.id === id);
     if (!c) return;
     const impact = this.collectSampleCategoryDestroyImpact(c);
+    if (Array.isArray(scope.archiveSampleIds)) impact.archiveCount = scope.archiveSampleIds.length;
     this.confirmDeleteKeyword(
       "档案销毁",
       "档案销毁会物理删除该样机池、池内样机、照片/CT文件、问题表和样机事件数据。此操作不可恢复。",
@@ -111,7 +113,7 @@ app.registerModule("samples.pool-destruction", {
       <div class="destroy-impact-title">危险影响确认</div>
       <ul>
         <li><b>将删除样机池：</b><span>${Utils.esc(impact.categoryName)}，共 ${impact.sampleCount} 台样机。</span></li>
-        <li><b>档案数据：</b><span>${impact.archiveCount} 台样机含履历/照片/CT/问题表，销毁后会一起物理删除。</span></li>
+        <li><b>档案数据：</b><span>${impact.archiveCount} 台样机含履历/照片/CT/点云/问题表等档案数据，销毁后会一起物理删除。</span></li>
         <li><b>进行中/阻塞中任务：</b><span>${impact.runningOrBlocked.length} 个任务会被自动设置为"异常终止"，任务样机列表会被清空。</span></li>
         <li><b>未启动任务：</b><span>${impact.pending.length} 个未启动任务会移除被销毁样机，并保留任务等待重新分配。</span></li>
         <li><b>项目默认样机池：</b><span>${(impact.defaultProjects || []).length} 个项目会清除该默认设置，后续分配前需重新选择默认样机池。</span></li>
@@ -190,6 +192,8 @@ app.registerModule("samples.pool-destruction", {
 
   sampleHasArchiveData(sample) {
     return !!(
+      Number(sample?.testHistoryCount || 0) || Number(sample?.photoCount || 0) ||
+      (sample?.problemRecords || []).length || (sample?.files || []).length ||
       (sample?.logs || []).length ||
       (sample?.photos || []).length ||
       (sample?.ctData || []).length ||

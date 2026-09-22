@@ -20,6 +20,7 @@ from .effects import (
 )
 
 from .sample_guards import (
+    _sample_archive_occupancy_failure,
     _category_sample_scope_failure,
     _sample_destroy_scope_failure,
     _sample_event_conflict_failure,
@@ -72,6 +73,9 @@ def commit_sample_mutation(ctx: MutationServiceContext, payload: dict, client_ip
             identity_samples = [item for item in (payload.get("samples") or []) if isinstance(item, dict) and str(item.get("id") or "") != sample_id]
             if isinstance(sample, dict):
                 identity_samples.append(sample)
+            occupancy_failure = _sample_archive_occupancy_failure(conn, identity_samples)
+            if occupancy_failure:
+                return False, {**occupancy_failure, "server_revision": current_revision}
             identity_failure = sample_constraints.sample_identity_write_failure(conn, identity_samples)
             if identity_failure:
                 return False, {**identity_failure, "server_revision": current_revision}
@@ -152,6 +156,9 @@ def commit_sample_mutation(ctx: MutationServiceContext, payload: dict, client_ip
 
         if isinstance(sample, dict) and not delete_sample:
             record_writers.update_sample_record(conn, sample)
+
+        if not delete_sample:
+            reconcile_task_sample_occupancy(conn, [item.get("id") for item in identity_samples], only_reserved=True)
 
         record_writers.upsert_sample_events(conn, payload.get("sampleEvents") or [])
 
@@ -237,6 +244,9 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
         if revision_failure:
             return False, revision_failure
         if not delete_category:
+            occupancy_failure = _sample_archive_occupancy_failure(conn, samples)
+            if occupancy_failure:
+                return False, {**occupancy_failure, "server_revision": current_revision}
             scope_failure = _category_sample_scope_failure(conn, category_id, samples)
             if scope_failure:
                 return False, {**scope_failure, "server_revision": current_revision}
@@ -340,6 +350,8 @@ def commit_sample_category_mutation(ctx: MutationServiceContext, payload: dict, 
                     sample,
                     create_if_missing=bool(payload.get("createSamples") or payload.get("createIfMissing")),
                 )
+        if not delete_category:
+            reconcile_task_sample_occupancy(conn, [item.get("id") for item in related_samples if isinstance(item, dict)], only_reserved=True)
         record_writers.upsert_sample_events(conn, payload.get("sampleEvents") or [])
 
         if delete_category:

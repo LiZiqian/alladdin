@@ -356,7 +356,9 @@ app.registerModule("samples.photos", {
     const shell = document.querySelector(".sample-archive-shell");
     const records = shell?.dataset.sampleDetailId === sampleId
       ? this.archiveProblemRows(shell).map(row => this.problemRecordFromElement(row)) : this.sampleProblemRecords(found.sample);
-    if (records.some(record => this.problemPhotoIds(record).includes(photoId))) {
+      // Removing a link in an unsaved form does not remove the persisted reference.
+      const savedRecords = this.sampleProblemRecords(found.sample);
+      if ([...savedRecords, ...records].some(record => this.problemPhotoIds(record).includes(photoId))) {
       Utils.toast("此图片已关联问题，请先到问题表移除关联并保存样机详情。");
       return;
     }

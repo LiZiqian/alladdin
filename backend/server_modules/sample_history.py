@@ -105,15 +105,26 @@ def sample_history_row_for(sample_id: str, item: dict, photos_by_id: dict[str, d
         sample_ids.update(str(x.get("sampleId") or "") for x in task.get("removedSampleRecords") or [] if isinstance(x, dict) and x.get("sampleId"))
         task_sample_count = len(sample_ids)
         sample_fault_records = [x for x in task.get("sampleFaultRecords") or [] if isinstance(x, dict) and str(x.get("sampleId") or "") == str(sample_id)]
+        # Drafts promote new problems into problemRecords before finishing.
+        # Read explicit task provenance, never guess from a name or count
+        # pre-existing problems belonging to another task in this history.
+        recorded_problems = [record.get("description")
+            for upload in task.get("resultUploads") or [] if isinstance(upload, dict)
+            for sample in upload.get("samples") or [] if isinstance(sample, dict)
+            and str(sample.get("sampleId") or sample.get("sid") or "") == str(sample_id)
+            for record in sample.get("problemRecords") or [] if isinstance(record, dict)
+            and record.get("taskId") == task.get("id") and str(record.get("description") or "").strip()]
         # flowStatus records usage (e.g. 闲置); quality has its own faultMarked field.
         fault_marked = any(log.get("faultMarked") for log in logs)
         fault_marked = fault_marked or bool((task.get("sampleFaults") or {}).get(sample_id, {}).get("fault"))
         fault_marked = fault_marked or any(x.get("fault") or x.get("problem") for x in sample_fault_records)
+        fault_marked = fault_marked or bool(recorded_problems)
         problems = []
         for value in [
             *[log.get("problemDescription") for log in logs],
             (task.get("sampleFaults") or {}).get(sample_id, {}).get("problem"),
             *[x.get("problem") for x in sample_fault_records],
+            *recorded_problems,
         ]:
             text = str(value or "").strip()
             if text and text not in problems:

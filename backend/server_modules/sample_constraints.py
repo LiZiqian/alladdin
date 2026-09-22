@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from server_modules import sample_queries, task_queries
+from server_modules import sample_queries, task_queries, sample_history
 
 
 def json_obj(text: str | None, fallback: object | None = None):
@@ -143,7 +143,27 @@ def list_sample_destroy_impact_scope(conn: sqlite3.Connection, query: dict[str, 
         ).fetchall()
         sample_category_ids.update(str(row["category_id"] or "") for row in rows if row["category_id"])
 
+    # Destruction previews must count unloaded history and every asset kind.
+    # Batch reads avoid per-sample history/file requests for a large pool.
+    archive_ids: set[str] = set()
+    ids = sorted(sample_ids)
+    for offset in range(0, len(ids), 400):
+        batch = ids[offset:offset + 400]
+        placeholders = ",".join("?" for _ in batch)
+        samples = []
+        for row in conn.execute(f"SELECT id, data_json FROM sample_records WHERE id IN ({placeholders})", batch):
+            item = json_obj(row["data_json"], {}) or {}
+            item["id"] = row["id"]
+            samples.append(item)
+        sample_history.attach_sample_history_counts(conn, samples)
+        archive_ids.update(s["id"] for s in samples if s.get("testHistoryCount") or s.get("problemRecords"))
+        for table in ("sample_assets", "sample_events"):
+            live = " AND deleted_at IS NULL" if table == "sample_assets" else ""
+            archive_ids.update(str(row[0]) for row in conn.execute(
+                f"SELECT DISTINCT sample_id FROM {table} WHERE sample_id IN ({placeholders}){live}", batch))
+
     return {
+        "archiveSampleIds": sorted(archive_ids),
         "sampleId": sample_id,
         "categoryId": category_id,
         "sampleIds": sorted(sample_ids),

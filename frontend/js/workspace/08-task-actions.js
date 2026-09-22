@@ -543,7 +543,7 @@ app.registerModule("workspace.taskActions", {
     if (this.isDialogRequestCurrent?.(request) === false) return;
     this.showModal("阻塞暂停", `
       <div class="task-block-task-title">任务：${Utils.esc(t.testItem || "-")}</div>
-      <div class="task-block-task-desc">阻塞只记录任务无法继续，样机失效请通过"上传结果"追加到档案。</div>
+      <div class="task-block-task-desc">阻塞只记录任务无法继续；样机失效请点击“结果”录入，结束任务并同步后写入档案。</div>
       <div class="form-group"><label class="req">状态变更人</label>${this.projectMemberSelectHtml("user", "", "请选择状态变更人", { scope: "tester" })}</div>
       <div class="form-group"><label class="req">阻塞原因说明</label><textarea id="reason" rows="3" placeholder="必须填写，如：设备故障暂停"></textarea></div>
     `, async () => {

@@ -109,17 +109,11 @@ git switch --detach v7.3.0
 
 ## 技术说明
 
-维护交接请从 [架构与代码导航](docs/architecture.md) 和 [开发、验证与交接指南](docs/maintenance.md) 开始。回归测试及其加载方式见 [tests/README.md](tests/README.md)。
-
-开发验证（需要 Python 与 Node.js，无需安装 pip/npm 依赖）：
-
-```powershell
-python scripts/check.py
-```
+分发内容包括 `backend/`、`frontend/`、`start_server.bat` 和本说明。开发文档、验证脚本、测试与设计草稿仅保留在维护者本地，不随用户版本分发。
 
 - 后端：Python 标准库 `ThreadingHTTPServer`
 - 数据库：SQLite WAL
 - 前端：Vanilla JavaScript SPA
 - 健康检查：`GET /api/health`
 
-当前只支持现行增量 API、外置表数据库和 ChamberData V2 数据包。历史接口与自动迁移已删除，交接前请阅读 [协议边界与清理记录](docs/current-contract-2026-09-22.md)。
+当前只支持现行增量 API、外置表数据库和 ChamberData V2 数据包，不支持历史接口与旧数据库自动迁移。

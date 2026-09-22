@@ -65,7 +65,7 @@ app.registerModule("samples.detail", {
               </div>
               <div class="form-row sample-custody-row">
                 <div class="form-group" style="margin-bottom:0"><label>挂账人</label>${this.samplePersonInputHtml("sdOwner", s.owner || "", "姓名/工号", { scope: "all", sample: s })}</div>
-                <div class="form-group" style="margin-bottom:0"><label>样机状态</label><select id="sdStatus">${this.constants.sampleStatuses.map(x => `<option ${s.status === x ? 'selected' : ''}>${x}</option>`).join("")}</select></div>
+                <div class="form-group" style="margin-bottom:0"><label>样机状态</label><select id="sdStatus" ${s.currentTaskId ? 'disabled aria-describedby="sdStatusHint"' : ''}>${this.constants.sampleStatuses.map(x => `<option ${s.status === x ? 'selected' : ''}>${x}</option>`).join("")}</select>${s.currentTaskId ? '<div class="path" id="sdStatusHint">任务正在占用或预约此样机，请通过任务结束、变更或取消分配来释放。</div>' : ''}</div>
                 <div class="form-group" style="margin-bottom:0"><label>持有人/取走人</label>${this.samplePersonInputHtml("sdBorrower", s.borrower || "", "姓名/工号", { scope: "developer", sample: s })}</div>
                 <div class="form-group" style="margin-bottom:0"><label>当前位置</label>${this.sampleLocationInputHtml("sdLocation", s.location || "")}</div>
               </div>
@@ -224,6 +224,7 @@ app.registerModule("samples.detail", {
         el.removeAttribute("data-app-action");
         el.hidden = true;
       });
+      body?.querySelectorAll('.sample-initial-result-row').forEach(row => this.refreshProblemPhotoButton(row));
   },
 
   refreshSampleArchivePanels(sampleId) {

@@ -135,7 +135,7 @@ def _operational_sample_write_payloads(conn: sqlite3.Connection, sample_payloads
     return merged_payloads
 
 
-def reconcile_task_sample_occupancy(conn: sqlite3.Connection, sample_ids) -> None:
+def reconcile_task_sample_occupancy(conn: sqlite3.Connection, sample_ids, *, only_reserved: bool = False) -> None:
     """Derive current usage from every project, never from a paged client view.
 
     A future reservation must not replace live execution. Explicit destinations
@@ -143,6 +143,10 @@ def reconcile_task_sample_occupancy(conn: sqlite3.Connection, sample_ids) -> Non
     """
     ids = sorted({str(sid) for sid in sample_ids if sid})
     occupancy = task_reservations.open_reservations(conn, ids)
+    # Archive edits only reconcile actual reservations. Unreserved samples may
+    # carry manually managed usage states and must retain that existing behavior.
+    if only_reserved:
+        ids = [sid for sid in ids if occupancy.get(sid)]
     for offset in range(0, len(ids), 400):
         batch = ids[offset:offset + 400]
         placeholders = ",".join("?" for _ in batch)

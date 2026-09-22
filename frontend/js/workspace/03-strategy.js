@@ -312,16 +312,27 @@ app.registerModule("workspace.strategy", {
   onStrategyInput(idx, field, el) {
     const s = this.currentStage();
     if (!s || !s.strategy[idx]) return;
+    // Invalid text stays in the control for correction, never in the save model.
+    if (field === 'sampleSize' && !this.validateSampleSizeInput(el)) return;
     s.strategy[idx][field] = field === 'sampleSize' ? Utils.parsePositiveInt(el.value) : el.value;
-    if (field === 'sampleSize') el.classList.toggle('invalid', Utils.parsePositiveInt(el.value) === null && String(el.value || '').trim() !== '');
     // P1.6：方案输入实时静默同步到 progress，避免折叠/关页/导航前未同步导致工作台进度丢失
     this.scheduleStrategySync();
     this.scheduleStageStrategySave(650, "update_strategy", "编辑测试策略");
   },
   validateSampleSizeInput(el) {
     const n = Utils.parsePositiveInt(el.value);
-    el.classList.toggle('invalid', n === null && String(el.value || '').trim() !== '');
-    if (n !== null) el.value = String(n);
+    const error = '样机数必须为大于 0 的整数；本次输入未保存。';
+    el.classList.toggle('invalid', n === null);
+    el.setAttribute('aria-invalid', String(n === null));
+    // The strategy grid has separately rendered frozen/scrolling rows. Keep
+    // validation out of row flow so an error cannot misalign the SKU checkboxes.
+    el.setAttribute('title', n === null ? error : '');
+    if (n === null) {
+      this.updateServerStatus(error);
+      return false;
+    }
+    el.value = String(n);
+    return true;
   },
   updateStrategySku(idx, sku, val) {
     const s = this.currentStage();
