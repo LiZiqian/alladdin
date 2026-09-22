@@ -1,14 +1,30 @@
-# aladdin 系统
-
-**硬件测试与样机全生命周期管理平台**
-
 <p align="center">
-  <img alt="Source version 7.4.0" src="https://img.shields.io/badge/version-7.4.0-2f80ed">
-  <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white">
-  <img alt="No pip or npm dependencies" src="https://img.shields.io/badge/dependencies-none-22a06b">
+  <img src="frontend/css/assets/aladdin-logo.png" alt="ALADDIN 系统 Logo" width="640">
 </p>
 
-aladdin 系统面向硬件测试团队，将项目、阶段、测试任务、样机档案与设备管理集中在一个内网工作平台中，贯通测试安排、样机分配、结果录入和履历追溯。
+<h1 align="center">ALADDIN 系统</h1>
+
+<p align="center">
+  <strong>硬件测试与样机全生命周期管理平台</strong><br>
+  从测试计划到结果追溯，让每一台样机的历程清晰可见。
+</p>
+
+<p align="center">
+  <img alt="Source version 7.4.0" src="https://img.shields.io/badge/version-7.4.0-C89136?style=flat-square">
+  <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-10394B?style=flat-square&amp;logo=python&amp;logoColor=white">
+  <img alt="No pip or npm dependencies" src="https://img.shields.io/badge/dependencies-none-10394B?style=flat-square">
+</p>
+
+<p align="center">
+  <a href="#下载与启动">快速开始</a> ·
+  <a href="#能做什么">功能概览</a> ·
+  <a href="#数据与迁移">数据与备份</a> ·
+  <a href="#更新版本">更新指南</a>
+</p>
+
+---
+
+ALADDIN 系统面向硬件测试团队，将项目、阶段、测试任务、样机档案与设备管理集中在一个内网工作平台中，贯通测试安排、样机分配、结果录入和履历追溯。
 
 在一台电脑上启动服务，团队通过浏览器访问。业务数据保存在服务端本地，无需安装独立数据库，也无需执行 `pip install` 或 `npm install`。
 
@@ -30,7 +46,7 @@ aladdin 系统面向硬件测试团队，将项目、阶段、测试任务、样
 
 ### Windows
 
-1. [下载 aladdin 系统（main 分支 ZIP）](https://github.com/LiZiqian/TestChamber/archive/refs/heads/main.zip)，解压到固定目录。
+1. [下载 ALADDIN 系统（main 分支 ZIP）](https://github.com/LiZiqian/TestChamber/archive/refs/heads/main.zip)，解压到固定目录。
 2. 安装 Python 3.9 或更高版本。
 3. 双击 `start_server.bat`，按提示选择默认端口或自定义端口。
 4. 保持服务窗口运行，在浏览器打开 [http://127.0.0.1:9398/](http://127.0.0.1:9398/)。如修改了端口，使用所选端口访问。
@@ -126,7 +142,7 @@ git pull --ff-only origin main
 ## 目录与技术说明
 
 ```text
-TestChamber/          # aladdin 系统项目目录
+TestChamber/          # ALADDIN 系统项目目录
 ├── backend/          # Python 后端
 ├── frontend/         # 页面、脚本、样式、正式 Logo 与导入模板
 ├── start_server.bat  # Windows 启动入口
