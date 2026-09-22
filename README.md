@@ -147,7 +147,6 @@ TestChamber/          # ALADDIN 系统项目目录
 ├── frontend/         # 页面、脚本、样式、正式 Logo 与导入模板
 ├── start_server.bat  # Windows 启动入口
 ├── README.md         # 使用说明
-├── .gitignore        # Git 忽略规则
 └── data/             # 首次启动创建，不包含在源码中
 ```
 
