@@ -1,4 +1,6 @@
-# TestChamber · 数字治理平台 V7
+# aladdin 系统
+
+**硬件测试与样机全生命周期管理平台**
 
 <p align="center">
   <img alt="Source version 7.4.0" src="https://img.shields.io/badge/version-7.4.0-2f80ed">
@@ -6,7 +8,7 @@
   <img alt="No pip or npm dependencies" src="https://img.shields.io/badge/dependencies-none-22a06b">
 </p>
 
-面向硬件测试团队的内网协作平台，将项目、阶段、测试任务与样机档案关联起来，记录从测试安排、样机分配到结果录入和履历追溯的全过程。
+aladdin 系统面向硬件测试团队，将项目、阶段、测试任务、样机档案与设备管理集中在一个内网工作平台中，贯通测试安排、样机分配、结果录入和履历追溯。
 
 在一台电脑上启动服务，团队通过浏览器访问。业务数据保存在服务端本地，无需安装独立数据库，也无需执行 `pip install` 或 `npm install`。
 
@@ -28,14 +30,14 @@
 
 ### Windows
 
-1. [下载 main 分支 ZIP](https://github.com/LiZiqian/TestChamber/archive/refs/heads/main.zip)，解压到固定目录。
+1. [下载 aladdin 系统（main 分支 ZIP）](https://github.com/LiZiqian/TestChamber/archive/refs/heads/main.zip)，解压到固定目录。
 2. 安装 Python 3.9 或更高版本。
 3. 双击 `start_server.bat`，按提示选择默认端口或自定义端口。
 4. 保持服务窗口运行，在浏览器打开 [http://127.0.0.1:9398/](http://127.0.0.1:9398/)。如修改了端口，使用所选端口访问。
 
 启动脚本会尝试寻找 Python；未找到时可按提示填写或拖入 `python.exe`。在服务窗口按 `Ctrl+C` 可停止服务。
 
-也可以使用 Git：
+也可以使用 Git。GitHub 仓库仍使用 `TestChamber` 作为仓库名，默认克隆目录也为 `TestChamber`：
 
 ```powershell
 git clone --branch main --single-branch https://github.com/LiZiqian/TestChamber.git
@@ -124,7 +126,7 @@ git pull --ff-only origin main
 ## 目录与技术说明
 
 ```text
-TestChamber/
+TestChamber/          # aladdin 系统项目目录
 ├── backend/          # Python 后端
 ├── frontend/         # 页面、脚本、样式、正式 Logo 与导入模板
 ├── start_server.bat  # Windows 启动入口
