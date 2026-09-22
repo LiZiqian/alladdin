@@ -1,7 +1,7 @@
 # TestChamber · 数字治理平台 V7
 
 <p align="center">
-  <img alt="Source version 7.3.0" src="https://img.shields.io/badge/version-7.3.0-2f80ed">
+  <img alt="Source version 7.4.0" src="https://img.shields.io/badge/version-7.4.0-2f80ed">
   <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white">
   <img alt="No pip or npm dependencies" src="https://img.shields.io/badge/dependencies-none-22a06b">
 </p>
@@ -10,7 +10,7 @@
 
 在一台电脑上启动服务，团队通过浏览器访问。业务数据保存在服务端本地，无需安装独立数据库，也无需执行 `pip install` 或 `npm install`。
 
-> 当前源码版本：`7.3.0` · 最新代码：`main` · 默认端口：`9398`
+> 当前源码版本：`7.4.0` · 最新代码：`main` · 默认端口：`9398`
 
 ## 能做什么
 
