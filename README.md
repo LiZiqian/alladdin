@@ -1,14 +1,16 @@
-# TestChamber
+# TestChamber · 数字治理平台 V7
 
 <p align="center">
-  <a href="https://github.com/LiZiqian/TestChamber/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/LiZiqian/TestChamber?label=version&color=2f80ed"></a>
+  <img alt="Source version 7.3.0" src="https://img.shields.io/badge/version-7.3.0-2f80ed">
   <img alt="Python 3.9+" src="https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white">
   <img alt="No pip or npm dependencies" src="https://img.shields.io/badge/dependencies-none-22a06b">
 </p>
 
-面向硬件测试团队的本地内网管理平台，统一管理项目、测试任务、样机、结果、照片和测试履历。
+面向硬件测试团队的内网协作平台，将项目、阶段、测试任务与样机档案关联起来，记录从测试安排、样机分配到结果录入和履历追溯的全过程。
 
-> 当前发布：`v7.3.0` · 默认端口：`9398` · 数据目录：`data/`
+在一台电脑上启动服务，团队通过浏览器访问。业务数据保存在服务端本地，无需安装独立数据库，也无需执行 `pip install` 或 `npm install`。
+
+> 当前源码版本：`7.3.0` · 最新代码：`main` · 默认端口：`9398`
 
 ## 能做什么
 
@@ -16,33 +18,36 @@
 |------|------|
 | 项目与阶段 | 管理 SKU、BOM、测试策略、人员和地点 |
 | 测试任务 | 配置执行人、计划、样机，跟踪启动、阻塞、变更和结束 |
-| 样机档案 | 管理身份、状态、位置、持有人、照片和跨任务履历 |
+| 样机档案 | 管理身份、状态、位置、持有人、照片、附件和跨任务履历 |
 | 结果录入 | 记录结论、DTS、问题、照片和样机去向 |
+| 设备仓库 | 按地域、部门管理设备名称、编号、型号、位置、负责人和状态 |
 | 批量导入 | 导入项目人员、样机和测试用例 |
-| 数据迁移 | 导出/导入完整数据包或单台样机档案包，并预览冲突 |
+| 数据迁移 | 导出完整或选定范围的数据、单台样机档案，导入前预览内容与冲突 |
 
 ## 下载与启动
 
 ### Windows
 
-1. 从 [GitHub Releases](https://github.com/LiZiqian/TestChamber/releases/latest) 下载源码并解压。
+1. [下载 main 分支 ZIP](https://github.com/LiZiqian/TestChamber/archive/refs/heads/main.zip)，解压到固定目录。
 2. 安装 Python 3.9 或更高版本。
-3. 双击 `start_server.bat`。
-4. 浏览器打开 [http://127.0.0.1:9398/](http://127.0.0.1:9398/)。
+3. 双击 `start_server.bat`，按提示选择默认端口或自定义端口。
+4. 保持服务窗口运行，在浏览器打开 [http://127.0.0.1:9398/](http://127.0.0.1:9398/)。如修改了端口，使用所选端口访问。
+
+启动脚本会尝试寻找 Python；未找到时可按提示填写或拖入 `python.exe`。在服务窗口按 `Ctrl+C` 可停止服务。
 
 也可以使用 Git：
 
 ```powershell
-git clone --branch v7.3.0 --depth 1 https://github.com/LiZiqian/TestChamber.git
+git clone --branch main --single-branch https://github.com/LiZiqian/TestChamber.git
 cd TestChamber
-start_server.bat
+.\start_server.bat
 ```
 
-正常运行不需要 `pip install`、`npm install` 或单独安装数据库。
+以上入口获取 `main` 的最新代码；[GitHub Releases](https://github.com/LiZiqian/TestChamber/releases) 中的标签版本不一定包含 `main` 的最新修改。
 
 ### 命令行启动
 
-仅允许本机访问：
+在解压后的项目目录执行。仅允许本机访问：
 
 ```powershell
 python -m backend.server --host 127.0.0.1 --port 9398
@@ -54,7 +59,7 @@ python -m backend.server --host 127.0.0.1 --port 9398
 python -m backend.server --host 0.0.0.0 --port 9398
 ```
 
-其他电脑访问 `http://服务器IP:9398/`。请勿把服务直接暴露到公网。
+Windows 启动脚本默认监听 `0.0.0.0`，同一内网的其他电脑可访问 `http://服务器IP:9398/`。仅在受信任的内网使用；当前版本没有账号登录或资源访问权限控制，请勿直接暴露到公网。
 
 macOS 或 Linux 将命令中的 `python` 改为 `python3` 即可。
 
@@ -69,51 +74,68 @@ macOS 或 Linux 将命令中的 `python` 改为 `python3` 即可。
 
 ## 数据与迁移
 
-业务数据默认保存在项目内：
+首次启动会在项目内创建 `data/`。主要内容如下：
 
 ```text
 data/
 ├── testchamber.sqlite   # 主数据库
-├── samples/             # 照片和缩略图
+├── samples/             # 样机照片、缩略图和附件
 ├── import-previews/     # 导入预览临时文件
 └── exports/             # 导出临时文件
 ```
 
-- 整个平台迁移：使用系统内的“完整数据包”导出和导入。
+- 业务数据迁移：使用系统内的数据包导出和导入，根据需要选择完整或指定范围的数据，确认导入预览后再提交。
 - 单台样机迁移：在样机详情中导出和导入“样机档案包”。
-- 本机备份：关闭服务后复制整个 `data/` 目录。
+- 完整备份：停止服务后复制整个 `data/` 目录，包含数据库和全部附件；不要只复制数据库文件。
+
+当前只支持 ChamberData V2 数据包和现行数据库结构，不会自动升级旧数据库或扫描同级旧数据目录。旧版本数据请先确认兼容性，并保留原始备份。
 
 `data/`、真实数据库、照片和公司测试数据不会随 GitHub 源码发布，也不要手动提交到 Git。
 
 ## 更新版本
 
-更新前先导出完整数据包，或在关闭服务后备份 `data/`。
+更新前先停止服务，备份整个 `data/` 目录，并保留一份原版本程序。历史数据库不保证能被当前版本直接使用。
 
-如果使用 Git：
+**使用 Git 安装**：在项目目录中检查本地改动，再更新 `main`：
 
 ```powershell
-git fetch --tags
-git switch --detach v7.3.0
+git status --short
+git switch main
+git pull --ff-only origin main
 ```
 
-更新源码后重新启动服务；如果浏览器仍显示旧界面，关闭旧服务并强制刷新页面。
+若有本地改动或 Git 提示无法快进，请先处理差异，不要强制覆盖。
+
+**使用 ZIP 安装**：下载最新 `main` ZIP 并解压到新目录。确认数据库兼容后，将已备份的整个 `data/` 目录复制到新目录，再启动新版本。
+
+更新完成后重新启动服务，并在浏览器按 `Ctrl+F5` 刷新页面。不要让新旧两个服务同时使用同一份业务数据。
 
 ## 常见问题
 
 | 问题 | 处理方式 |
 |------|----------|
-| 页面打不开 | 确认服务窗口仍在运行，并访问 `/api/health` 检查服务状态 |
+| 页面打不开 | 确认服务窗口仍在运行、访问端口正确；默认可访问 [健康检查](http://127.0.0.1:9398/api/health) |
 | 找不到 Python | 运行 `python --version`；Windows 启动脚本也可手动选择 `python.exe` |
 | 端口被占用 | 关闭旧服务，或启动时改用其他端口 |
 | 局域网无法访问 | 使用 `0.0.0.0` 启动，并检查 Windows 防火墙和服务器 IP |
+| 更新后仍显示旧界面 | 确认正在运行的是新目录中的服务，再按 `Ctrl+F5` 刷新 |
+| 导入被拒绝 | 确认使用 ChamberData V2 数据包，查看预览和错误提示，不要手动覆盖数据库 |
 
-## 技术说明
+## 目录与技术说明
 
-分发内容包括 `backend/`、`frontend/`、`start_server.bat` 和本说明。开发文档、验证脚本、测试与设计草稿仅保留在维护者本地，不随用户版本分发。
+```text
+TestChamber/
+├── backend/          # Python 后端
+├── frontend/         # 页面、脚本、样式、正式 Logo 与导入模板
+├── start_server.bat  # Windows 启动入口
+├── README.md         # 使用说明
+├── .gitignore        # Git 忽略规则
+└── data/             # 首次启动创建，不包含在源码中
+```
+
+当前版本的文件中不包含维护者本地的开发文档、验证脚本、测试与设计草稿；这些内容可能仍存在于历史提交中。
 
 - 后端：Python 标准库 `ThreadingHTTPServer`
 - 数据库：SQLite WAL
 - 前端：Vanilla JavaScript SPA
 - 健康检查：`GET /api/health`
-
-当前只支持现行增量 API、外置表数据库和 ChamberData V2 数据包，不支持历史接口与旧数据库自动迁移。
